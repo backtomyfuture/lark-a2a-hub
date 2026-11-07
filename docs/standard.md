@@ -203,6 +203,7 @@
 - doctor 新增总线契约检查：schema 与标准声明的字段、代码实际写入的选项值必须在线上登记，缺列缺选项在装机自检阶段即报出（针对 2026-11-07 两次「代码写了 Base 没有的列」瘫痪）。
 - `lah task create` 新增 `--idempotency-key`：调用方传入原值时节点侧重复拒收才可命中；此前 CLI 恒生成随机键，幂等只在手工落单路径成立。
 - schema 生成改为忠实快照：不再手工过滤选项，default_value 非空时如实记录；选项污染在 Base 本体清洗。
+- 时间文本统一口径：Created_At / Started_At / Finished_At / Heartbeat_At 一律写本地时间 ISO 8601 带时区偏移（与 Runs 既有口径一致）。此前 Messages 的 Created_At 是无偏移的分钟级本地时间，各节点时区不同（如枢纽容器 UTC 与节点本地 UTC+8）混写会让同一任务的时间线乱序；读侧排序以 Msg_ID 序为主、Created_At 为辅，旧格式存量行仍可读。
 
 **v3.4.1（2026-11-07，AgentCards.Metadata、建单拒派与派生会话）**：
 - §6 增加 AgentCards.Metadata：A2A 原生自由字段，文本，存 JSON 字符串；内核登记时写入 `kind` 与 `mode`，手工名片与旧名片可留空。表结构因此新增一列；线上 Base 加列后重新生成 schema，不手改生成物。

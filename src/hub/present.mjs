@@ -160,6 +160,10 @@ export class PresentService {
     this.role = String(role ?? "hub").trim();
     this.statePath = statePath;
     this.queuePath = queuePath || (statePath ? path.join(path.dirname(statePath), "present_queue.jsonl") : null);
+    // 呈递门铃：本轮有新回执落盘时更新此文件（mtime 即信号），供本机 Agent 的
+    // hook/轮询低成本感知「有新结果」，不必反复全量读队列。队列仍是真相，门铃
+    // 丢了只退化为下次主动 pop 时发现，不丢数据。
+    this.bellPath = statePath ? path.join(path.dirname(statePath), "present_bell") : null;
     this.log = log ?? (() => {});
   }
 
@@ -301,6 +305,13 @@ export class PresentService {
 
       sent += 1;
       this.log("presented " + item.taskId + " " + item.status + " -> " + this.queuePath);
+    }
+    if (sent > 0 && this.bellPath) {
+      try {
+        fs.writeFileSync(this.bellPath, new Date().toISOString() + "\n", { mode: 0o600 });
+      } catch (e) {
+        this.log("present_bell 写失败（忽略，队列为准）：" + (e?.message ?? e));
+      }
     }
     return sent;
   }
