@@ -164,6 +164,7 @@ export class PresentService {
     // hook/轮询低成本感知「有新结果」，不必反复全量读队列。队列仍是真相，门铃
     // 丢了只退化为下次主动 pop 时发现，不丢数据。
     this.bellPath = statePath ? path.join(path.dirname(statePath), "present_bell") : null;
+    this._phantomWarned = new Set();
     this.log = log ?? (() => {});
   }
 
@@ -231,6 +232,18 @@ export class PresentService {
     let sent = 0;
     for (const item of pending) {
       const msg = latestMessage(messages, item.taskId, item.status);
+      if (!msg) {
+        // 幻影状态：任务已是终态/待答态，却没有任何配套消息（result / notice /
+        // question 等）——多半是状态被绕过内核直接改写（P2 实测：working 被直
+        // 接改 completed 时曾生成空白完成回执）。不呈递、也不标已呈递：配套
+        // 消息日后补齐仍可正常呈递；同一任务同一状态本进程只告警一次。
+        const wkey = item.taskId + "\t" + item.status;
+        if (!this._phantomWarned.has(wkey)) {
+          this._phantomWarned.add(wkey);
+          this.log(`present 跳过：${item.taskId} 处于 ${item.status} 但无配套消息（疑似状态被直接改写），不生成回执`);
+        }
+        continue;
+      }
       const run = runOf(runs, item.task);
       const taskMsgs = messages.filter((m) => String(f1(m, "Task_ID") ?? "") === item.taskId);
       const instr = taskMsgs.find((m) => f1(m, "Kind") === "instruction");
