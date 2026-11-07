@@ -43,6 +43,8 @@
       "nas",
       "grokbot",
       "work-mba",
+      "node-dev",
+      "setuptest",
       "Workbuddy-cloud",
       "workbuddy",
       "jarod-macbook-air",
@@ -123,7 +125,8 @@
      "primary": false,
      "options": [
       "Yes",
-      "No"
+      "No",
+      "no"
      ]
     },
     {

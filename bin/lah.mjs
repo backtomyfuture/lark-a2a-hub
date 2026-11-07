@@ -303,6 +303,7 @@ if (cmd === "setup") {
         context: args.context,
         ref: args.ref,
         approval: args.approval,
+        idempotencyKey: args.idempotencyKey,
       });
       console.log(taskId);
     } catch (e) {
@@ -584,7 +585,7 @@ if (cmd === "setup") {
   lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]
   lah inbox ask  --task <Task_ID> --text <补充提问>
   lah inbox fail --task <Task_ID> --text <失败原因>
-  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>]
+  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--idempotency-key <键>]
   lah task reply  --task <Task_ID> --text <答复内容>
   lah task show   <Task_ID>
   lah present     [--pop]  读取本机结果呈递队列（--pop 同时清空）`);

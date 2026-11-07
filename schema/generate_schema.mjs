@@ -144,16 +144,13 @@ function fieldEntry(f) {
   };
   const opts = (f.property ?? {}).options ?? [];
   if (opts.length) {
-    let names = opts.map((o) => o.name);
-    // 发布快照的清洗：略去一次性测试节点名与历史误写的小写选项（不写回 Base）
-    if (f.field_name === "Target_Node") {
-      names = names.filter((n) => n !== "node-dev" && n !== "setuptest");
-    }
-    if (f.field_name === "Presented") {
-      names = names.filter((n) => n !== "no");
-    }
-    entry.options = names;
+    // 快照必须忠实于线上：选项污染（测试节点名、误写值）要在 Base 本体清洗，
+    // 不在这里过滤——过滤只会让 schema 与线上漂移且无人察觉（doctor 契约检查靠这份快照）。
+    entry.options = opts.map((o) => o.name);
   }
+  // 默认值同理：设了才记，记了 doctor 才看得见；项目口径为一律不设。
+  const dv = (f.property ?? {}).default_value;
+  if (dv !== null && dv !== undefined && dv !== "") entry.default_value = dv;
   return entry;
 }
 

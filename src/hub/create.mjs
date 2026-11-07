@@ -57,7 +57,7 @@ export function parseParams(raw) {
 
 export function parseCreateArgv(argv) {
   const out = {
-    configDir: "", from: "", source: "", to: "", cap: "", text: "", paramsRaw: undefined, context: "", ref: "", approval: "",
+    configDir: "", from: "", source: "", to: "", cap: "", text: "", paramsRaw: undefined, context: "", ref: "", approval: "", idempotencyKey: "",
   };
   const take = (i, flag) => {
     const value = argv[i + 1];
@@ -76,6 +76,7 @@ export function parseCreateArgv(argv) {
     else if (flag === "--context") out.context = take(i, flag);
     else if (flag === "--ref") out.ref = take(i, flag);
     else if (flag === "--approval") out.approval = take(i, flag);
+    else if (flag === "--idempotency-key") out.idempotencyKey = take(i, flag);
     else throw new Error("无法识别的参数：" + flag);
     if (flag.startsWith("--")) i++;
   }
@@ -146,7 +147,7 @@ function freshTaskId(taken, now) {
 }
 
 export async function createTask({
-  bus, from = "", source = "", to, cap, text = "", params, context = "", ref = "", approval = "", now = new Date(),
+  bus, from = "", source = "", to, cap, text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(),
 }) {
   if (!bus?.tables?.messages || !bus.tables.parts || !bus.tables.tasks) {
     throw new Error("总线缺少 messages / parts / tasks 表");
@@ -339,7 +340,9 @@ export async function createTask({
     Skill_ID: skill,
     Status: "submitted",
     Hop_Count: hop,
-    Idempotency_Key: `${sender}-${randomUUID()}`,
+    // 调用方给了键就用原值：重试同一动作时靠它命中节点侧的重复拒收（标准 §4 幂等）。
+    // 不给才生成随机键——那种单永远查不出重复，只作占位。
+    Idempotency_Key: String(idempotencyKey ?? "").trim() || `${sender}-${randomUUID()}`,
     Context_ID: contextId,
     Presented: "No",
     Retry_Count: 0,

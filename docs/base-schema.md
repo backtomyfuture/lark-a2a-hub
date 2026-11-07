@@ -14,7 +14,7 @@ Task：一件工作的信封与状态机，一行一任务
 | Title | Text | 主字段 |
 | Task_ID | Text | 业务编号，唯一、人可读，发起方生成后不变 |
 | Source | SingleSelect | （扩展）任务来源：hub / cron / manual / agent-derived 等（选项：muse / cron / manual / agent-derived / hub） |
-| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：home-mini / ipad / nas / grokbot / work-mba / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub） |
+| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：home-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub） |
 | Worker_Hint | SingleSelect | 选项：amp / agy / droid / grok-cli / hermes / local-skill / other |
 | Skill_ID | Text | （扩展）要调用的技能 id，与 AgentCards.Skill_ID 对应 |
 | Status | SingleSelect | A2A 八态状态机，见标准 §2；终态不可变（选项：submitted / working / input-required / auth-required / completed / failed / canceled / rejected） |
@@ -22,7 +22,7 @@ Task：一件工作的信封与状态机，一行一任务
 | Hop_Count | Number | （扩展）派生层数，>8 熔断 |
 | Idempotency_Key | Text | （扩展）建单幂等键：来源+业务键 |
 | Latest_Run | Text | （扩展）最新一条 Run 的 Run_ID |
-| Presented | SingleSelect | （扩展）结果是否已呈递给操作者（Yes/No）（选项：Yes / No） |
+| Presented | SingleSelect | （扩展）结果是否已呈递给操作者（Yes/No）（选项：Yes / No / no） |
 | Claimed_By | Text | （扩展）认领租约：当前持有节点 |
 | Heartbeat_At | Text | （扩展）认领心跳；20 分钟无心跳视为放弃、可回收 |
 | Retry_Count | Number | （扩展）失败重试计数，上限 2 |
