@@ -97,10 +97,14 @@ export function initiatorOf(task, messages = []) {
   return "hub";
 }
 
-function nowMinuteStr() {
+function nowIso() {
+  // 与 kernel.nowStr 同一口径：本地时间 ISO 8601 带时区偏移。
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const oh = p(Math.floor(Math.abs(off) / 60)) + p(Math.abs(off) % 60);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${oh}`;
 }
 
 // 终态与计划目标不一致时，不能再往总线上补一条回执。canceled 只由 hub 写，这里只丢本地计划。
@@ -222,7 +226,7 @@ async function buildPlan({ bus, node, task, text, artifact, op }) {
   const taskMsgs = messages.filter((m) => f1(m, "Task_ID") === taskId);
   const seq = nextMsgSeqFrom(taskMsgs);
   const msgId = `MSG-${taskId.replace(/^TASK-/, "")}-${String(seq).padStart(2, "0")}`;
-  const createdAt = nowMinuteStr();
+  const createdAt = nowIso();
   const body = String(text ?? "");
 
   let artId = "";

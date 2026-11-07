@@ -13,9 +13,13 @@ const APPROVALS = new Set(["auto", "notify", "approve"]);
 const HOP_LIMIT = 8;
 
 export function formatCreatedAt(date) {
+  // 与 kernel.nowStr 同一口径：本地时间 ISO 8601 带时区偏移，跨节点可比可排序。
   const d = date instanceof Date ? date : new Date(date);
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const oh = p(Math.floor(Math.abs(off) / 60)) + p(Math.abs(off) % 60);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${oh}`;
 }
 
 function assertNoControl(obj) {

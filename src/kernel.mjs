@@ -101,7 +101,8 @@ function nowStr() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${oh}`;
 }
 
-const nowShort = () => nowStr().slice(0, 16).replace("T", " ");
+// Created_At 一律写 nowStr() 的完整 ISO（带时区偏移）：各节点时区不同，
+// 无偏移的本地时间文本混写会让同一任务里回复看起来比请求还早（会审实证）。
 
 // 表上没有耗时列。收尾时用起止时间表达耗时；失败信息里再附上秒数，成功不往 Error_Log 塞备注。
 function elapsedSec(started, finished) {
@@ -376,7 +377,7 @@ export class Kernel {
     const fields = {
       Msg_ID: msgId, Task_ID: taskId, Context_ID: f1(task, "Context_ID"),
       From_Node: this.cfg.node, To_Node: resolvedTo, Role: role, Kind: kind,
-      Artifact_Ref: artifactRef, In_Reply_To: inReplyTo, Created_At: nowShort(),
+      Artifact_Ref: artifactRef, In_Reply_To: inReplyTo, Created_At: nowStr(),
     };
     if (refTaskIds) fields.Ref_Task_IDs = refTaskIds;
     const created = await this.bus.createRecord(this.T.messages, fields);
@@ -1017,7 +1018,7 @@ export class Kernel {
       await this.bus.createRecord(this.T.artifacts, {
         Artifact_ID: box.artId, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
         Name: name, Description: String(box.res?.summary ?? "").slice(0, 500),
-        Is_Final: "Yes", Created_By: this.cfg.node, Created_At: nowShort(),
+        Is_Final: "Yes", Created_By: this.cfg.node, Created_At: nowStr(),
       }, box.tokens.artifact);
     }
     await this.createPart(box.artId, "artifact", 1, "file", {
@@ -1061,7 +1062,7 @@ export class Kernel {
         Msg_ID: box.msgId, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
         From_Node: this.cfg.node, To_Node: await this.initiatorOf(task), Role: "agent",
         Kind: failed ? "notice" : "result",
-        Artifact_Ref: box.artId || "", In_Reply_To: "", Created_At: nowShort(),
+        Artifact_Ref: box.artId || "", In_Reply_To: "", Created_At: nowStr(),
       };
       const created = await this.bus.createRecord(this.T.messages, fields, box.tokens.message);
       this._remember(this.T.messages, this._asRow(fields, created));

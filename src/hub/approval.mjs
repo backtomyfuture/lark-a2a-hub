@@ -80,10 +80,14 @@ export function actionValue(data) {
   return {};
 }
 
-function nowMinute() {
+function nowIso() {
+  // 与 kernel.nowStr 同一口径：本地时间 ISO 8601 带时区偏移。
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const oh = p(Math.floor(Math.abs(off) / 60)) + p(Math.abs(off) % 60);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${oh}`;
 }
 
 function msgSeq(msg) {
@@ -110,7 +114,7 @@ function bumpMsgId(msgId) {
 }
 
 export class ApprovalService {
-  constructor({ bus, ownerOpenId = "", statePath, log, now = nowMinute, dedupWindowMs = 60_000 }) {
+  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000 }) {
     this.bus = bus;
     this.ownerOpenId = String(ownerOpenId ?? "").trim();
     this.statePath = statePath;
