@@ -13,7 +13,7 @@ import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
 
-export const DAEMON_VERSION = "node-0.5.0";
+export const DAEMON_VERSION = "node-0.6.0";
 const HOP_LIMIT = 8;
 const MAX_RETRIES = 2;
 const STALE_MIN = 20;

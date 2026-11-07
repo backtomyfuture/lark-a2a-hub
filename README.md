@@ -1,11 +1,18 @@
 # lark-a2a-hub —— 多 Agent 中台（飞书多维表格总线）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+[![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)](CHANGELOG.md)
+
+[English](README.en.md) · [中台标准](docs/standard.md) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md)
+
 一套已经在生产运行的多 Agent 协作系统：**用飞书多维表格当消息总线与
 状态层**，数据模型借 A2A 协议；一个枢纽（hub）负责拆解、派发、审批与
 结果呈递；任意终端装上节点适配器即可入列干活，云端 Agent 也能按协议
 直接接入。任务只有一个发起面和一个状态面，全程留痕可查。
 
-> 方向说明（标准 v3.1）：枢纽（hub）是逻辑角色，并且是 `node` 的**单进程超集**，
+> 方向说明（标准 v3.5）：枢纽（hub）是逻辑角色，并且是 `node` 的**单进程超集**，
 > 由 `lah daemon --role node|hub`（CLI 简称 `lah`，向下兼容 `hub-node` 别名）承载
 > （省略 `--role` 时读 `node.json` 的 `role`，缺省 node）。单进程单配置目录即可同时
 > 承担 Hub 枢纽职责（全网审批发卡、结果呈递、超时告警）与 Node 执行节点能力（认领执行任务）。
@@ -16,7 +23,7 @@
 
 | 组成 | 位置 | 说明 |
 |---|---|---|
-| 中台标准 v3.1 | [docs/standard.md](docs/standard.md) | 七表对象模型、A2A 八态状态机、通信/审批/幂等协议（规范性文件） |
+| 中台标准 v3.5 | [docs/standard.md](docs/standard.md) | 七表对象模型、A2A 八态状态机、通信/审批/幂等协议（规范性文件） |
 | 系统架构 | [docs/architecture.md](docs/architecture.md) | 分层、核心决策与理由、生命周期、故障模型 |
 | Base 结构 | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | 七表字段级定义，由运行中的 Base 生成（附生成器） |
 | 枢纽对接 | [docs/hub-integration.md](docs/hub-integration.md) · `src/hub/` | 枢纽职责、建单纪律、呈递与审批回路；实现是 `lah daemon --role hub` |

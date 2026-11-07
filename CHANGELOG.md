@@ -1,9 +1,20 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.4.1）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.5）。
 
 ## [Unreleased]
+
+## [0.6.0] - 2026-11-07（中台标准 v3.5：字段瘦身与总线契约）
+
+- doctor 新增**总线契约检查**：schema/标准声明的字段、代码实际写入的单选值、本节点名必须在线上 Base 登记，缺列缺选项在自检阶段报出（针对「代码写了 Base 没有的列」类装机瘫痪）；线上多出字段、废弃选项残留、非空 default_value 只警告列出。
+- 字段瘦身（标准 v3.5）：删除 Tasks.Worktree、AgentCards.Required_Assets/Tags/Examples、Messages.Metadata、Parts.Metadata；名片 Modes/capabilities/Zone/Skill_Name 收拢进 Metadata 的 `a2a` 子对象（本版双写，列观察后删）；Side_Effect 保留独立列。
+- Tasks.Presented 列废弃并全面停写停读：呈递去重只认本地 present_state.json ＋线上 Tasks.Metadata.presented_keys，装机水位线改看 presented_keys；Metadata 写入先读再合并。
+- `lah task create` 新增 `--idempotency-key`：调用方传入原值时节点侧重复拒收才可命中（此前 CLI 恒生成随机键）。内核幂等经双单实测：同键第二单 rejected＋notice 且不执行。
+- 时间文本统一 ISO 8601 带时区偏移（Created_At 与 Runs/Heartbeat 同口径），修复跨时区节点混写导致的时间线乱序。
+- 呈递门铃：present 本轮有新回执落盘时刷新配置目录 `present_bell`（mtime 即信号），供本机 Agent 以 hook/短轮询低成本感知，队列仍是唯一真相。
+- schema 生成改为忠实快照：不再手工过滤选项，default_value 非空如实记录；选项污染在 Base 本体清洗、由 doctor 盯住。
+- 双语 README（README.en.md）、徽章与 Issue 模板补齐。
 
 - 评审修复（标准 §6、§10.3，不改标准）：
   - `lah reconcile` 单次对账不把命令表外的手工名片写成 `Dispatchable=No`，也不改写它们；常驻 daemon 仍停派已从命令表删除的能力；
