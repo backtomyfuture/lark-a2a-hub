@@ -344,7 +344,6 @@ export async function createTask({
     // 不给才生成随机键——那种单永远查不出重复，只作占位。
     Idempotency_Key: String(idempotencyKey ?? "").trim() || `${sender}-${randomUUID()}`,
     Context_ID: contextId,
-    Presented: "No",
     Retry_Count: 0,
   };
   if (approvalClass) taskFields.Approval_Class = approvalClass;

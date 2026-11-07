@@ -686,9 +686,21 @@ export class Kernel {
       Cap_Push: "No",
       Cap_Streaming: "No",
       Cap_State_History: "Yes",
+      // v3.5 收拢：Modes / capabilities / Zone / Skill_Name 的目标形态是 Metadata 的
+      // a2a 子对象（一份 A2A 名片本就是一个 JSON 文档）。先双写——JSON 与旧列并存，
+      // 观察一个登记周期后由迁移删列，届时这里同步停写旧列。
       Metadata: JSON.stringify({
         kind: this.cfg.kind || "host",
         mode: entry?.mode || "agent",
+        a2a: {
+          skill_name: entry?.name ?? skill,
+          zone: this.cfg.zone ?? "",
+          input_modes: entry?.input_modes ?? [],
+          output_modes: entry?.output_modes ?? [],
+          default_input_modes: entry?.default_input_modes ?? [],
+          default_output_modes: entry?.default_output_modes ?? [],
+          capabilities: { streaming: false, push: false, state_transition_history: true },
+        },
       }),
     };
   }

@@ -394,9 +394,9 @@ function taskFieldsOf(plan) {
     Status_Msg: plan.msgId,
   };
   if (plan.runId) fields.Latest_Run = plan.runId;
-  // ask 只把任务送进 input-required。done/fail 才清心跳并重新呈递。
+  // ask 只把任务送进 input-required。done/fail 才清心跳；重新呈递靠新终态的
+  // presentKey（与旧键不同），不再写 Presented 列（v3.5 已废弃，见标准 §10.2）。
   if (plan.op !== "ask") {
-    fields.Presented = "No";
     fields.Heartbeat_At = "";
   }
   return fields;

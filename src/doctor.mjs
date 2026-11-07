@@ -128,7 +128,7 @@ const REQUIRED_OPTION_VALUES = {
   Tasks: {
     Status: ["submitted", "working", "input-required", "auth-required", "completed", "failed", "canceled", "rejected"],
     Approval_Class: ["auto", "notify", "approve"],
-    Presented: ["Yes", "No"],
+    // Presented 列 v3.5 已废弃、代码不再写，不再要求其选项；残留污染值仍在 DEPRECATED 里盯。
   },
   Messages: {
     Kind: ["instruction", "question", "answer", "auth_request", "auth_decision", "progress", "result", "notice"],

@@ -289,17 +289,16 @@ export class ApprovalService {
     }
 
     if (decision === "approve") {
-      // 保留 Status_Msg，节点认领前用它核对 In_Reply_To。清 Presented，这一态才能再呈递。
+      // 保留 Status_Msg，节点认领前用它核对 In_Reply_To。后续终态靠新 presentKey
+      // 再次呈递，不再清 Presented 列（v3.5 已废弃，见标准 §10.2）。
       await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
         Status: "submitted",
-        Presented: "",
         Status_Msg: statusMsg,
       });
       return toast("success", "已批准，任务重新入队执行。");
     }
     await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
       Status: "canceled",
-      Presented: "",
     });
     return toast("info", "已驳回，任务取消。");
   }

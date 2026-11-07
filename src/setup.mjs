@@ -1231,9 +1231,14 @@ export async function runSetup(configDir, argv, appDir) {
           const st = String(f1(t, "Status") ?? "");
           const tid = String(f1(t, "Task_ID") ?? "");
           if (!tid) continue;
-          const pres = String(f1(t, "Presented") ?? "").toLowerCase();
+          // Presented 列 v3.5 已废弃：水位线信号改看 Metadata.presented_keys 是否非空
+          let hasPresentedKeys = false;
+          try {
+            const meta = JSON.parse(String(f1(t, "Metadata") ?? ""));
+            hasPresentedKeys = Array.isArray(meta?.presented_keys) && meta.presented_keys.length > 0;
+          } catch { /* Metadata 脏数据按未呈递处理 */ }
           const isTerm = ["completed", "failed", "rejected", "canceled"].includes(st);
-          if (isTerm || pres === "yes") {
+          if (isTerm || hasPresentedKeys) {
             const smsg = String(f1(t, "Status_Msg") ?? "");
             const k = (["completed", "failed", "rejected"].includes(st)) ? `${tid}\t${st}\t${smsg}` : `${tid}\t${smsg}`;
             if (!baseKeys.includes(k)) baseKeys.push(k);

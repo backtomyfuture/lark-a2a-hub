@@ -177,16 +177,16 @@ export class PresentService {
     const messages = await this.bus.listRecords(this.bus.tables.messages);
 
     // 装机水位线（baseline）：若是首次运行（本地不存在 present_state.json），
-    // 将线上存量的终态任务（completed / failed / rejected / canceled）或已标记 Presented="Yes" 的任务
-    // 直接视为已呈递历史基线，记录到 present_state.json 中，防止首次启动向本地队列倾倒全部历史回执。
+    // 将线上存量的终态任务（completed / failed / rejected / canceled）或 Metadata 里
+    // 已有 presented_keys 的任务直接视为已呈递历史基线，记录到 present_state.json 中，
+    // 防止首次启动向本地队列倾倒全部历史回执。（Presented 列 v3.5 已废弃，不再读。）
     if (!state.exists) {
       for (const task of tasks) {
         const status = String(f1(task, "Status") ?? "");
         const taskId = String(f1(task, "Task_ID") ?? "");
         if (!taskId) continue;
-        const presented = String(f1(task, "Presented") ?? "").toLowerCase();
         const isTerminal = TERMINAL_STATUSES.has(status) || status === "canceled";
-        if (isTerminal || presented === "yes") {
+        if (isTerminal || metaKeys(task).length > 0) {
           const statusMsg = String(f1(task, "Status_Msg") ?? "");
           const key = presentKey(taskId, status, statusMsg);
           seen.add(key);
@@ -286,14 +286,13 @@ export class PresentService {
         this.log("present_state.json 写失败：" + (e?.message ?? e));
       }
 
-      // 尝试写线上 Tasks 元数据与 Presented="Yes"
+      // 写线上 Tasks 元数据的 presented_keys（先读再合并；Presented 列 v3.5 起不再写）
       try {
         const meta = loadMeta(f1(item.task, "Metadata"));
         const pkeys = Array.isArray(meta.presented_keys) ? meta.presented_keys.filter((k) => typeof k === "string") : [];
         if (!pkeys.includes(item.key)) pkeys.push(item.key);
         meta.presented_keys = pkeys;
         await this.bus.updateRecord(this.bus.tables.tasks, item.task.record_id, {
-          Presented: "Yes",
           Metadata: JSON.stringify(meta),
         });
       } catch (e) {
