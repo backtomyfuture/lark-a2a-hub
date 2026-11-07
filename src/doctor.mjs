@@ -110,6 +110,124 @@ export async function checkAppEventSubscribed(bus, appId, eventType = "drive.fil
   }
 }
 
+// 总线契约检查：代码与标准写到的字段、选项值，必须在线上 Base 真实存在。
+// 2026-11-07 两次装机瘫痪都是「代码写了 Base 没有的列」（AgentCards.Metadata、
+// Runs.Status/Ended_At），运行时才爆 1254045；这里把这一类问题提前到自检阶段。
+// 期望侧来自随仓库发布的 schema/base-schema.json（由 generate_schema 生成），
+// 事实侧来自线上字段 API；标准声明的字段同样在 schema 里，一并覆盖。
+const CONTRACT_TABLES = {
+  tasks: "Tasks",
+  messages: "Messages",
+  parts: "Parts",
+  runs: "Runs",
+  artifacts: "Artifacts",
+  agentCards: "AgentCards",
+};
+// 代码实际会写入的单选值（取自各写点的字面量）；缺登记会报 OptionNotFound 或被迫污染选项集。
+const REQUIRED_OPTION_VALUES = {
+  Tasks: {
+    Status: ["submitted", "working", "input-required", "auth-required", "completed", "failed", "canceled", "rejected"],
+    Approval_Class: ["auto", "notify", "approve"],
+    Presented: ["Yes", "No"],
+  },
+  Messages: {
+    Kind: ["instruction", "question", "answer", "auth_request", "auth_decision", "progress", "result", "notice"],
+    Role: ["user", "agent"],
+  },
+  Parts: {
+    Kind: ["text", "file", "data"],
+    Parent_Type: ["message", "artifact"],
+  },
+  Runs: {
+    Outcome: ["succeeded", "failed", "paused"],
+  },
+  AgentCards: {
+    Availability: ["online", "offline"],
+    Dispatchable: ["Yes", "No"],
+    Receive_Mode: ["event", "poll", "automation"],
+  },
+};
+// 已废弃但可能残留在选项集里的值：出现只警告，不算失败。
+const DEPRECATED_OPTION_VALUES = {
+  AgentCards: { Receive_Mode: ["webhook"] },
+  Tasks: { Presented: ["no"] },
+};
+
+async function checkBusContract(bus, appDir, nodeName) {
+  let problems = 0;
+  let schema;
+  try {
+    schema = JSON.parse(fs.readFileSync(path.join(appDir, "schema", "base-schema.json"), "utf8"));
+  } catch (e) {
+    info(`契约检查跳过：读不到 schema/base-schema.json（${e.message}）`);
+    return 0;
+  }
+  const schemaTables = new Map((schema.tables || []).map((t) => [t.name, t]));
+  for (const [key, tableName] of Object.entries(CONTRACT_TABLES)) {
+    const tableId = bus.tables?.[key];
+    const schemaTable = schemaTables.get(tableName);
+    if (!tableId || !schemaTable) continue;
+    let liveFields;
+    try {
+      const res = await bus.api("GET", `/bitable/v1/apps/${bus.baseToken}/tables/${tableId}/fields?page_size=100`);
+      liveFields = res?.data?.items || res?.items || [];
+    } catch (e) {
+      info(`契约检查跳过 ${tableName}：字段列表读失败（${(e?.message || "").slice(0, 80)}）`);
+      continue;
+    }
+    const liveByName = new Map(liveFields.map((f) => [f.field_name, f]));
+    const schemaNames = new Set((schemaTable.fields || []).map((f) => f.name));
+    for (const name of schemaNames) {
+      if (!liveByName.has(name)) {
+        bad(`契约：${tableName}.${name} 在 schema 里有、线上 Base 没有（写它会报 1254045）`);
+        problems++;
+      }
+    }
+    for (const name of liveByName.keys()) {
+      if (!schemaNames.has(name)) {
+        info(`契约：${tableName}.${name} 线上有、schema 未登记（手工加列或 schema 过期，改表后请重跑 generate_schema）`);
+      }
+    }
+    const required = REQUIRED_OPTION_VALUES[tableName] || {};
+    for (const [field, values] of Object.entries(required)) {
+      const live = liveByName.get(field);
+      if (!live) continue; // 缺列已在上面报过
+      const opts = new Set((live.property?.options || []).map((o) => o.name));
+      if (!opts.size) continue; // 非单选或选项读不到，不下结论
+      for (const v of values) {
+        if (!opts.has(v)) {
+          bad(`契约：${tableName}.${field} 缺选项值 ${v}（代码会写，缺登记会报 OptionNotFound）`);
+          problems++;
+        }
+      }
+    }
+    // 本节点名必须在寻址类单选的选项里（历史上 Target_Node 选项缺现行节点名，靠自动新增污染选项集）
+    for (const field of tableName === "Tasks" ? ["Target_Node"] : tableName === "AgentCards" ? ["Node"] : []) {
+      const live = liveByName.get(field);
+      const opts = new Set((live?.property?.options || []).map((o) => o.name));
+      if (live && opts.size && nodeName && !opts.has(nodeName)) {
+        bad(`契约：${tableName}.${field} 选项里没有本节点名 ${nodeName}`);
+        problems++;
+      }
+    }
+    const deprecated = DEPRECATED_OPTION_VALUES[tableName] || {};
+    for (const [field, values] of Object.entries(deprecated)) {
+      const opts = new Set((liveByName.get(field)?.property?.options || []).map((o) => o.name));
+      for (const v of values) {
+        if (opts.has(v)) info(`契约：${tableName}.${field} 残留已废弃选项 ${v}（建议清洗）`);
+      }
+    }
+    for (const f of liveFields) {
+      const dv = f.property?.default_value;
+      if (dv !== null && dv !== undefined && dv !== "") {
+        info(`契约：${tableName}.${f.field_name} 设了字段默认值（项目口径为一律不设，请核对）`);
+      }
+    }
+  }
+  if (!problems) ok("总线契约检查通过（字段存在性与代码写入的选项值均已登记）");
+  return problems;
+}
+
 function roleFrom(argv, opts, raw) {
   if (opts?.role === "node" || opts?.role === "hub") return opts.role;
   for (let i = 0; i < argv.length; i++) {
@@ -252,6 +370,7 @@ export async function doctor(configDir, appDir, opts = {}) {
       }
       const tasks = await cfg.bus.listRecords(cfg.bus.tables.tasks);
       ok(`Tasks 可读：共 ${tasks.length} 条`);
+      problems += await checkBusContract(cfg.bus, appDir, cfg.node);
     } catch (e) {
       const msg = e?.message || "";
       if (/403|91403|1254302|forbidden|permission/i.test(msg)) {
