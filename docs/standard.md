@@ -38,7 +38,7 @@
 - ★ Status_Msg（扩展）：当前状态附带的消息指针（进入 input-required / auth-required 时，指向提问/待批的那条 Messages 的 Msg_ID）——A2A 中为 TaskStatus 内嵌 message，表形态以指针等价实现。
 - ★ Metadata：A2A 原生自由字段（JSON）；非核心本地信息放这里，不再新增列。
 - **任务参数不在 Tasks 上**（v3 删除 Payload）：初始指令与参数写首条 instruction 消息，其 DataPart（Kind=data）承载参数 JSON（A2A 原生形态）。
-- （扩展）Target_Node / Worker_Hint / Skill_ID / Title / Source / Approval_Class / Hop_Count / Idempotency_Key / Worktree / Claimed_By / Heartbeat_At / Retry_Count / Latest_Run / Presented：总线运营字段，定义沿用 v1/v2（守护进程与呈递管线维护其中一部分）。
+- （扩展）Target_Node / Worker_Hint / Skill_ID / Title / Source / Approval_Class / Hop_Count / Idempotency_Key / Claimed_By / Heartbeat_At / Retry_Count / Latest_Run / Presented：总线运营字段，定义沿用 v1/v2（守护进程与呈递管线维护其中一部分）。Worktree 已于 v3.5 删除（执行环境私事不入总线）；Presented 为过渡遗留，代码切换为只读 Tasks.Metadata 的呈递键后删除（见 §10.2）。
 - 任务派生关联写 Messages.Ref_Task_IDs（v3 起 Tasks 侧删除该列，见 §3）。
 
 ### 状态机（A2A 八态）
@@ -132,12 +132,13 @@
 沿用「一行一项能力」的规范化结构（等价于把 AgentCard 的 skills[] 拆成行）。A2A 原生字段：
 
 - Node（卡片 name 的节点部分）/ Node_Desc（卡片 description）/ Daemon_Version（卡片 version）。
-- Skill_ID（skill.id）/ Skill_Name（skill.name）/ Description（skill.description，v3 由 Capability 改名）/ Tags / Examples / Input_Modes / Output_Modes（skill 级元数据）。
+- Skill_ID（skill.id）/ Skill_Name（skill.name）/ Description（skill.description，v3 由 Capability 改名）/ Input_Modes / Output_Modes（skill 级元数据）。
 - Default_Input_Modes / Default_Output_Modes（卡片级默认模式）。
 - Cap_Streaming / Cap_Push / Cap_State_History（卡片 capabilities 三开关；Cap_Push＝支持推送通知，相当于声明有 PushNotification 通道）。
 - Metadata：A2A 原生自由字段（文本，JSON 字符串）。内核登记名片时写入 `kind` 与 `mode`（节点类型与执行模式，见 §10.4 与 §9），供建单侧识别该能力；协议节点手工登记的名片，以及尚未填写的旧名片，可以留空。
+- **v3.5 收拢方向**：Tags / Examples / Required_Assets 已删（无消费者）；Input_Modes / Output_Modes / Default_Input_Modes / Default_Output_Modes / Cap_Streaming / Cap_Push / Cap_State_History 与本地扩展 Zone、Skill_Name 将收拢进 Metadata 的 `a2a` 子对象（一份 A2A 名片本就是一个 JSON 文档，Modes 与 capabilities 是它的原生组成部分，不另占列）；代码先行改写为写 JSON，列在观察一个登记周期后删除。Side_Effect 与审批下限相关，保留独立列与选项约束。
 
-本地扩展字段：Cap_ID（行主键）、Zone、Required_Assets、Side_Effect、Availability、Dispatchable、Receive_Mode（唤醒方式，与 §10.3 三种传输方式对应：`event`＝ws 长连接事件 / `poll` 轮询 / `automation`＝webhook 通知（飞书自动化 POST）。`automation` 只用于协议接入型节点，其端点由对方平台托管；守护进程型节点只取 `event` 或 `poll`，本标准的实现不开监听端口。表中另有遗留选项 `webhook`，不再赋予含义，登记一律用 `automation`）。
+本地扩展字段：Cap_ID（行主键）、Zone、Side_Effect、Availability、Dispatchable、Receive_Mode（唤醒方式，与 §10.3 三种传输方式对应：`event`＝ws 长连接事件 / `poll` 轮询 / `automation`＝webhook 通知（飞书自动化 POST）。`automation` 只用于协议接入型节点，其端点由对方平台托管；守护进程型节点只取 `event` 或 `poll`，本标准的实现不开监听端口。表中另有遗留选项 `webhook`，不再赋予含义，登记一律用 `automation`）。
 
 路由规则不变：只接自己登记且 Dispatchable=Yes 的能力；表外任务置 rejected＋notice 说明缺口。
 
@@ -189,11 +190,19 @@
 - 通知只报「哪个任务、什么新状态、哪条新消息」，内容由接收方回表拉全量（沿 A2A Push 语义）。
 - **结果呈递原路落盘唤醒 Agent，飞书端只发审批卡**：
   - 飞书端只由 `role=hub` 发送 `auth-required` 交互式审批卡（以及可选的 `stale` 告警），不再往飞书发送大段纯文本结果刷屏。
-  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`，并标记 `Presented="Yes"`。
+  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。
   - 特殊归属：`From_Node` 或 `Source` 为 `"hub"` 或 `"cron"`（定时任务）的任务，统一由 `role=hub` 的主节点收入其 `present_queue.jsonl`，交由主节点 Agent 汇报。
-- **呈递去重**按「任务＋当前 Status_Msg」即 (Task_ID, Status_Msg) 计，终态再带上 Status。同一任务每出现一条新的 question / auth_request 都是新的呈递项，答复续跑或批准后到达的终态结果也要再呈递一次。已呈递的 Msg_ID 记在 Tasks.Metadata；Presented 只表示该任务当前状态是否已呈递，不能单独作为去重依据。初次装机或初次启动时，若本地呈递状态不存在，自动以线上存量终态或已呈递任务建立装机水位线（Baseline），避免向本地队列倾倒全部历史已完成任务。
+- **呈递去重**按「任务＋当前 Status_Msg」即 (Task_ID, Status_Msg) 计，终态再带上 Status。同一任务每出现一条新的 question / auth_request 都是新的呈递项，答复续跑或批准后到达的终态结果也要再呈递一次。已呈递的 Msg_ID 记在 Tasks.Metadata；Presented 列自 v3.5 起废弃（其信息与 presented_keys 重复），不再作为去重依据，代码切换后删列。对 Tasks.Metadata 的写入一律先读再合并（总线无 CAS，整段覆盖会互相吞键）。初次装机或初次启动时，若本地呈递状态不存在，自动以线上存量终态或已呈递任务建立装机水位线（Baseline），避免向本地队列倾倒全部历史已完成任务。
 
 ## 修订记录
+
+**v3.5（2026-11-07，字段瘦身与总线契约）**：原则：A2A 字段够用就不加扩展列；删改字段走「先改标准 → 通知节点停写 → 观察 → 快照 → 删列」的迁移顺序（本版首批删除在授权下先行落表，标准随即对齐，后续批次严格按序）。
+- 删除无消费者字段：Tasks.Worktree、AgentCards.Required_Assets / Tags / Examples、Messages.Metadata、Parts.Metadata（Parts 与 Messages 的 Metadata 从未被写入或读取；Tasks 与 AgentCards 的 Metadata 有真实消费者，不在此列）。
+- AgentCards 的 Modes 与 capabilities 三开关、Zone、Skill_Name 收拢进名片 Metadata 的 `a2a` 子对象（见 §6）；列保留至代码切换与一个登记周期观察后删除。Side_Effect 保留独立列。
+- Tasks.Presented 列废弃：呈递去重只认本地 present_state.json ＋线上 Tasks.Metadata.presented_keys（线上键保留，防本地状态丢失后历史回执重放）；Tasks.Metadata 写入一律先读再合并（见 §10.2）。
+- doctor 新增总线契约检查：schema 与标准声明的字段、代码实际写入的选项值必须在线上登记，缺列缺选项在装机自检阶段即报出（针对 2026-11-07 两次「代码写了 Base 没有的列」瘫痪）。
+- `lah task create` 新增 `--idempotency-key`：调用方传入原值时节点侧重复拒收才可命中；此前 CLI 恒生成随机键，幂等只在手工落单路径成立。
+- schema 生成改为忠实快照：不再手工过滤选项，default_value 非空时如实记录；选项污染在 Base 本体清洗。
 
 **v3.4.1（2026-11-07，AgentCards.Metadata、建单拒派与派生会话）**：
 - §6 增加 AgentCards.Metadata：A2A 原生自由字段，文本，存 JSON 字符串；内核登记时写入 `kind` 与 `mode`，手工名片与旧名片可留空。表结构因此新增一列；线上 Base 加列后重新生成 schema，不手改生成物。
