@@ -155,22 +155,34 @@ export class StaleService {
       }
     }
     if (!initiator) initiator = String(f1(fresh, "Source") ?? "").trim() || "hub";
-    const msgId = `MSG-${taskId.replace("TASK-", "")}-${String(maxSeq + 1).padStart(2, "0")}`;
     const noticeText = [
       `【陈旧回收】任务在 ${target} 的心跳已停止：超过 ${STALE_MIN} 分钟无心跳时枢纽已告警，`,
       `${STALE_GRACE_MIN} 分钟宽限内仍未恢复。枢纽已将任务置 failed 并回收认领、关账未结束的 Run。`,
       "原节点若事后恢复，其迟到回执将按终态守卫处理；需要重跑请按同一 Context_ID 新建任务。",
     ].join("");
-    const createdMsg = await this.bus.createRecord(this.bus.tables.messages, {
-      Msg_ID: msgId, Task_ID: taskId, Context_ID: f1(fresh, "Context_ID"),
-      From_Node: "hub", To_Node: initiator, Role: "agent", Kind: "notice",
-      Artifact_Ref: "", In_Reply_To: "", Created_At: nowIso(),
-    });
-    if (!createdMsg?.record_id) throw new Error("notice 消息写入失败");
-    await this.bus.createRecord(this.bus.tables.parts, {
-      Part_ID: `${msgId}-P1`, Parent_ID: msgId, Parent_Type: "message",
-      Seq: 1, Kind: "text", Text: noticeText, File_URI: "", File_Name: "", Mime_Type: "", Data: "",
-    });
+    // 上一轮回收若在写完 notice 后中断，重试时复用那条 notice 而不是再写一条：
+    // Messages 只追加，多余的回收说明会让呈递与审计都变脏。
+    const existing = messages.find((m) => f1(m, "Kind") === "notice" && String(f1(m, "From_Node") ?? "") === "hub");
+    let msgId = existing ? String(f1(existing, "Msg_ID") ?? "") : "";
+    if (!msgId) {
+      msgId = `MSG-${taskId.replace("TASK-", "")}-${String(maxSeq + 1).padStart(2, "0")}`;
+      const createdMsg = await this.bus.createRecord(this.bus.tables.messages, {
+        Msg_ID: msgId, Task_ID: taskId, Context_ID: f1(fresh, "Context_ID"),
+        From_Node: "hub", To_Node: initiator, Role: "agent", Kind: "notice",
+        Artifact_Ref: "", In_Reply_To: "", Created_At: nowIso(),
+      });
+      // createRecord 回的是飞书原始响应，record_id 在 record 里（与 kernel._asRow 同口径）。
+      const newId = createdMsg?.record?.record_id || createdMsg?.record_id || "";
+      if (!newId) throw new Error("notice 消息写入失败");
+    }
+    const parts = (await this.bus.listRecords(this.bus.tables.parts))
+      .filter((p) => String(f1(p, "Parent_ID") ?? "") === msgId);
+    if (!parts.some((p) => String(f1(p, "Part_ID") ?? "") === `${msgId}-P1`)) {
+      await this.bus.createRecord(this.bus.tables.parts, {
+        Part_ID: `${msgId}-P1`, Parent_ID: msgId, Parent_Type: "message",
+        Seq: 1, Kind: "text", Text: noticeText, File_URI: "", File_Name: "", Mime_Type: "", Data: "",
+      });
+    }
     const runs = await this.bus.listRecords(this.bus.tables.runs);
     for (const run of runs) {
       if (String(f1(run, "Task_Ref") ?? "") !== taskId) continue;
@@ -292,20 +304,26 @@ export class StaleService {
       }
     }
     // 回收不依赖机主 open_id：告警发过（或旧状态已有记录）且宽限届满就执行。
+    // 成功才清告警记录；失败保留记录与原计时，下一轮 scan 直接重试（回收
+    // 本身对重复执行安全：复用已写的 notice、只关未结束的 Run）。
     let reclaimed = 0;
+    let reclaimFailed = false;
     for (const item of reclaimDue) {
       let ok = false;
       try {
         ok = await this.reclaim(item.task);
       } catch (e) {
-        this.log("陈旧回收失败 " + f1(item.task, "Task_ID") + "：" + (e?.message ?? e));
+        reclaimFailed = true;
+        this.log("陈旧回收失败 " + f1(item.task, "Task_ID") + "（保留告警记录，下一轮重试）：" + (e?.message ?? e));
       }
-      alerted.delete(item.key);
-      state.alerted = state.alerted.filter((k) => k !== item.key);
-      delete state.alertedAt[item.key];
-      if (ok) reclaimed += 1;
+      if (ok) {
+        alerted.delete(item.key);
+        state.alerted = state.alerted.filter((k) => k !== item.key);
+        delete state.alertedAt[item.key];
+        reclaimed += 1;
+      }
     }
-    if (sent || seenDirty || reclaimed || reclaimDue.length) {
+    if (sent || seenDirty || reclaimed || reclaimFailed) {
       try { writeState(this.statePath, state); } catch (e) {
         this.log("stale_state.json 写失败，告警可能在下一轮重发：" + (e?.message ?? e));
       }
