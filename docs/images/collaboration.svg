@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 284" role="img" aria-labelledby="t">
+<title id="t">一次真实协作：拆题、并行、接力、汇总</title>
+<defs>
+<style>
+svg{--bg:#faf9f5;--ink:#1d1c19;--muted:#6e6b64;--line:#d6d3cb;--card:#fff;--item:#f4f2ec;--accent:#c2491d}
+@media (prefers-color-scheme:dark){svg{--bg:#151412;--ink:#f1efe9;--muted:#a29e95;--line:#45433d;--card:#1e1d1a;--item:#262420;--accent:#ef8a62}}
+text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;font-size:14px;fill:var(--ink)}
+.h2{font-size:17px;font-weight:600}
+.s{font-size:12.5px;fill:var(--muted)}
+.bg{fill:var(--bg)}
+.plug{fill:var(--card);stroke:var(--muted);stroke-width:1.3;stroke-dasharray:6 5}
+.item{fill:var(--item);stroke:var(--line)}
+.sn{font-size:15.5px;font-weight:700}
+.sd{font-size:12px;fill:var(--muted)}
+.badge{fill:var(--accent)}
+.n{font-size:12.5px;font-weight:700;fill:var(--bg)}
+.flow{fill:none;stroke:var(--muted);stroke-width:1.5;marker-end:url(#b)}
+</style>
+<marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker>
+</defs>
+<rect class="bg" x="0" y="0" width="960" height="284" rx="18"/>
+
+<rect class="plug" x="22" y="22" width="916" height="240" rx="14"/>
+<text x="40" y="58" class="h2">一次真实协作</text>
+<text x="152" y="58" class="s">2026-11-08 实测：hub 拆题，两节点并行，第三个任务接力核对</text>
+
+<rect class="item" x="40" y="84" width="200" height="110" rx="10"/>
+<circle class="badge" cx="64" cy="84" r="12"/>
+<text x="64" y="88.5" class="n" text-anchor="middle">1</text>
+<text x="64" y="122" class="sn">拆题</text>
+<text x="64" y="146" class="sd">hub 把大问题拆成</text>
+<text x="64" y="166" class="sd">可独立派发的子任务</text>
+
+<path class="flow" d="M242 139H258"/>
+
+<rect class="item" x="262" y="84" width="200" height="110" rx="10"/>
+<circle class="badge" cx="286" cy="84" r="12"/>
+<text x="286" y="88.5" class="n" text-anchor="middle">2</text>
+<text x="286" y="122" class="sn">并行执行</text>
+<text x="286" y="146" class="sd">家用 Mac 自检本机</text>
+<text x="286" y="166" class="sd">云端 bot 同步查文档</text>
+
+<path class="flow" d="M464 139H480"/>
+
+<rect class="item" x="484" y="84" width="200" height="110" rx="10"/>
+<circle class="badge" cx="508" cy="84" r="12"/>
+<text x="508" y="88.5" class="n" text-anchor="middle">3</text>
+<text x="508" y="122" class="sn">接力核对</text>
+<text x="508" y="146" class="sd">第三个任务拿着结论</text>
+<text x="508" y="166" class="sd">去另一节点交叉验证</text>
+
+<path class="flow" d="M686 139H702"/>
+
+<rect class="item" x="706" y="84" width="200" height="110" rx="10"/>
+<circle class="badge" cx="730" cy="84" r="12"/>
+<text x="730" y="88.5" class="n" text-anchor="middle">4</text>
+<text x="730" y="122" class="sn">原路呈递</text>
+<text x="730" y="146" class="sd">结果回 hub 汇总</text>
+<text x="730" y="166" class="sd">沿原路送到机主手边</text>
+
+<text x="480" y="234" class="s" text-anchor="middle">全程零人工干预 · 每一步都在表里留痕可查</text>
+</svg>

@@ -41,7 +41,7 @@ Running in production. The data model comes from the [A2A protocol](https://a2a-
 
 ## How it works
 
-![Architecture: every agent reads and writes one Lark Bitable](docs/images/architecture.png)
+![Architecture: every agent reads and writes one Lark Bitable](docs/images/architecture.svg)
 
 <details>
 <summary>Precise diagram (Mermaid source)</summary>
@@ -70,7 +70,7 @@ Every participant (node, hub, cloud bot) does two things: **read the table, writ
 
 A task's lifecycle:
 
-![Task lifecycle: eight states, fully auditable](docs/images/lifecycle.png)
+![Task lifecycle: eight states, fully auditable](docs/images/lifecycle.svg)
 
 <details>
 <summary>Precise state diagram (Mermaid source)</summary>
@@ -100,7 +100,7 @@ stateDiagram-v2
 
 One real cross-node collaboration, as measured: the hub splits a problem, two nodes work in parallel, a third node cross-checks the findings, and results return to the owner along the original route:
 
-![Cross-node collaboration: split, parallel, relay, summarize](docs/images/collaboration.png)
+![Cross-node collaboration: split, parallel, relay, summarize](docs/images/collaboration.svg)
 
 ## Quick start
 
