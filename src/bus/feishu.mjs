@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 // 总线后端：飞书多维表格（一号后端）。
 // 只做三件事：拿 tenant token、读写记录、扛住同表并发写冲突（1254291）与限流重试。
-// 零依赖：用 Node >= 20 的全局 fetch。
+// 零依赖：用 Node >= 24 的全局 fetch。
 
 const API = "https://open.feishu.cn/open-apis";
 

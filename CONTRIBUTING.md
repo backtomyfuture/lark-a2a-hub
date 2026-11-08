@@ -2,10 +2,10 @@
 
 ## 仓库结构速览
 
-- `bin/` `src/`：守护进程与适配器（Node >= 20，唯一运行时依赖是飞书官方 SDK；由 `hub-node daemon --role node|hub` 承载 node 与 hub 两种逻辑角色，hub 角色代码在 `src/hub/`）。
+- `bin/` `src/`：守护进程与适配器（Node >= 24，唯一运行时依赖是飞书官方 SDK；由 `hub-node daemon --role node|hub` 承载 node 与 hub 两种逻辑角色，hub 角色代码在 `src/hub/`）。
 - `docs/`：规范性文档。**`docs/standard.md` 是标准**，实现与标准冲突时
   先改标准、再改实现，并在 CHANGELOG 记一笔。
-- `schema/`：Base 结构快照与生成器 `generate_schema.mjs`（Node >= 20，全局 `fetch`）。
+- `schema/`：Base 结构快照与生成器 `generate_schema.mjs`（Node >= 24，全局 `fetch`）。
 
 ## 改动纪律
 
@@ -24,7 +24,7 @@
 
 ## 测试
 
-- 怎么跑：在仓库根目录执行 `npm test`。脚本是 `node --test tests/*.test.mjs`，由 shell 展开文件列表，Node 20 与 22 都把具体文件交给内置测试运行器。只用 `node:test` 和 `node:assert`，不要加 Jest、Mocha、Vitest 或任何第三方断言库，也不要加 devDependencies。
+- 怎么跑：在仓库根目录执行 `npm test`。脚本是 `node --test tests/*.test.mjs`，由 shell 展开文件列表，Node 24 把具体文件交给内置测试运行器。只用 `node:test` 和 `node:assert`，不要加 Jest、Mocha、Vitest 或任何第三方断言库，也不要加 devDependencies。
 - 隔离红线：测试不准连接真实飞书 Base，不准读 `~/.hub-node`，不准依赖环境变量里的凭据。状态写在 `os.tmpdir()` 的临时目录里，用例结束要删掉。测试不准留下子进程；会拉起的命令用 `node -e`，并等它退出。
 - 新功能随带测试：行为变化要带上对应的 `tests/*.test.mjs`。每条测试用注释写明它守的红线。生产代码只为了可注入增加 export，或极小的依赖注入。
 

@@ -5,6 +5,8 @@
 
 ## [未发布]
 
+- **运行时口径对齐 Node 24**：测试基线（tests/）在 Node 20/22 下有 12 个端到端用例被测试运行器取消（Node 24 下 78/78 通过），CI 自测试落地起即为红。经机主拍板，支持口径收窄为 Node >= 24：CI 矩阵改为 Node 24、package.json engines、install.sh 与 doctor 的版本门、README 徽章与 CONTRIBUTING / AGENTS.md 同步。
+
 - **新增 `lah update`**：一条命令自更新程序本体——git pull（--ff-only）、依赖重装、`~/.local/bin` 软链补齐、`~/.agents/skills/lah` Skill 重拷，与重跑 install.sh 的更新分支等价，但绝不碰配置目录。`lah update --check` 只 fetch 并比对远端提交数，不落盘；`--skip-skill` / `LAH_SKIP_SKILL=1` 跳过 Skill 更新。只支持 git 检出（install.sh 装出来的就是），tarball 安装与 detached HEAD 报错指路；发现 daemon 仍在运行时提示重启后生效，不强杀。更新后 README / install.sh 注释同步指路。
 
 ## [0.6.3] - 2026-11-08（中台标准 v3.5.7：执行账本、审批提前发卡、task cancel、later 与测试基线）

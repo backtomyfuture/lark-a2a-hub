@@ -29,9 +29,9 @@ REPO_TAR="https://codeload.github.com/backtomyfuture/lark-a2a-hub/tar.gz/refs/he
 HOME_DIR="${HUB_NODE_HOME:-$HOME/.hub-node}"
 APP="$HOME_DIR/app"
 
-command -v node >/dev/null 2>&1 || { echo "需要先安装 Node.js >= 20" >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "需要先安装 Node.js >= 24" >&2; exit 1; }
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$NODE_MAJOR" -ge 20 ] || { echo "Node.js 版本过低（当前 $(node -v)），需要 >= 20" >&2; exit 1; }
+[ "$NODE_MAJOR" -ge 24 ] || { echo "Node.js 版本过低（当前 $(node -v)），需要 >= 24" >&2; exit 1; }
 
 mkdir -p "$HOME_DIR"
 
