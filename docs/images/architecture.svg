@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" role="img" aria-labelledby="t">
+<title id="t">lark-a2a-hub 架构图：所有 Agent 只读写同一张飞书多维表格</title>
+<defs>
+<style>
+svg{--bg:#faf9f5;--ink:#1d1c19;--muted:#6e6b64;--line:#d6d3cb;--card:#fff;--item:#f4f2ec;--accent:#c2491d;--core:#1d1c19;--core-ink:#faf9f5;--core-duty:#33302a;--core-chip:#282621;--core-line:#423f38;--core-sub:#b9b5ab;--core-accent:#ef8a62;--tag-bg:#3d261c;--tag-ink:#ffb08e;--you-bg:#fff4ee}
+@media (prefers-color-scheme:dark){svg{--bg:#151412;--ink:#f1efe9;--muted:#a29e95;--line:#45433d;--card:#1e1d1a;--item:#262420;--accent:#ef8a62;--core:#f1efe9;--core-ink:#1d1c19;--core-duty:#dedad0;--core-chip:#e6e3da;--core-line:#cac5b9;--core-sub:#57544d;--core-accent:#c2491d;--tag-bg:#f8dfd3;--tag-ink:#a83810;--you-bg:#2a1f1a}}
+text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;font-size:14px;fill:var(--ink)}
+.h2{font-size:17px;font-weight:600}
+.s{font-size:12.5px;fill:var(--muted)}
+.r{font-size:13.5px}
+.l{font-size:13.5px;font-weight:600;fill:var(--accent)}
+.bg{fill:var(--bg)}
+.plug{fill:var(--card);stroke:var(--muted);stroke-width:1.3;stroke-dasharray:6 5}
+.item{fill:var(--item);stroke:var(--line)}
+.more{fill:none;stroke:var(--line);stroke-dasharray:4 4}
+.dot{fill:var(--muted)}
+.core{fill:var(--core);stroke:var(--core-accent);stroke-width:2}
+.duty{fill:var(--core-duty);stroke:var(--core-line)}
+.chip{fill:var(--core-chip)}
+.tag{fill:var(--tag-bg);stroke:var(--core-accent);stroke-width:1}
+.ct{font-size:22px;font-weight:700;fill:var(--core-ink)}
+.cs{font-size:12px;fill:var(--core-sub)}
+.cn{font-size:14.5px;font-weight:600;fill:var(--core-ink)}
+.cd{font-size:12px;fill:var(--core-sub)}
+.tn{font-size:12.5px;font-weight:700;fill:var(--tag-ink)}
+.td{font-size:11.8px;fill:var(--core-ink)}
+.you{fill:var(--you-bg);stroke:var(--accent);stroke-width:2.4}
+.you-t{font-size:20px;font-weight:700;fill:var(--accent)}
+.you-s{font-size:13px;font-weight:600;fill:var(--ink)}
+.badge{fill:var(--accent)}
+.n{font-size:12.5px;font-weight:700;fill:var(--bg)}
+.conn{fill:none;stroke:var(--accent);stroke-width:2.1;marker-end:url(#a)}
+.both{fill:none;stroke:var(--accent);stroke-width:1.8;marker-start:url(#a);marker-end:url(#a)}
+.pill{fill:var(--you-bg);stroke:var(--accent);stroke-width:1.4}
+.pill-t{font-size:13px;font-weight:600;fill:var(--accent)}
+</style>
+<marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" style="fill:var(--accent)"/></marker>
+</defs>
+<rect class="bg" x="0" y="0" width="960" height="640" rx="18"/>
+
+<!-- 顶部主张 -->
+<rect class="pill" x="290" y="14" width="380" height="30" rx="15"/>
+<text x="480" y="34" class="pill-t" text-anchor="middle">所有参与者只做两件事：读表、写表</text>
+
+<!-- 左：发起方 -->
+<rect class="plug" x="22" y="64" width="170" height="340" rx="14"/>
+<text x="38" y="96" class="h2">发起方</text>
+<text x="38" y="117" class="s">把活说清楚就行</text>
+<rect class="item" x="36" y="138" width="142" height="36" rx="8"/>
+<text x="107" y="161" class="r" text-anchor="middle">你 · 终端 lah</text>
+<rect class="item" x="36" y="184" width="142" height="36" rx="8"/>
+<text x="107" y="207" class="r" text-anchor="middle">任意 Agent</text>
+<rect class="item" x="36" y="230" width="142" height="36" rx="8"/>
+<text x="107" y="253" class="r" text-anchor="middle">定时计划（Rules）</text>
+<rect class="more" x="36" y="282" width="142" height="32" rx="8"/>
+<circle class="dot" cx="95" cy="298" r="2.4"/>
+<circle class="dot" cx="107" cy="298" r="2.4"/>
+<circle class="dot" cx="119" cy="298" r="2.4"/>
+
+<!-- 1: 建单 -->
+<path class="conn" d="M194 226H242"/>
+<circle class="badge" cx="218" cy="203" r="12"/>
+<text x="218" y="207.5" class="n" text-anchor="middle">1</text>
+<text x="218" y="246" class="l" text-anchor="middle">建单</text>
+
+<!-- 中：飞书多维表格总线 -->
+<rect class="core" x="246" y="64" width="424" height="340" rx="22"/>
+<text x="268" y="100" class="ct">飞书多维表格总线</text>
+<text x="648" y="98" class="cs" text-anchor="end">唯一事实来源</text>
+
+<rect class="duty" x="264" y="114" width="388" height="52" rx="10"/>
+<text x="458" y="137" class="cn" text-anchor="middle">任务的全生命周期只认表里这一行</text>
+<text x="458" y="156" class="cd" text-anchor="middle">事件只是门铃，内容一律回表拉取——断线、重启都不丢活</text>
+
+<rect class="chip" x="264" y="178" width="388" height="38" rx="9"/>
+<rect class="tag" x="272" y="184" width="128" height="26" rx="6"/>
+<text x="336" y="201.5" class="tn" text-anchor="middle">Tasks</text>
+<text x="412" y="201.5" class="td">任务与八种状态，认领、心跳、终局都在这一行</text>
+
+<rect class="chip" x="264" y="224" width="388" height="38" rx="9"/>
+<rect class="tag" x="272" y="230" width="128" height="26" rx="6"/>
+<text x="336" y="247.5" class="tn" text-anchor="middle">Messages · Parts</text>
+<text x="412" y="247.5" class="td">指令与数据分离，内容块独立成表、防注入</text>
+
+<rect class="chip" x="264" y="270" width="388" height="38" rx="9"/>
+<rect class="tag" x="272" y="276" width="128" height="26" rx="6"/>
+<text x="336" y="293.5" class="tn" text-anchor="middle">Runs · Artifacts</text>
+<text x="412" y="293.5" class="td">每次执行的台账与产物，大成果不塞回执</text>
+
+<rect class="chip" x="264" y="316" width="388" height="38" rx="9"/>
+<rect class="tag" x="272" y="322" width="128" height="26" rx="6"/>
+<text x="336" y="339.5" class="tn" text-anchor="middle">AgentCards</text>
+<text x="412" y="339.5" class="td">能力名片：谁在线、会干什么、用什么模型</text>
+
+<rect class="chip" x="264" y="362" width="388" height="38" rx="9"/>
+<rect class="tag" x="272" y="368" width="128" height="26" rx="6"/>
+<text x="336" y="385.5" class="tn" text-anchor="middle">Rules</text>
+<text x="412" y="385.5" class="td">路由规则与定时计划，调度也走表</text>
+
+<!-- 2 & 3: 认领与回写 -->
+<path class="conn" d="M672 190H712"/>
+<circle class="badge" cx="692" cy="167" r="12"/>
+<text x="692" y="171.5" class="n" text-anchor="middle">2</text>
+<text x="692" y="210" class="l" text-anchor="middle">认领</text>
+
+<path class="conn" d="M712 266H672"/>
+<circle class="badge" cx="692" cy="243" r="12"/>
+<text x="692" y="247.5" class="n" text-anchor="middle">3</text>
+<text x="692" y="286" class="l" text-anchor="middle">回写</text>
+
+<!-- 右：执行节点 -->
+<rect class="plug" x="716" y="64" width="222" height="340" rx="14"/>
+<text x="732" y="96" class="h2">执行节点</text>
+<text x="732" y="117" class="s">认领任务、干完回写</text>
+<rect class="item" x="730" y="138" width="194" height="36" rx="8"/>
+<text x="827" y="161" class="r" text-anchor="middle">家用 Mac · agy / paseo</text>
+<rect class="item" x="730" y="184" width="194" height="36" rx="8"/>
+<text x="827" y="207" class="r" text-anchor="middle">工作机 · agy / paseo / ops</text>
+<rect class="item" x="730" y="230" width="194" height="36" rx="8"/>
+<text x="827" y="253" class="r" text-anchor="middle">云端 bot（协议接入）</text>
+<rect class="item" x="730" y="276" width="194" height="36" rx="8"/>
+<text x="827" y="299" class="r" text-anchor="middle">WorkBuddy（协议接入）</text>
+<rect class="more" x="730" y="322" width="194" height="32" rx="8"/>
+<circle class="dot" cx="815" cy="338" r="2.4"/>
+<circle class="dot" cx="827" cy="338" r="2.4"/>
+<circle class="dot" cx="839" cy="338" r="2.4"/>
+
+<!-- 4: 待批 / 结果 / 告警 -->
+<path class="conn" d="M458 406V460"/>
+<circle class="badge" cx="458" cy="433" r="12"/>
+<text x="458" y="437.5" class="n" text-anchor="middle">4</text>
+<text x="478" y="438" class="l">待批 · 结果 · 告警</text>
+
+<!-- 下：hub 与机主 -->
+<rect class="you" x="22" y="464" width="170" height="104" rx="26"/>
+<text x="107" y="508" class="you-t" text-anchor="middle">机主</text>
+<text x="107" y="532" class="you-s" text-anchor="middle">只管拍板</text>
+
+<path class="both" d="M194 516H242"/>
+<circle class="badge" cx="218" cy="490" r="12"/>
+<text x="218" y="494.5" class="n" text-anchor="middle">5</text>
+<text x="218" y="540" class="l" text-anchor="middle">拍板</text>
+
+<rect class="plug" x="246" y="464" width="692" height="104" rx="14"/>
+<text x="266" y="492" class="h2">hub（枢纽）</text>
+<text x="392" y="492" class="s">审批、呈递、回收、调度都在这里</text>
+<rect class="item" x="266" y="510" width="158" height="36" rx="8"/>
+<text x="345" y="533" class="r" text-anchor="middle">审批交互卡</text>
+<rect class="item" x="434" y="510" width="158" height="36" rx="8"/>
+<text x="513" y="533" class="r" text-anchor="middle">结果原路呈递</text>
+<rect class="item" x="602" y="510" width="158" height="36" rx="8"/>
+<text x="681" y="533" class="r" text-anchor="middle">陈旧任务回收</text>
+<rect class="item" x="770" y="510" width="158" height="36" rx="8"/>
+<text x="849" y="533" class="r" text-anchor="middle">定时调度建单</text>
+
+<text x="480" y="606" class="s" text-anchor="middle">节点、hub、云端 bot 都是可替换的进程；表在，活就不丢。</text>
+</svg>

@@ -39,7 +39,7 @@ lark-a2a-hub 的做法是：**不搭服务端，用你已有的飞书多维表�
 
 ## 它怎么工作
 
-![架构总览：所有 Agent 只读写同一张飞书多维表格](docs/images/architecture.png)
+![架构总览：所有 Agent 只读写同一张飞书多维表格](docs/images/architecture.svg)
 
 <details>
 <summary>精确结构图（Mermaid）</summary>
@@ -68,7 +68,7 @@ flowchart LR
 
 一个任务的生命周期：
 
-![任务生命周期：八种状态，全程留痕](docs/images/lifecycle.png)
+![任务生命周期：八种状态，全程留痕](docs/images/lifecycle.svg)
 
 <details>
 <summary>精确状态图（Mermaid）</summary>
@@ -98,7 +98,7 @@ stateDiagram-v2
 
 实测中的一次跨节点协作——hub 拆题、双节点并行、第三个节点拿结论接力核对、结果原路呈递机主：
 
-![跨节点协作：拆题、并行、接力、汇总](docs/images/collaboration.png)
+![跨节点协作：拆题、并行、接力、汇总](docs/images/collaboration.svg)
 
 ## 30 秒上手
 
