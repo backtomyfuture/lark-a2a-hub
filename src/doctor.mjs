@@ -5,7 +5,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { execViaCarrier, pingCarrier } from "./carrier.mjs";
@@ -13,6 +14,7 @@ import { execViaCarrier, pingCarrier } from "./carrier.mjs";
 const ok = (msg) => console.log("  ✓ " + msg);
 const bad = (msg) => console.log("  ✗ " + msg);
 const info = (msg) => console.log("  · " + msg);
+const execFileAsync = promisify(execFile);
 
 // ping 只证明本机 unix socket 上有 carrier 在听。DESIGN §9 注记④：长驻进程的
 // 局域网裸 TCP 仍可能失败，所以默认报告必须把「socket 在线」和「目标可达」拆开。
@@ -66,6 +68,160 @@ function getLarkVersion() {
   } catch {
     return null;
   }
+}
+
+// 模板检查只认词法 token。子串会误伤：-p 是 --print 的子串。
+function commandTokens(command) {
+  return String(command).trim().split(/\s+/).filter(Boolean);
+}
+
+function hasFlag(tokens, flag) {
+  for (const token of tokens) {
+    if (token === flag) return true;
+    if (flag.startsWith("--") && token.startsWith(`${flag}=`)) return true;
+  }
+  return false;
+}
+
+// 同一旗标多次出现时取最后一次，与 CLI 覆盖语义一致。没有该旗标返回 null。
+function lastFlagValue(tokens, flag) {
+  let value = null;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === flag) {
+      const next = tokens[i + 1];
+      value = next != null && !next.startsWith("-") ? next : "";
+    } else if (token.startsWith(`${flag}=`)) {
+      value = token.slice(flag.length + 1);
+    }
+  }
+  return value;
+}
+
+function isPaseoRun(bin, tokens) {
+  if (bin !== "paseo") return false;
+  // 本机是 agent run；较新版本命令名是 run。两条都不带 provider 就会缺执行主体。
+  if (tokens[1] === "run") return true;
+  return tokens[1] === "agent" && tokens[2] === "run";
+}
+
+function stripAnsi(text) {
+  return String(text).replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+// 本机 `paseo provider models` 打表格，首列是 ID。表头和分隔线不是模型。
+function parsePaseoModelIds(text) {
+  const ids = new Set();
+  for (const line of stripAnsi(text).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^[-+|=\s]+$/.test(trimmed)) continue;
+    const id = trimmed.split(/\s+/)[0];
+    if (!id || id.toLowerCase() === "id") continue;
+    ids.add(id);
+  }
+  return ids;
+}
+
+// 只跑固定命令，参数来自模板里的 provider 名，绝不执行用户模板（指令与数据分离）。
+// 同一 provider 只探一次：一张命令表里常有多条钉同一家模型。
+async function probePaseoModels(provider, cache) {
+  if (cache.has(provider)) return cache.get(provider);
+  let result;
+  try {
+    const { stdout } = await execFileAsync("paseo", ["provider", "models", provider], {
+      encoding: "utf8",
+      timeout: 10000,
+      env: { ...process.env, PATH: richPath() },
+    });
+    result = { ok: true, ids: parsePaseoModelIds(stdout) };
+  } catch {
+    result = { ok: false, ids: new Set() };
+  }
+  cache.set(provider, result);
+  return result;
+}
+
+// 只看键在不在。文件缺失或解析失败都按「没有」；内容是本机许可策略，不打印。
+function readAgyPermissionsAllow() {
+  const home = process.env.HOME || os.homedir();
+  const file = path.join(home, ".gemini", "antigravity-cli", "settings.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    const permissions = parsed?.permissions;
+    if (!permissions || typeof permissions !== "object") return false;
+    return Object.prototype.hasOwnProperty.call(permissions, "allow");
+  } catch {
+    return false;
+  }
+}
+
+async function auditAgentTemplates(cmds) {
+  let problems = 0;
+  let agyAllow;
+  const modelCache = new Map();
+  const agyAllows = () => {
+    if (agyAllow === undefined) agyAllow = readAgyPermissionsAllow();
+    return agyAllow;
+  };
+  for (const [name, entry] of Object.entries(cmds)) {
+    if (!entry || typeof entry !== "object" || typeof entry.command !== "string") continue;
+    const tokens = commandTokens(entry.command);
+    if (!tokens.length) continue;
+    const bin = path.basename(tokens[0]);
+    if (isPaseoRun(bin, tokens)) {
+      const spec = lastFlagValue(tokens, "--provider");
+      if (spec == null || spec === "") {
+        bad(`能力 ${name}：paseo 模板未带 --provider，没有默认执行主体，运行必失败`);
+        problems++;
+        continue;
+      }
+      const slash = spec.indexOf("/");
+      const provider = (slash === -1 ? spec : spec.slice(0, slash)).trim();
+      const model = (slash === -1 ? "" : spec.slice(slash + 1)).trim();
+      if (!provider) {
+        bad(`能力 ${name}：paseo 的 --provider 没有 provider 名，运行必失败`);
+        problems++;
+        continue;
+      }
+      // 只钉了 provider、没钉 model 时无从核验 slug，不探针。
+      if (!model) continue;
+      const probed = await probePaseoModels(provider, modelCache);
+      if (!probed.ok) {
+        info(`能力 ${name}：paseo provider models ${provider} 探针失败，跳过模型在册核验`);
+        continue;
+      }
+      if (!probed.ids.has(model)) {
+        bad(`能力 ${name}：paseo 钉了模型 ${model}，不在 paseo provider models ${provider} 的在册 ID 中`);
+        problems++;
+      }
+      continue;
+    }
+    if (bin === "agy" && (hasFlag(tokens, "--print") || hasFlag(tokens, "-p")) && !hasFlag(tokens, "--dangerously-skip-permissions")) {
+      if (!agyAllows()) {
+        info(`能力 ${name}：agy 有 --print/-p 但无 --dangerously-skip-permissions，且本机 antigravity settings 没有 permissions.allow，存在 soft-deny 假成功风险`);
+      }
+      continue;
+    }
+    if (
+      bin === "claude"
+      && (hasFlag(tokens, "-p") || hasFlag(tokens, "--print"))
+      && !hasFlag(tokens, "--dangerously-skip-permissions")
+      && !hasFlag(tokens, "--permission-mode")
+      && !hasFlag(tokens, "--allowedTools")
+      && !hasFlag(tokens, "--allowed-tools")
+    ) {
+      info(`能力 ${name}：claude -p 未带 --dangerously-skip-permissions / --permission-mode / --allowedTools，无头权限未显式处理`);
+      continue;
+    }
+    if (bin === "gemini" && (hasFlag(tokens, "-p") || hasFlag(tokens, "--print")) && !hasFlag(tokens, "--approval-mode")) {
+      info(`能力 ${name}：gemini -p 未带 --approval-mode，无头权限未显式处理`);
+      continue;
+    }
+    if (bin === "codex" && tokens[1] === "exec" && !hasFlag(tokens, "-s") && !hasFlag(tokens, "--sandbox")) {
+      info(`能力 ${name}：codex exec 未带 -s/--sandbox，默认只读档，写类任务会失败`);
+    }
+  }
+  return problems;
 }
 
 export async function checkAppEventSubscribed(bus, appId, eventType = "drive.file.bitable_record_changed_v1") {
@@ -300,6 +456,7 @@ export async function doctor(configDir, appDir, opts = {}) {
       for (const [name, entry] of Object.entries(cmds)) {
         if (!entry.command && entry.mode !== "inbox") { bad(`能力 ${name} 缺 command 模板`); problems++; }
       }
+      problems += await auditAgentTemplates(cmds);
     } else if (role === "hub") {
       info("未配置 commands.json（hub 仍可承担审批/呈递，但不会认领干活任务）");
     } else {

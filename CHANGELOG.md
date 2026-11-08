@@ -1,12 +1,20 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.5.1）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.5.3）。
 
 ## [Unreleased]
 
 - **定时调度（标准 v3.5.2）**：hub 新增全网唯一的时钟。Rules 表加 `Schedule` / `Text` / `Last_Fired` 三列兼作计划表：`Enabled=Yes` 且 `Schedule`（五段 cron）非空的行即计划行，hub 每轮扫表顺带检查，到期经现行 `createTask` 建 Source=`cron` 的普通任务；只补最近一期，`Last_Fired` 水位线＋`sched:<Rule_ID>:<期次>` 幂等键双保险防重复；目标解析顺序为计划行 → 路由行 → 名片解析。节点侧零改动。
 - **陈旧回收（标准 v3.5.1）**：hub 的 stale 服务由「只告警」升级为两段式——working 心跳超时 20 分钟先告警（文案同步），告警后宽限 30 分钟，心跳恢复自动撤销告警；届满仍无心跳则由 hub 置 `failed` 回收：写 notice 原路通知发起方、关未结束的 Run、清认领。回收前回读再验状态与心跳防抢写；失败保留告警记录下一轮重试，notice 复用不叠写。submitted 无人认领仍只告警。
+
+## [0.6.1] - 2026-11-08（中台标准 v3.5.3：能力模板的执行主体与无头权限）
+
+- `lah setup` 的预置模板定版：claude 加 `--dangerously-skip-permissions`；codex 加 `--sandbox workspace-write`（默认只读，写类必失败）；agy 把 `--dangerously-skip-permissions` 放在 `--print` 之前（`--print` 会吞掉紧跟的参数）；gemini 用 `--approval-mode yolo` 且放在 `-p` 之前（`-y` / `--yolo` 已废弃）；amp 加 `--dangerously-allow-all`；droid 加 `--auto medium`；opencode 加 `--dangerously-skip-permissions`（参数名以目标机 `--help` 为准，较新版本可见的是 `--auto`，该名为旧名/隐藏别名）；paseo 默认 `--provider antigravity`。grok、hermes、cursor-agent、aider、orca 不动。
+- 交互安装且选中 paseo-agent 时再问默认 provider（默认 antigravity）与 model（可留空），写成 `--provider <p>` 或 `--provider <p>/<model>`。非交互保持模板默认。
+- `lah doctor` 检查 commands.json 模板：paseo 缺 `--provider` 计问题；钉了模型时用 `paseo provider models <provider>`（10 秒、按 provider 缓存、不执行用户模板）核验在册 ID，不在册计问题，探针失败只提示。agy / claude / gemini / codex 的无头权限或沙箱缺口只提示。
+- 新增 [docs/agent-templates.md](docs/agent-templates.md)。标准 §9 增加编排型默认执行主体与无头权限两条（v3.5.3）。示例 commands.json 的 agy 模板改为定版式。
+- 升级提示：已手工定版的节点不要重跑 `lah setup` 覆盖 `commands.json`（非交互重跑仍会按模板重写已装 agent 条目）。
 
 ## [0.6.0] - 2026-11-07（中台标准 v3.5：字段瘦身与总线契约）
 

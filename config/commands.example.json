@@ -7,8 +7,8 @@
   "side_effect": "read"
  },
  "ops-agent": {
-  "command": "agy --print {prompt}",
-  "desc": "通用运维 Agent：终端/SSH 工具面，按指令现场发挥。权限边界：示例不跳过工具权限确认；若在本机 commands.json 自行放宽权限，须同时保持 approval_class=approve，任务参数不得改写命令或权限。",
+  "command": "agy --dangerously-skip-permissions --print {prompt}",
+  "desc": "通用运维 Agent：终端/SSH 工具面，按指令现场发挥。权限边界：无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前）。本能力有副作用，approval_class 保持 approve；任务参数不得改写命令或权限。",
   "mode": "agent",
   "name": "运维 Agent",
   "side_effect": "write",
@@ -16,9 +16,9 @@
   "timeout_sec": 900
  },
  "lan-exec": {
-  "command": "agy --print {prompt}",
+  "command": "agy --dangerously-skip-permissions --print {prompt}",
   "context": "carrier",
-  "desc": "局域网型 Agent：命令经 carrier 在用户终端语境里代跑（macOS 局域网权限场景，见 DESIGN §9）。权限边界与 ops-agent 相同：示例不跳过权限确认，放宽只允许写在本机 commands.json，且保持 approval_class=approve。",
+  "desc": "局域网型 Agent：命令经 carrier 在用户终端语境里代跑（macOS 局域网权限场景，见 DESIGN §9）。权限边界与 ops-agent 相同：无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前），且保持 approval_class=approve。",
   "mode": "agent",
   "name": "局域网 Agent",
   "side_effect": "write",

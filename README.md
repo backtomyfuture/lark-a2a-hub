@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.1-orange.svg)](CHANGELOG.md)
 
 [English](README.en.md) · [中台标准](docs/standard.md) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md)
 
@@ -28,6 +28,7 @@
 | Base 结构 | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | 七表字段级定义，由运行中的 Base 生成（附生成器） |
 | 枢纽对接 | [docs/hub-integration.md](docs/hub-integration.md) · `src/hub/` | 枢纽职责、建单纪律、呈递与审批回路；实现是 `lah daemon --role hub` |
 | 节点适配器 | 本仓库 `bin/` `src/` · [DESIGN.md](DESIGN.md) | 把任何终端变成执行节点：认领 → 拉起本机脚本/Agent → 收回执 → 落日志 |
+| 能力模板库 | [docs/agent-templates.md](docs/agent-templates.md) | 各家无头 CLI 定版命令、三类权限语义与已知坑 |
 | 协议接入 | [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | 无守护进程的 Agent 按手册盯表接入（同一套协议） |
 
 ```mermaid

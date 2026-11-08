@@ -557,42 +557,48 @@ const KNOWN_AGENTS = [
     bin: "claude",
     skill: "claude-agent",
     name: "Claude Code Agent",
-    cmdTemplate: (b) => `${b} -p {prompt}`,
+    // 无头 -p 会停在权限确认，没人点就卡住；跳过权限必须写进模板。
+    cmdTemplate: (b) => `${b} -p --dangerously-skip-permissions {prompt}`,
     desc: "以 Claude Code (claude) 为执行主体，带本机终端与文件工具面处理开发、排障与自动化任务",
   },
   {
     bin: "codex",
     skill: "codex-agent",
     name: "Codex Agent",
-    cmdTemplate: (b) => `${b} exec {prompt}`,
+    // 默认沙箱是只读档，写类任务必失败，所以模板钉 workspace-write。
+    cmdTemplate: (b) => `${b} exec --sandbox workspace-write {prompt}`,
     desc: "以 OpenAI Codex CLI (codex) 为执行主体，处理代码编写、终端排障与自动化任务",
   },
   {
     bin: "agy",
     skill: "agy-agent",
     name: "Antigravity Agent",
-    cmdTemplate: (b) => `${b} --print {prompt}`,
+    // --print 会把紧随其后的参数当成 prompt 吞掉，批准参数必须放在 --print 前面（本机实测）。
+    cmdTemplate: (b) => `${b} --dangerously-skip-permissions --print {prompt}`,
     desc: "以 Antigravity (agy) 为执行主体，带本机终端与工具面处理开放式开发与运维任务",
   },
   {
     bin: "gemini",
     skill: "gemini-agent",
     name: "Gemini Agent",
-    cmdTemplate: (b) => `${b} -p {prompt}`,
+    // 批准模式必须放在 -p 前面，否则 -p 会把后面的参数当成 prompt；-y / --yolo 已废弃。
+    cmdTemplate: (b) => `${b} --approval-mode yolo -p {prompt}`,
     desc: "以 Gemini CLI (gemini) 为执行主体，处理本地分析、脚本与开发任务",
   },
   {
     bin: "amp",
     skill: "amp-agent",
     name: "Amp Agent",
-    cmdTemplate: (b) => `${b} -x {prompt}`,
+    // 无头 -x 默认会停在权限确认，全批准开关写进模板。
+    cmdTemplate: (b) => `${b} --dangerously-allow-all -x {prompt}`,
     desc: "以 Sourcegraph Amp (amp) 为执行主体，处理代码分析、终端操作与工程任务",
   },
   {
     bin: "droid",
     skill: "droid-agent",
     name: "Factory Droid Agent",
-    cmdTemplate: (b) => `${b} exec {prompt}`,
+    // 分级自治取中档，避免默认停在确认，也不放到最高档。
+    cmdTemplate: (b) => `${b} exec --auto medium {prompt}`,
     desc: "以 Factory Droid (droid) 为执行主体，处理本地开发、重构与终端自动化任务",
   },
   {
@@ -620,7 +626,9 @@ const KNOWN_AGENTS = [
     bin: "opencode",
     skill: "opencode-agent",
     name: "OpenCode Agent",
-    cmdTemplate: (b) => `${b} run {prompt}`,
+    // 无头 run 需要显式放开权限。参数名有版本差异，以目标机 opencode --help 为准：
+    // 本机较新版本 --help 可见的是 --auto；--dangerously-skip-permissions 是旧名/隐藏别名。
+    cmdTemplate: (b) => `${b} run --dangerously-skip-permissions {prompt}`,
     desc: "以 OpenCode (opencode) 为执行主体，处理本地编程与自动化任务",
   },
   {
@@ -634,7 +642,9 @@ const KNOWN_AGENTS = [
     bin: "paseo",
     skill: "paseo-agent",
     name: "Paseo Agent",
-    cmdTemplate: (b) => `${b} agent run {prompt}`,
+    // 不写 --provider 时没有默认执行主体，运行必失败（mba/mini 两台因此集体翻车）。
+    // 非交互沿用 antigravity；交互模式在选中后再问，并回填这条命令。
+    cmdTemplate: (b) => paseoRunCommand(b),
     desc: "以 Paseo (paseo) 为执行主体，调度 Paseo 宿主或 Agent 执行复杂编排任务",
   },
   {
@@ -675,6 +685,40 @@ function buildAgentCommands(selectedAgents, existingCommands = {}) {
     result[a.skill] = a.entry;
   }
   return result;
+}
+
+// provider 空则 antigravity：paseo 没有默认执行主体时运行必失败。
+// model 空只写 --provider <p>；非空写成 --provider <p>/<model>，钉在节点本地模板里。
+export function formatPaseoProviderSpec(provider, model) {
+  const p = String(provider ?? "").trim() || "antigravity";
+  const m = String(model ?? "").trim();
+  return m ? `${p}/${m}` : p;
+}
+
+export function paseoRunCommand(binPath, provider, model) {
+  return `${binPath} agent run --provider ${formatPaseoProviderSpec(provider, model)} {prompt}`;
+}
+
+// 问题发生在「选了哪些 Agent」之后：没选 paseo 就不问。答案回填 command，
+// 不改 cmdTemplate 的一元形状（discover 时还没有用户答案）。
+async function applyPaseoInteractive(selectedAgents, ask) {
+  const out = [];
+  for (const agent of selectedAgents) {
+    if (agent.skill !== "paseo-agent") {
+      out.push(agent);
+      continue;
+    }
+    const provider = await ask("paseo-agent 默认 provider", "antigravity");
+    const model = await ask("paseo-agent 默认 model（可留空）", "");
+    out.push({
+      ...agent,
+      entry: {
+        ...agent.entry,
+        command: paseoRunCommand(agent.path, provider, model),
+      },
+    });
+  }
+  return out;
 }
 
 function envSecret() {
@@ -1215,6 +1259,7 @@ export async function runSetup(configDir, argv, appDir) {
         console.log("  · 未扫描到常见本机终端 Agent（本机暂无可接单能力，装好后重跑 lah setup 或手写 commands.json）");
       }
 
+      if (interactive) selectedAgents = await applyPaseoInteractive(selectedAgents, ask);
       const baseCmds = (!cmdExisted || isExample) ? {} : existingCmds;
       finalCmds = buildAgentCommands(selectedAgents, baseCmds);
     }

@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.1-orange.svg)](CHANGELOG.md)
 
 [中文](README.md) · [Standard](docs/standard.md) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md)
 
@@ -33,6 +33,7 @@ What's in the repo:
 | Base schema | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | Field-level definitions of the seven tables, generated from the live Base (generator included) |
 | Hub integration | [docs/hub-integration.md](docs/hub-integration.md) · `src/hub/` | Hub duties, task-creation discipline, presentation and approval loops; implemented by `lah daemon --role hub` |
 | Node adapter | `bin/` `src/` · [DESIGN.md](DESIGN.md) | Turns any terminal into an execution node: claim → launch local script/Agent → collect receipt → log the run |
+| Agent templates | [docs/agent-templates.md](docs/agent-templates.md) | Final headless CLI commands, three permission classes, and known pitfalls |
 | Protocol nodes | [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | How a daemon-less agent joins by watching the tables (same protocol) |
 
 ```mermaid
