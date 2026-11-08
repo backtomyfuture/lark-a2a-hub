@@ -7,6 +7,7 @@
 # 会让随后的 lah setup --yes 拒绝覆盖，或让 doctor 因 carrier 离线失败。
 # 正式配置（含绝对路径 echo 种子与本地 Agent 自动扫描）由 lah setup 生成。
 # 重跑本脚本 = 更新程序（git pull 或重新下载），已有配置不覆盖。
+# 之后的日常更新不必重跑本脚本：lah update（或 lah update --check 先看一眼）做同样的事。
 set -eu
 
 SKIP_SKILL="${LAH_SKIP_SKILL:-0}"

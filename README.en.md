@@ -107,6 +107,8 @@ lah doctor      # connectivity and capability registration
 lah daemon      # foreground trial (already resident if you chose autostart)
 ```
 
+To upgrade later, just run `lah update` (or `lah update --check` first); it does the same fetch, dependency install, and symlink/skill refresh as re-running install.sh, without touching your existing configuration.
+
 Dispatch a task and read the receipt:
 
 ```bash

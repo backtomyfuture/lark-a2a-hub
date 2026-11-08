@@ -121,6 +121,7 @@ DESIGN.md §9 注记④ 记录了本项目作者机器上的限定：长驻进�
 | `lah daemon [--role node\|hub]` | 常驻守护进程 |
 | `lah doctor [--role node\|hub] [--probe <host:port>]` | 只读自检：配置合法性、连通性、能力登记、carrier |
 | `lah service [--role node\|hub] [--remove]` | 注册（或卸载）开机自启：macOS LaunchAgent / Linux systemd 用户服务 |
+| `lah update [--check] [--skip-skill]` | 自更新程序本体：git pull、依赖重装、软链与 Skill 补齐；不碰配置目录。`--check` 只看远端有没有新版本。tarball 安装请重跑 install.sh |
 | `lah host` | carrier 进程，只能由用户在终端里启动 |
 | `lah reconcile` | 单次回表认领与对账后退出 |
 | `lah inventory` | 只读盘点本节点名片与任务 |

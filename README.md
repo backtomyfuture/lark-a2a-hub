@@ -105,6 +105,8 @@ lah doctor      # 连通性与能力登记
 lah daemon      # 前台试跑；setup 里选了自启则已常驻
 ```
 
+以后升级只需 `lah update`（先 `lah update --check` 看一眼也行）；它做与重跑 install.sh 相同的拉取、装依赖和软链/Skill 补齐，不碰已有配置。
+
 派一个任务，再看回执：
 
 ```bash

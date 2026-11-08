@@ -11,6 +11,7 @@
 //   reconcile 单次回表认领/对账后退出（webhook 或 15 分钟兜底；不停派手工名片）
 //            --probe <host:port> 经在线 carrier 做一次只读 TCP 探测
 //   service  注册/卸载开机自启：macOS launchd / Linux systemd 用户级（M3）
+//   update   自更新程序本体：git pull + 依赖重装 + 软链/Skill 补齐；--check 只看有没有新版本
 //   host     carrier 语境进程：在用户终端里常驻，替守护进程代跑需要
 //            特殊语境（如 macOS 局域网权限）的命令（设计 §9，M4）
 // 配置目录：--config <dir>，或环境变量 HUB_NODE_HOME，默认 ~/.hub-node。
@@ -636,6 +637,13 @@ if (cmd === "setup") {
     console.error("读取 present_queue.jsonl 失败：" + (e?.message ?? e));
     process.exitCode = 1;
   }
+} else if (cmd === "update") {
+  const { update } = await import("../src/update.mjs");
+  process.exitCode = await update(APP_DIR, {
+    check: rest.includes("--check"),
+    skipSkill: rest.includes("--skip-skill"),
+    configDir: path.resolve(configDirFrom(rest)),
+  });
 } else if (cmd === "--version" || cmd === "-v") {
   console.log(DAEMON_VERSION);
 } else {
@@ -647,6 +655,7 @@ if (cmd === "setup") {
   lah inventory [--config <dir>]  只读盘点本节点名片与任务，不写入
   lah doctor  [--config <dir>] [--role node|hub] [--probe <host:port>]  本机自检
   lah service [--config <dir>] [--role node|hub]  注册开机自启（--remove 卸载）
+  lah update  [--check] [--skip-skill] [--config <dir>]  自更新程序本体（git pull + 依赖重装 + 软链/Skill 补齐）
   lah host    [--config <dir>]    carrier 语境进程（在终端里常驻代跑）
   lah inbox   [--pop] [--json]    读取专属 Agent 收件箱（--pop 提取并标为 acked）
   lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]
