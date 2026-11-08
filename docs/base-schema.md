@@ -14,7 +14,7 @@ Task：一件工作的信封与状态机，一行一任务
 | Title | Text | 主字段 |
 | Task_ID | Text | 业务编号，唯一、人可读，发起方生成后不变 |
 | Source | SingleSelect | （扩展）任务来源：hub / cron / manual / agent-derived 等（选项：muse / cron / manual / agent-derived / hub） |
-| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：home-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev） |
+| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：mac-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev） |
 | Worker_Hint | SingleSelect | 选项：amp / agy / droid / grok-cli / hermes / local-skill / other |
 | Skill_ID | Text | （扩展）要调用的技能 id，与 AgentCards.Skill_ID 对应 |
 | Status | SingleSelect | A2A 八态状态机，见标准 §2；终态不可变（选项：submitted / working / input-required / auth-required / completed / failed / canceled / rejected） |
@@ -22,7 +22,7 @@ Task：一件工作的信封与状态机，一行一任务
 | Hop_Count | Number | （扩展）派生层数，>8 熔断 |
 | Idempotency_Key | Text | （扩展）建单幂等键：来源+业务键 |
 | Latest_Run | Text | （扩展）最新一条 Run 的 Run_ID |
-| Presented | SingleSelect | （扩展）结果是否已呈递给操作者（Yes/No）（选项：Yes / No / no） |
+| Presented | SingleSelect | （扩展）结果是否已呈递给操作者（Yes/No）（选项：Yes / No） |
 | Claimed_By | Text | （扩展）认领租约：当前持有节点 |
 | Heartbeat_At | Text | （扩展）认领心跳；20 分钟无心跳视为放弃、可回收 |
 | Retry_Count | Number | （扩展）失败重试计数，上限 2 |
@@ -103,7 +103,7 @@ AgentCard 规范化展开：一行一项能力
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | Cap_ID | Text | 主字段。（扩展）行主键：CAP-<节点前缀>-<技能> |
-| Node | SingleSelect | 节点名（AgentCard name 的节点部分）（选项：home-mini / ipad / nas / work-mba / work-5070ti / grokbot / node-dev / m3test / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev / hub-test） |
+| Node | SingleSelect | 节点名（AgentCard name 的节点部分）（选项：mac-mini / ipad / nas / work-mba / work-5070ti / grokbot / node-dev / m3test / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev / hub-test） |
 | Zone | SingleSelect | 选项：personal / unit / home / test / work |
 | Description | Text | 技能说明（skill.description） |
 | Skill_ID | Text | 技能 id（skill.id） |
@@ -112,7 +112,7 @@ AgentCard 规范化展开：一行一项能力
 | Dispatchable | SingleSelect | （扩展）Yes 才可派发（选项：Yes / No） |
 | Daemon_Version | Text |  |
 | Node_Desc | Text |  |
-| Receive_Mode | SingleSelect | （扩展）唤醒方式：event / poll / automation / webhook（选项：poll / automation / webhook / event） |
+| Receive_Mode | SingleSelect | （扩展）唤醒方式：event / poll / automation / webhook（选项：poll / automation / event） |
 | Skill_Name | Text |  |
 | Input_Modes | Text |  |
 | Output_Modes | Text |  |
@@ -131,7 +131,7 @@ AgentCard 规范化展开：一行一项能力
 |---|---|---|
 | Rule_ID | Text | 主字段 |
 | Match_Type | Text | 按 Skill_ID 或标签匹配 |
-| Target_Node | SingleSelect | 选项：home-mini / ipad / nas / grokbot |
+| Target_Node | SingleSelect | 选项：home-mini / ipad / nas / grokbot / hub / mini / mba / hub-dev / mac-mini |
 | Worker_Hint | Text |  |
 | Skill_ID | Text |  |
 | Approval_Class | SingleSelect | 选项：auto / notify / approve |

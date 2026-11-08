@@ -38,7 +38,7 @@
      "type": 3,
      "primary": false,
      "options": [
-      "home-mini",
+      "mac-mini",
       "ipad",
       "nas",
       "grokbot",
@@ -126,8 +126,7 @@
      "primary": false,
      "options": [
       "Yes",
-      "No",
-      "no"
+      "No"
      ]
     },
     {
@@ -469,7 +468,7 @@
      "type": 3,
      "primary": false,
      "options": [
-      "home-mini",
+      "mac-mini",
       "ipad",
       "nas",
       "work-mba",
@@ -567,7 +566,6 @@
      "options": [
       "poll",
       "automation",
-      "webhook",
       "event"
      ]
     },
@@ -664,7 +662,12 @@
       "home-mini",
       "ipad",
       "nas",
-      "grokbot"
+      "grokbot",
+      "hub",
+      "mini",
+      "mba",
+      "hub-dev",
+      "mac-mini"
      ]
     },
     {
