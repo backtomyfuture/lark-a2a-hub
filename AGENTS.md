@@ -50,7 +50,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 ## 代码约定
 
-- Node >= 20，ESM `.mjs`，HTTP 只用全局 `fetch`。新增运行时依赖须有充分理由。
+- Node >= 24，ESM `.mjs`，HTTP 只用全局 `fetch`。新增运行时依赖须有充分理由。
 - 内核是薄壳：新能力 = `commands.json` 一条模板（`command`、`mode: agent|json|inbox`（默认 agent）、`context: direct|carrier`、`timeout_sec`（默认 600）、`cwd`（默认配置目录）、`side_effect`、`cap_id`、`name`、`desc`、可选 `resume_command`（含 `{session}` 与 `{prompt}`，仅 direct 问答续跑且本机已有 session 时替换 `command`）），启动时自动登记 AgentCards。`context`、`mode` 取值非法时认领预检直接 `rejected`，不静默降级。不往内核里塞执行器或某个 Agent 的专用代码。host 节点能力来自 commands.json 的本机命令模板；agent 节点能力只有 `agent`（inbox 模式），执行主体是节点本尊，守护进程不替它拉起任何外部 Agent。
 - 读写总线一律经 `FeishuBus`，读字段用 `f1()`；写操作逐条 `await`，不对同表并发写（不用 `Promise.all` 批量写）。
 - 常驻韧性：启动期任何失败都只记日志、进主循环重试，进程不退出；能力登记成功前不处理任务。

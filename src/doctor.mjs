@@ -492,10 +492,10 @@ export async function doctor(configDir, appDir, opts = {}) {
     problems++;
   }
 
-  // 1. Node 版本（package.json engines: >=20）
+  // 1. Node 版本（package.json engines: >=24）
   const major = Number(process.versions.node.split(".")[0]);
-  if (major >= 20) ok(`node ${process.versions.node} (>= 20)`);
-  else { bad(`node ${process.versions.node} 过低，需要 >= 20`); problems++; }
+  if (major >= 24) ok(`node ${process.versions.node} (>= 24)`);
+  else { bad(`node ${process.versions.node} 过低，需要 >= 24`); problems++; }
 
   // 2. 配置文件
   if (raw) {
