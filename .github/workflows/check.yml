@@ -1,0 +1,31 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: check (${{ matrix.os }} / node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["20", "22"]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup-node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: install
+        run: npm ci --omit=dev
+      - name: syntax
+        run: |
+          for f in bin/*.mjs src/*.mjs src/*/*.mjs schema/*.mjs; do
+            node --check "$f" || exit 1
+          done
+      - name: test
+        run: npm test

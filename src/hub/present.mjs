@@ -305,7 +305,10 @@ export class PresentService {
 
       // 写线上 Tasks 元数据的 presented_keys（先读再合并；Presented 列 v3.5 起不再写）
       try {
-        const meta = loadMeta(f1(item.task, "Metadata"));
+        // 必须回读最新行：item.task 是扫描开头的快照，执行节点随后写进 Metadata 的 usage / later
+        // 若被这次整段回写盖掉，later 复查就永远不会触发。
+        const latest = await this.bus.getRecord(this.bus.tables.tasks, item.task.record_id);
+        const meta = loadMeta(f1(latest || item.task, "Metadata"));
         const pkeys = Array.isArray(meta.presented_keys) ? meta.presented_keys.filter((k) => typeof k === "string") : [];
         if (!pkeys.includes(item.key)) pkeys.push(item.key);
         meta.presented_keys = pkeys;

@@ -114,16 +114,18 @@ function bumpMsgId(msgId) {
 }
 
 export class ApprovalService {
-  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000 }) {
+  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000, kernel = null }) {
     this.bus = bus;
     this.ownerOpenId = String(ownerOpenId ?? "").trim();
     this.statePath = statePath;
     this.log = log ?? (() => {});
     this.now = now;
     this.dedupWindowMs = Number(dedupWindowMs) > 0 ? Number(dedupWindowMs) : 60_000;
+    this.kernel = kernel || null;
     this._tail = Promise.resolve();
     this._recentEvents = new Map();
     this._decidedCards = new Map();
+    this._kernelMissLogged = false;
   }
 
   _purgeExpired(map) {
@@ -178,6 +180,7 @@ export class ApprovalService {
     const state = this.loadState();
     if (state == null) return 0;
     const tasks = await this.bus.listRecords(this.bus.tables.tasks);
+    await this.primeRowApprovals(tasks);
     const pending = [];
     for (const task of tasks) {
       if (f1(task, "Status") !== "auth-required") continue;
@@ -206,6 +209,40 @@ export class ApprovalService {
       this.log("card sent for " + f1(task, "Task_ID"));
     }
     return sent;
+  }
+
+  hubKernel() {
+    return this.kernel || null;
+  }
+
+  // 只处理任务行 Approval_Class=approve。本机 commands.json 的下限 hub 看不见，仍等节点认领时触发。
+  // 发卡仍走下面的 auth-required 通道，去重键是 record_id + Status_Msg，不另做一套。
+  async primeRowApprovals(tasks) {
+    const kernel = this.hubKernel();
+    if (!kernel || typeof kernel.primeSubmittedApproval !== "function") {
+      if (!this._kernelMissLogged) {
+        this._kernelMissLogged = true;
+        this.log("hub 审批提前发卡未接上内核，本轮只给已是 auth-required 的任务发卡");
+      }
+      return 0;
+    }
+    let n = 0;
+    for (const task of tasks) {
+      if (f1(task, "Status") !== "submitted") continue;
+      if (String(f1(task, "Approval_Class") ?? "").trim() !== "approve") continue;
+      if (String(f1(task, "Claimed_By") ?? "").trim()) continue;
+      try {
+        const res = await kernel.primeSubmittedApproval(task);
+        if (res?.status === "auth-required" && res.msgId) {
+          task.fields = { ...(task.fields || {}), Status: "auth-required", Status_Msg: res.msgId };
+          n += 1;
+        }
+      } catch (e) {
+        // 单条失败留下 submitted，下一轮再试。不能挡住同轮其他任务的发卡。
+        this.log("row approval prime failed " + f1(task, "Task_ID") + ": " + (e?.message ?? e));
+      }
+    }
+    return n;
   }
 
   handleCardAction(data) {

@@ -1,12 +1,15 @@
 {
   "name": "lark-a2a-hub",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "通用节点适配器：把任何一台终端变成多 Agent 中台的一个执行节点（认领 → 拉起 Agent → 收回执 → 落日志）",
   "bin": {
     "lah": "bin/lah.mjs",
     "hub-node": "bin/hub-node.mjs"
   },
   "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "engines": {
     "node": ">=20"
   },

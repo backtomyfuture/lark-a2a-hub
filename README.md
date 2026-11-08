@@ -95,6 +95,11 @@ flowchart LR
   ```bash
   lah task show TASK-XXXX
   ```
+- **追溯来龙去脉与时间线**：
+  ```bash
+  lah task why TASK-XXXX [--json]
+  ```
+- **取消**：`lah task cancel --task TASK-XXXX [--text "说明"]`（发起方只撤自己的单，hub 可撤任意单；终态报错不改状态）
 - **审批安全红线**：
   需要机主授权的动作自动转入 `auth-required`，由主节点在飞书向机主发送卡片，机主点击批准/驳回后自动恢复执行或取消，无需终端手动干预。
 - **独立 Agent 接单与回执（收件箱工作流）**：

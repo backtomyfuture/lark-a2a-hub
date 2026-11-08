@@ -22,6 +22,12 @@
   `package.json`、`package-lock.json` 与 `src/kernel.mjs` 的
   DAEMON_VERSION，并在 CHANGELOG 顶部加条目。
 
+## 测试
+
+- 怎么跑：在仓库根目录执行 `npm test`。脚本是 `node --test tests/*.test.mjs`，由 shell 展开文件列表，Node 20 与 22 都把具体文件交给内置测试运行器。只用 `node:test` 和 `node:assert`，不要加 Jest、Mocha、Vitest 或任何第三方断言库，也不要加 devDependencies。
+- 隔离红线：测试不准连接真实飞书 Base，不准读 `~/.hub-node`，不准依赖环境变量里的凭据。状态写在 `os.tmpdir()` 的临时目录里，用例结束要删掉。测试不准留下子进程；会拉起的命令用 `node -e`，并等它退出。
+- 新功能随带测试：行为变化要带上对应的 `tests/*.test.mjs`。每条测试用注释写明它守的红线。生产代码只为了可注入增加 export，或极小的依赖注入。
+
 ## 设计问题去哪讨论
 
 先读 `docs/architecture.md` 的核心决策——多数「为什么不这样做」都在

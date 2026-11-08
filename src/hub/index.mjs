@@ -181,6 +181,10 @@ export class HubRuntime {
     this.log = log;
     this.createWaker = createWaker ?? null;
     this.kernel = new Kernel(this.cfg);
+    // direct 命令结束时内核只抬自己的标志。hub 的等待看的是这一层的标志。
+    this.kernel._notifyWake = () => { this._wakeFlag = true; };
+    // 行级审批提前发卡要复用同进程 kernel 的 auth_request 写入与既存请求查找，不另起一套审批状态机。
+    if (this.approval) this.approval.kernel = this.kernel;
     const retry = Number(retryMs);
     this._retryBase = Number.isFinite(retry) && retry >= 0 ? retry : 5000;
     this._delay = this._retryBase;

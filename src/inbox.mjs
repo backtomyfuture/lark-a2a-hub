@@ -119,7 +119,7 @@ const OP_SPEC = {
 function inboxOutboxPath(configDir, taskId) {
   const id = String(taskId ?? "");
   // 与内核 outboxPath 同一套字符约束，避免 Task_ID 把路径带出配置目录。
-  if (!/^[\w.-]+$/.test(id)) throw new Error("非法 Task_ID，拒绝写入 inbox outbox");
+  if (!/^[\w-]+$/.test(id)) throw new Error("非法 Task_ID，拒绝写入 inbox outbox");
   return path.join(configDir, "inbox-outbox", `${id}.json`);
 }
 

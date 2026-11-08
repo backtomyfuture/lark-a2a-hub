@@ -71,7 +71,7 @@
 - 能力声明包含：所需资产（是否需要局域网等）、副作用等级、可用状态。**加能力 = 写一条模板配置，不改内核。**
 - 回执约定两种模式：
   - json 模式（脚本类）：标准输入收任务信封，标准输出最后一行为结果 JSON（含结论与可选产物指针，或「需要输入」标记）；
-  - agent 模式（Agent 类）：纯文本输出，末尾结构化代码块表达提问/通知/产物（ask / notice / artifact），内核只认结构、不猜自然语言。
+  - agent 模式（Agent 类）：纯文本输出，末尾结构化代码块表达提问（只认最后一个完整的 `agent-ask` 围栏），围栏外整行表达产物、用量、会话与预约复查（`ARTIFACT:` / `USAGE:` / `SESSION:` / `LATER:`），内核只认结构、不猜自然语言；围栏内的同形文字一律不生效。完整语法以标准 §9 为准。
 
 ## 8. 安全纪律
 
@@ -119,6 +119,9 @@ lark-a2a-hub/
   src/hub/              # hub 角色（建单、审批发卡、卡片回调与机主校验、
                         #   auth_decision、canceled、结果呈递、陈旧告警）
   src/transport/        # ws / poll 门铃与对账定时（webhook 通知由飞书自动化发出）
+  src/direct-ledger.mjs # direct 命令的在途执行账本（崩溃后续接，不二次执行）
+  src/why.mjs           # lah task why：只读时间线
+  tests/                # node:test 测试与内存总线（不连真实 Base）
   config/               # 配置样例（只放占位符）
   docs/                 # 中台标准、架构、hub 对接、协议节点手册、Base 结构（生成物）
   schema/               # base-schema.json（生成物）与 generate_schema.mjs

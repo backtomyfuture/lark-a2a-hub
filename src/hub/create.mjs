@@ -103,7 +103,7 @@ function cardText(card, name) {
   return String(f1(card, name) ?? "").trim();
 }
 
-// 标准 §10.1：只接受 Dispatchable=Yes 且 Availability 不是 offline。
+// 标准 §10.1：只接受 Dispatchable=Yes。目标离线（Availability=offline）仍可正常建单入队。
 // 返回空数组表示可派；否则是写进错误里的原因，调用方据此在写表前拒绝。
 function undispatchableReason(card) {
   const reasons = [];
@@ -112,9 +112,6 @@ function undispatchableReason(card) {
     reasons.push(dispatchable === "No"
       ? "已停派（Dispatchable=No）"
       : `不可派（Dispatchable=${dispatchable || "未设置"}，需要 Yes）`);
-  }
-  if (String(f1(card, "Availability") ?? "").toLowerCase() === "offline") {
-    reasons.push("Availability=offline");
   }
   return reasons;
 }
@@ -151,34 +148,84 @@ function freshTaskId(taken, now) {
 }
 
 export async function createTask({
-  bus, from = "", source = "", to, cap, text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(),
+  bus, from = "", source = "", to, cap, text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(), validateTarget = true,
 }) {
   if (!bus?.tables?.messages || !bus.tables.parts || !bus.tables.tasks) {
     throw new Error("总线缺少 messages / parts / tasks 表");
   }
-  let node = String(to ?? "").trim();
-  let skill = String(cap ?? "").trim();
+  const rawTo = String(to ?? "").trim();
+  const rawCap = String(cap ?? "").trim();
+  let node = rawTo;
+  let skill = rawCap;
 
-  // 若总线提供了 AgentCards 表，尝试自动解析能力与节点
+  // 若总线提供了 AgentCards 表，尝试自动解析能力与节点并按名册校验
   if (bus.tables.agentCards) {
     let cards = [];
     try {
       cards = await bus.listRecords(bus.tables.agentCards);
-    } catch { /* 忽略查询错误 */ }
+    } catch (e) {
+      throw new Error(`读取 AgentCards 名册失败：${e?.message ?? e}`);
+    }
+
+    // F1 校验：显式 --to 须在 AgentCards 有名片；显式 --cap 须在目标节点已登记该技能。
+    // 只校验存在性与 Dispatchable=Yes，不校验 Availability（目标离线仍可建单入队）。
+    if (validateTarget) {
+      if (rawTo) {
+        const nodeCards = cards.filter((card) => cardText(card, "Node") === rawTo);
+        if (!nodeCards.length) {
+          const existingNodes = [...new Set(cards.map((c) => cardText(c, "Node")).filter(Boolean))];
+          const hint = existingNodes.length ? `当前已登记节点：${existingNodes.join(", ")}` : "（当前名册无任何已登记节点）";
+          throw new Error(`拒绝建单：目标节点 "${rawTo}" 未在 AgentCards 登记名片。${hint}`);
+        }
+        if (rawCap) {
+          const capMatch = nodeCards.some((card) => {
+            if (cardText(card, "Cap_ID") === rawCap) return true;
+            if (cardText(card, "Skill_ID") === rawCap) return true;
+            if (rawCap.startsWith("CAP-")) {
+              const parts = rawCap.split("-");
+              if (parts.length >= 3 && parts.slice(2).join("-") === cardText(card, "Skill_ID")) return true;
+            }
+            return false;
+          });
+          if (!capMatch) {
+            const nodeSkills = [...new Set(nodeCards.map((c) => cardText(c, "Skill_ID")).filter(Boolean))];
+            const hint = nodeSkills.length ? `该节点已登记能力：${nodeSkills.join(", ")}` : "（该节点未登记任何能力）";
+            throw new Error(`拒绝建单：目标节点 "${rawTo}" 未登记能力 "${rawCap}"。${hint}`);
+          }
+        }
+      } else if (rawCap) {
+        const anyMatch = cards.some((card) => {
+          if (cardText(card, "Cap_ID") === rawCap) return true;
+          if (cardText(card, "Skill_ID") === rawCap) return true;
+          if (rawCap.startsWith("CAP-")) {
+            const parts = rawCap.split("-");
+            if (parts.length >= 3 && parts.slice(2).join("-") === cardText(card, "Skill_ID")) return true;
+          }
+          return false;
+        });
+        if (!anyMatch) {
+          const allSkills = [...new Set(cards.map((c) => cardText(c, "Skill_ID")).filter(Boolean))];
+          const hint = allSkills.length ? `当前名册已登记能力：${allSkills.join(", ")}` : "（当前名册无任何登记能力）";
+          throw new Error(`拒绝建单：未找到提供能力 "${rawCap}" 的节点。${hint}`);
+        }
+      }
+    }
 
     const skillMatches = (skillId) => cards.filter((card) => {
       const sameSkill = cardText(card, "Skill_ID") === skillId;
       const sameNode = node ? cardText(card, "Node") === node : true;
       return sameSkill && sameNode;
     });
-    // 先丢掉停派 / offline，再在剩下的里面沿用原顺序取第一张。
+    // 先丢掉停派，再在剩下的里面沿用原顺序取第一张（优先挑选 online 节点）。
     // 指定了具体名片时不能改挑另一张，所以 Cap_ID 命中坏名片要直接拒绝。
     const adoptSkill = (matches, lead) => {
       const usable = matches.filter((card) => undispatchableReason(card).length === 0);
       if (!usable.length) {
         rejectBlocked(matches, lead);
       }
-      const chosen = usable[0];
+      const isOnline = (card) => String(f1(card, "Availability") ?? "").toLowerCase() !== "offline";
+      const sorted = usable.slice().sort((a, b) => (isOnline(b) ? 1 : 0) - (isOnline(a) ? 1 : 0));
+      const chosen = sorted[0];
       skill = cardText(chosen, "Skill_ID") || skill;
       if (!node) node = cardText(chosen, "Node");
     };

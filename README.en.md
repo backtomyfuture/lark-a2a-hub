@@ -115,6 +115,8 @@ the return path:
   lah task reply --task TASK-XXXX --text "answer"
   ```
 - **Inspect**: `lah task show TASK-XXXX`
+- **Timeline & why**: `lah task why TASK-XXXX [--json]` (assembles chronological timeline from Tasks, Messages, Runs, Artifacts, and local outbox)
+- **Cancel**: `lah task cancel --task TASK-XXXX [--text "reason"]` (an initiator cancels only their own task; a hub role can cancel any; a terminal status errors and writes nothing)
 - **Approvals**: actions needing the owner's authorization move to
   `auth-required`; the hub sends an approval card in Feishu, and the owner's
   tap resumes or cancels the task. Forged decision rows written directly to

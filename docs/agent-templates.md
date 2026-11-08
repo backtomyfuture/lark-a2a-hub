@@ -99,6 +99,21 @@
 
 本版不动命令行本身。Orca 按编排型处理：模板必须显式带默认执行主体，具体参数以目标机 `orca --help` 为准。本版没有猜它的旗标，避免把未核实的参数写进预置模板。
 
+## 会话续接（可选）
+
+只用于 `context=direct` 的 json / agent。carrier 与 inbox 不读 `resume_command`。
+
+同一任务从 input-required 收到 answer 再执行时，如果本机 `runs/<Task_ID>/session.json` 里已有执行者上次自报的 session id，并且该能力写了 `resume_command`，节点用它替换 `command`。第一次执行、失败重试、心跳回收后的重跑仍走原来的 `command`。session id 不进总线。
+
+`{session}` 会换成单引号包裹的 id，只替换一次。agent 模式同时保留 `{prompt}`，数据仍在全量 `input.json`。json 模式只需要 `{session}`，任务信封仍走标准输入。`lah doctor` 发现写了 `resume_command` 却没有 `{session}` 会报问题。
+
+下面的旗标按本机帮助文本的位置来写，没有另造开关。换了版本先看 `--help`。
+
+- **claude**。本机 `claude --help` 有 `-r, --resume [value]`（Resume a conversation by session ID）。agent 续接可以写成 `claude -p --dangerously-skip-permissions --resume {session} {prompt}`。普通执行仍用上一节的定版命令。
+- **codex**。本机 `codex exec --help` 的可选项（含 `--sandbox`）在子命令之前；`codex exec resume --help` 里会话号是位置参数 `[SESSION_ID]`，后面才是 `[PROMPT]`，没有名为 `--resume` 的旗标。按这个位置，续接写成 `codex exec --sandbox workspace-write resume {session} {prompt}`。这里没有把这条组合实际跑通，只对齐了两份帮助里的参数位置。
+
+json 模式没有对应的定版 CLI。占位写法是在原命令之外加一条只含 `{session}` 的 `resume_command`，具体参数名以该程序自己的 `--help` 为准。
+
 ## 已知坑
 
 - **agy 参数顺序**。`--dangerously-skip-permissions` 必须在 `--print` / `-p` 之前。放在后面会被当成 prompt。

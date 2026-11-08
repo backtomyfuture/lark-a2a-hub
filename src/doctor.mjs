@@ -156,6 +156,65 @@ function readAgyPermissionsAllow() {
   }
 }
 
+const COMMAND_MODES = new Set(["agent", "json", "inbox"]);
+const COMMAND_CONTEXTS = new Set(["direct", "carrier"]);
+
+// commands.json 条目的字段校验。内核对这几类错误都不报错：未知 mode 按 agent 跑、
+// 未知 context 按 direct 直跑（拼错 carrier 就绕过了离线纪律）、非法 timeout_sec 回退 600、
+// 重复 Cap_ID 后一条覆盖前一条名片——运行期全是静默降级，只能在自检里拦下（失败要响）。
+// Cap_ID 推导与内核 capIdFor 同口径：cap_id 优先，否则 CAP-<capPrefix>-<能力名>。
+function auditCommandsShape(cmds, capPrefix) {
+  let problems = 0;
+  const capOwner = new Map();
+  for (const [name, entry] of Object.entries(cmds)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      bad(`能力 ${name}：条目必须是对象`);
+      problems++;
+      continue;
+    }
+    const mode = entry.mode ?? "agent";
+    if (!COMMAND_MODES.has(mode)) {
+      bad(`能力 ${name}：mode=${JSON.stringify(entry.mode)} 非法（只认 agent / json / inbox；认领时内核会拒收该能力的任务）`);
+      problems++;
+    }
+    if (mode !== "inbox" && (typeof entry.command !== "string" || !entry.command.trim())) {
+      bad(`能力 ${name} 缺 command 模板`);
+      problems++;
+    }
+    if (entry.resume_command != null && entry.resume_command !== "") {
+      if (typeof entry.resume_command !== "string" || !entry.resume_command.includes("{session}")) {
+        bad(`能力 ${name}：resume_command 已配置但缺少 {session}（续接无法把会话号传给命令）`);
+        problems++;
+      }
+    }
+    if (entry.context != null && !COMMAND_CONTEXTS.has(entry.context)) {
+      bad(`能力 ${name}：context=${JSON.stringify(entry.context)} 非法（只认 direct / carrier；认领时内核会拒收该能力的任务，不会静默直跑）`);
+      problems++;
+    }
+    if (entry.timeout_sec != null) {
+      const v = entry.timeout_sec;
+      const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() ? Number(v) : NaN);
+      if (!Number.isFinite(n) || n <= 0) {
+        bad(`能力 ${name}：timeout_sec=${JSON.stringify(v)} 非法（须为正数秒；内核会静默回退 600）`);
+        problems++;
+      }
+    }
+    if (entry.cap_id != null && entry.cap_id !== "" && typeof entry.cap_id !== "string") {
+      bad(`能力 ${name}：cap_id 必须是字符串`);
+      problems++;
+      continue;
+    }
+    const capId = entry.cap_id || `CAP-${capPrefix}-${name}`;
+    if (capOwner.has(capId)) {
+      bad(`能力 ${name} 与 ${capOwner.get(capId)} 的 Cap_ID 重复（${capId}）：总线上只会留一张名片，后者覆盖前者`);
+      problems++;
+    } else {
+      capOwner.set(capId, name);
+    }
+  }
+  return problems;
+}
+
 async function auditAgentTemplates(cmds) {
   let problems = 0;
   let agyAllow;
@@ -412,6 +471,11 @@ export async function doctor(configDir, appDir, opts = {}) {
   let rawError = null;
   try {
     raw = JSON.parse(fs.readFileSync(nodeJsonPath, "utf8"));
+    // "null" / 数组也能 JSON.parse 成功，但 loadConfig 读字段会出错；按读不了处理，避免误报成「文件不存在」。
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      raw = null;
+      rawError = new Error("根必须是对象");
+    }
   } catch (e) {
     rawError = e;
   }
@@ -442,8 +506,19 @@ export async function doctor(configDir, appDir, opts = {}) {
     for (const k of ["tasks", "messages", "parts", "runs", "artifacts", "agentCards"]) {
       if (!raw.tables?.[k] || placeholder(raw.tables[k])) { bad(`node.json 的 tables.${k} 未填`); problems++; }
     }
+    // 只核取值，不回显其它字段：node.json 里可能直接写着 appSecret。
+    if (raw.role !== undefined && raw.role !== "node" && raw.role !== "hub") {
+      bad(`node.json 的 role 只能是 node 或 hub（收到 ${JSON.stringify(raw.role)}）`);
+      problems++;
+    }
+    if (raw.kind !== undefined && raw.kind !== "host" && raw.kind !== "agent") {
+      bad(`node.json 的 kind 只能是 host 或 agent（收到 ${JSON.stringify(raw.kind)}）`);
+      problems++;
+    }
   } else {
     bad(`node.json 读不了：${rawError?.message ?? "文件不存在"}`);
+    // 标准 §10.5：node.json 只在启动时读，运行中改坏不影响在跑进程，下次启动才会暴露。
+    info("运行中的守护进程不受影响（node.json 只在启动时读取）；但下次启动会记错误、退避后非零退出，修好前不会接单（标准 §10.5）");
     problems++;
   }
 
@@ -464,12 +539,15 @@ export async function doctor(configDir, appDir, opts = {}) {
     const cmdsPath = path.join(configDir, "commands.json");
     if (fs.existsSync(cmdsPath)) {
       const cmds = JSON.parse(fs.readFileSync(cmdsPath, "utf8"));
+      // 与内核 loadCommands 同口径：根不是对象，守护进程会当作解析失败处理。
+      if (!cmds || typeof cmds !== "object" || Array.isArray(cmds)) throw new Error("根必须是对象（能力名 -> 模板）");
       const names = Object.keys(cmds);
       if (names.length) ok(`commands.json：${names.length} 项能力（${names.join(", ")}）`);
       else info("commands.json 为空：本节点不登记任何能力，不会认领任务");
-      for (const [name, entry] of Object.entries(cmds)) {
-        if (!entry.command && entry.mode !== "inbox") { bad(`能力 ${name} 缺 command 模板`); problems++; }
-      }
+      const capPrefix = raw?.capPrefix ?? raw?.node ?? "";
+      const shapeProblems = auditCommandsShape(cmds, capPrefix);
+      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（mode / context / timeout_sec 取值合法，cap_id 无重复）");
+      problems += shapeProblems;
       problems += await auditAgentTemplates(cmds);
     } else if (role === "hub") {
       info("未配置 commands.json（hub 仍可承担审批/呈递，但不会认领干活任务）");
@@ -479,6 +557,8 @@ export async function doctor(configDir, appDir, opts = {}) {
     }
   } catch (e) {
     bad(`commands.json 读不了：${e.message}`);
+    // 标准 §10.5：运行期坏掉时守护进程不清空能力表、只暂停接新单；提示操作者这不是「已停机」。
+    info("运行中的守护进程会保留上一版能力表、暂停认领新任务，每轮记一条错误日志；文件修好后下一轮扫表自动接回（标准 §10.5）");
     problems++;
   }
 

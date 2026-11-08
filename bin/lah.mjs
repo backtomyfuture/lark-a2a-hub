@@ -5,6 +5,7 @@
 //   daemon   常驻守护进程。--role node 认领执行；--role hub 既认领执行，又做全网审批、呈递、陈旧告警。
 //            省略 --role 时读 node.json 的 role，再缺省 node。
 //   task     task create：hub 角色建单。先写 instruction 与 Parts，最后写 Tasks 行。
+//            task cancel：发起方撤自己的单，或 hub 角色撤任意单。先写 notice，最后改 Tasks。
 //   doctor   本机自检：配置、凭据、总线连通、能力登记、自启状态（M3）
 //   inventory 只读盘点本节点名片与任务，不写入
 //   reconcile 单次回表认领/对账后退出（webhook 或 15 分钟兜底；不停派手工名片）
@@ -304,6 +305,7 @@ if (cmd === "setup") {
         ref: args.ref,
         approval: args.approval,
         idempotencyKey: args.idempotencyKey,
+        validateTarget: true,
       });
       console.log(taskId);
     } catch (e) {
@@ -443,8 +445,73 @@ if (cmd === "setup") {
         process.exitCode = 1;
       }
     }
+  } else if (sub === "why") {
+    const argv = rest.slice(1);
+    let taskId = "";
+    let configDir = "";
+    let isJson = false;
+    for (let i = 0; i < argv.length; i++) {
+      const flag = argv[i];
+      if (flag === "--task") taskId = argv[++i] ?? "";
+      else if (flag === "--config") configDir = argv[++i] ?? "";
+      else if (flag === "--json") isJson = true;
+      else if (!flag.startsWith("--") && !taskId) taskId = flag;
+    }
+    if (!taskId) {
+      console.error("用法：lah task why <Task_ID> [--config <dir>] [--json]");
+      process.exitCode = 1;
+    } else {
+      try {
+        const { getTaskWhy, formatWhyText } = await import("../src/why.mjs");
+        const effectiveConfigDir = configDir || configDirFrom(rest);
+        const cfg = loadConfig(effectiveConfigDir);
+        const data = await getTaskWhy({ bus: cfg.bus, configDir: effectiveConfigDir, taskId });
+        if (isJson) {
+          console.log(JSON.stringify(data, null, 2));
+        } else {
+          console.log(formatWhyText(data));
+        }
+      } catch (e) {
+        console.error(e?.message ?? e);
+        process.exitCode = 1;
+      }
+    }
+  } else if (sub === "cancel") {
+    const argv = rest.slice(1);
+    let taskId = "";
+    let text = "";
+    let configDir = "";
+    for (let i = 0; i < argv.length; i++) {
+      const flag = argv[i];
+      if (flag === "--task") taskId = argv[++i] ?? "";
+      else if (flag === "--text") text = argv[++i] ?? "";
+      else if (flag === "--config") configDir = argv[++i] ?? "";
+      else if (!flag.startsWith("--") && !taskId) taskId = flag;
+    }
+    if (!taskId) {
+      console.error("用法：lah task cancel --task <Task_ID> [--text <说明>] [--config <dir>]");
+      process.exitCode = 1;
+    } else {
+      try {
+        const { cancelTask } = await import("../src/hub/cancel.mjs");
+        const cfg = loadConfig(configDir || configDirFrom(rest));
+        // 角色只认 node.json。命令行 --role 不能把 node 提升成可撤任意单的 hub。
+        const result = await cancelTask({
+          bus: cfg.bus,
+          node: cfg.node,
+          role: cfg.role === "hub" ? "hub" : "node",
+          taskId,
+          text,
+        });
+        console.log(`已取消：${result.taskId}`);
+        if (result.workingHint) console.log(result.workingHint);
+      } catch (e) {
+        console.error(e?.message ?? e);
+        process.exitCode = 1;
+      }
+    }
   } else {
-    console.error("用法：lah task create | reply | show");
+    console.error("用法：lah task create | reply | show | why | cancel");
     process.exitCode = 1;
   }
 } else if (cmd === "inbox") {
@@ -588,5 +655,7 @@ if (cmd === "setup") {
   lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--idempotency-key <键>]
   lah task reply  --task <Task_ID> --text <答复内容>
   lah task show   <Task_ID>
+  lah task why    <Task_ID> [--config <dir>] [--json]
+  lah task cancel --task <Task_ID> [--text <说明>] [--config <dir>]
   lah present     [--pop]  读取本机结果呈递队列（--pop 同时清空）`);
 }

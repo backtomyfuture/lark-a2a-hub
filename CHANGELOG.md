@@ -1,9 +1,31 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.5.4）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.5.7）。
 
-## [Unreleased]
+## [0.6.3] - 2026-11-08（中台标准 v3.5.7：执行账本、审批提前发卡、task cancel、later 与测试基线）
+
+中台标准现行 v3.5.7。
+
+借鉴 agent-autoloop 的对照改进（只取其韧性与可观测性，不取 SQLite 事实日志、入站 HTTP、第三方插件加载、链接即授权等与红线冲突的部分）：
+
+- **在途执行账本与扫表不被长命令堵住（标准 v3.5.5 §4）**：`context=direct` 的 json/agent 命令在 spawn 前把账本写到配置目录 `runs/<Task_ID>/entry.json`（权限 600，不进总线），输出落文件、退出码由包装脚本发布。守护重启后：进程仍在则只续心跳、不二次执行；已退出且有退出码则直接收口；确认被杀且无退出码按执行失败计 `Retry_Count` 并进退避；无法确认存活时保持 working 由超时收口。身份对不上（pid 复用）或没记启动时间时不向进程组发信号，免得误杀。扫表认领并 spawn 后立即返回，hub 的审批、呈递、陈旧回收、定时调度不再被长命令饿死；同一时刻只跑一条 direct 命令，结果提交仍由主循环串行写总线。carrier 与 inbox 不在范围。
+- **行级审批卡提前发（标准 §8.3，生产测试 F2）**：任务行 `Approval_Class=approve` 的任务，由 hub 在 `submitted` 阶段写 `auth_request`、置 `auth-required` 并发卡，不再等目标节点串行队列轮到认领；节点日后认领时按既有 `auth_request` 收敛（`client_token` 去重，全程一条请求、一张卡）。写前回读防认领竞态，状态更新只允许 `submitted`。节点本地 `commands.json` 的 `approval_class` 下限仍在认领时触发。
+- **`lah task create` 建单前校验目标（生产测试 F1）**：显式 `--to` 须在 AgentCards 有名片，显式 `--cap` 须是该节点已登记的能力，否则写任何行之前报错退出；不校验 `Availability`，离线节点仍可建单。校验放在 `createTask`，hub 定时调度与 `later` 复查同样受约束，目标名片暂缺时记日志、水位不推进、下轮重试。
+- **新增 `lah task cancel --task <id> [--text <说明>]`（生产测试 F4）**：发起方或 hub 可撤；node 角色只能撤本节点发起的单。submitted / auth-required / input-required / working 置 `canceled` 并先写 notice；working 会提示「取消只保证状态终结，迟到回执由终态守卫吞掉」；终态报错不动。红线表述收紧为：守护进程的 node 角色代码路径从不写 `canceled`，仅发起方显式执行的该命令例外（`kernel.mjs`、`inbox.mjs` 仍不写）。
+- **标准补文（生产测试 F3 / F5，无代码改动）**：§8.4 同 Idempotency_Key 多单的执行者以「先被目标守护处理」为准，不保证与建单顺序一致，客户端同键重试须保证指令文本一致；§8.3 审批驳回（认领前）由 hub 置 `canceled`，`rejected` 仅用于节点侧拒收。
+- **可选 usage 用量台账（标准 v3.5.6 §9）**：回执可带 `USAGE:` 行或 `usage` 键，累计到 `Tasks.Metadata.usage`（不加列），缺报如实记「未上报轮数」，不估算；`lah task why` 显示汇总。
+- **会话续接（标准 v3.5.6 §9）**：回执可带 `SESSION:` / `session`，只存本机 `runs/<Task_ID>/session.json`，不进总线。`commands.json` 条目可选 `resume_command`（含 `{session}` 与 `{prompt}`）：仅 direct 问答续跑、本机已有 session 时替换 `command`；首次执行、失败重试、心跳回收重跑不用。`lah doctor` 检查模板含 `{session}`。
+- **事项级 `later` 预约复查（标准 v3.5.7 §9、§10.1）**：完成回执可带 `LATER: <带时区时刻> | <说明>` 或 `later={at,about}`（须在 1 分钟到 30 天内，带时区，查闰年），写入 `Tasks.Metadata.later`。hub 的调度服务到点在同一 `Context_ID` 新建复查任务（`Ref_Task_IDs` 指回前任、`Hop_Count+1` 被跳数熔断自然截断、`Approval_Class` 继承），幂等键 `later:<前任 Task_ID>`；纯 node 部署没有时钟，不触发。
+- **测试基线与 CI**：机主批准放宽「不新增测试框架」约定，改为仅允许 Node 内置 `node:test`（零运行时依赖、无第三方断言库）。新增 `tests/`（含内存版 mock 飞书总线）、`npm test`、`.github/workflows/check.yml`（ubuntu/macos × Node 20/22）；CONTRIBUTING 与 AGENTS.md 同步。
+- **修复**：`Task_ID` 校验正则不再允许 `.`（原写法可让 `..` 把账本、outbox 目录逃出 `runs/`）。
+
+- **失败重试退避（标准 §4）**：执行失败或心跳回收未达 `MAX_RETRIES` 时，回 `submitted` 前在配置目录 `retry_state.json`（权限 600、节点私有、非协议字段）按 Task_ID 记 `not_before`，60 秒起翻倍、上限 10 分钟；水位未到本节点跳过认领、不消耗 `Retry_Count`。文件缺失或损坏只记日志。`MAX_RETRIES` 不放宽，无效回执仍不重试。
+- **回执解析收紧（标准 §9）**：agent 模式 `agent-ask` 只认输出中最后一个完整围栏，`ARTIFACT:` / `ARTIFACT_NAME:` 只认围栏外整行（防资料里的示例被误当回执）；json 模式未知顶层键忽略并记日志。`buildPrompt`、`parseAgentOutput`、标准三处同步。
+- **输出头尾截断**：`runDetachedCommand` 捕获 stdout / stderr 只留头 64KiB＋尾 1MiB，超时杀进程组逻辑不变；摘要在输出被截断时从尾部取。
+- **新增 `lah task why <Task_ID> [--json]`**：只读时间线，汇总任务行、消息与 Parts 摘要（DataPart 只显示键名）、Runs、Artifacts，以及本地 outbox / inbox-outbox 待补交状态。不写总线、不开端口。
+- **配置损坏降级语义成文（标准 §10.5）**＋`lah doctor` 新增 commands.json / node.json 合法性检查。
+- **拼错的 `context` / `mode` 不再静默降级**：内核预检对非法取值直接 `rejected` + notice，避免 `carrier` 拼错后绕过离线拒收直跑。
 
 - **定时调度（标准 v3.5.2）**：hub 新增全网唯一的时钟。Rules 表加 `Schedule` / `Text` / `Last_Fired` 三列兼作计划表：`Enabled=Yes` 且 `Schedule`（五段 cron）非空的行即计划行，hub 每轮扫表顺带检查，到期经现行 `createTask` 建 Source=`cron` 的普通任务；只补最近一期，`Last_Fired` 水位线＋`sched:<Rule_ID>:<期次>` 幂等键双保险防重复；目标解析顺序为计划行 → 路由行 → 名片解析。节点侧零改动。
 - **陈旧回收（标准 v3.5.1）**：hub 的 stale 服务由「只告警」升级为两段式——working 心跳超时 20 分钟先告警（文案同步），告警后宽限 30 分钟，心跳恢复自动撤销告警；届满仍无心跳则由 hub 置 `failed` 回收：写 notice 原路通知发起方、关未结束的 Run、清认领。回收前回读再验状态与心跳防抢写；失败保留告警记录下一轮重试，notice 复用不叠写。submitted 无人认领仍只告警。

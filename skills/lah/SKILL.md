@@ -80,7 +80,21 @@ lah task show <Task_ID>
 - 最新一条消息的正文内容；
 - 产物列表（`Artifact_ID`、产物名称与描述）。
 
-### 5. 独立 Agent 收件箱接单与回执 (`lah inbox`)
+### 5. 查看任务全链时间线与排障溯源 (`lah task why`)
+当任务执行异常、需要审计或排查来龙去脉时，使用 `lah task why` 将 Tasks 状态、Messages 多轮对话与审批链、Runs 执行台账、Artifacts 产物及本地待补交队列拼装为时间线：
+```bash
+lah task why <Task_ID> [--json]
+```
+- 汇总 Tasks 状态、认领节点（`Claimed_By`）、重试次数（`Retry_Count`）、提问/待批消息（`Status_Msg`）、跳数（`Hop_Count`）；
+- 按时间顺序梳理多轮 Messages（`instruction`、`question`、`answer`、`auth_request`、`auth_decision`、`result`、`notice`），标注发件方向 `From_Node → To_Node`；
+- 正文截断至 200 字符；`DataPart` 结构化参数只展示键名，绝不输出敏感值；
+- 聚合 Runs 起止时间与执行结果（`succeeded` / `failed` / `paused`）及 Artifacts 交付物指针；
+- 核对本地配置目录下是否存在未完成的 `outbox` 或 `inbox-outbox` 待补交条目；
+- 支持 `--json` 输出结构化数据，适合 Agent 程序化解析与排障诊断。
+
+取消尚未终态的任务：`lah task cancel --task <Task_ID> [--text <说明>]`（node 角色只撤本节点发起的单，hub 角色可撤任意单；working 只保证状态终结；终态报错且不写）。
+
+### 6. 独立 Agent 收件箱接单与回执 (`lah inbox`)
 
 当本节点作为独立 Agent（`kind=agent`，如 Muse、本地 Agent 会话或常驻 Agent 容器等具有常驻守护进程或定期交互能力的实体）运行时，中台将任务投递至本尊收件箱。Agent 本尊通过以下命令与中台闭环交互：
 
@@ -127,13 +141,13 @@ lah inbox fail --task <Task_ID> --text "<失败原因说明>"
 
 ---
 
-### 6. 检查节点与总线状态 (`lah doctor`)
+### 7. 检查节点与总线状态 (`lah doctor`)
 查看当前环境、配置凭据、长连接状态以及本节点和全网在册的 Agent 能力：
 ```bash
 lah doctor
 ```
 
-### 7. 协议节点单次对账与只读盘点
+### 8. 协议节点单次对账与只读盘点
 无法长驻 daemon 的外部节点（例如 Grok Bot）收到 webhook 门铃后，或每 15 分钟兜底时，跑一次：
 ```bash
 lah reconcile
