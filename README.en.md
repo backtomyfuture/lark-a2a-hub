@@ -41,6 +41,11 @@ Running in production. The data model comes from the [A2A protocol](https://a2a-
 
 ## How it works
 
+![Architecture: every agent reads and writes one Lark Bitable](docs/images/architecture.png)
+
+<details>
+<summary>Precise diagram (Mermaid source)</summary>
+
 ```mermaid
 flowchart LR
     OP["You / terminal agent"] -->|"lah task create"| BUS
@@ -59,9 +64,16 @@ flowchart LR
     HUB -->|"Lark interactive card"| OWNER["Owner"]
 ```
 
+</details>
+
 Every participant (node, hub, cloud bot) does two things: **read the table, write the table.** Event pushes are only a doorbell; content is always fetched from the table, so a dropped connection or restart loses no work.
 
 A task's lifecycle:
+
+![Task lifecycle: eight states, fully auditable](docs/images/lifecycle.png)
+
+<details>
+<summary>Precise state diagram (Mermaid source)</summary>
 
 ```mermaid
 stateDiagram-v2
@@ -82,7 +94,13 @@ stateDiagram-v2
     rejected --> [*]
 ```
 
+</details>
+
 > `auth_required` and `input_required` in the diagram are `auth-required` and `input-required` in the standard. Terminal states are immutable; follow-up work becomes a new task in the same `Context_ID`.
+
+One real cross-node collaboration, as measured: the hub splits a problem, two nodes work in parallel, a third node cross-checks the findings, and results return to the owner along the original route:
+
+![Cross-node collaboration: split, parallel, relay, summarize](docs/images/collaboration.png)
 
 ## Quick start
 
