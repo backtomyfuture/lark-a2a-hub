@@ -1,207 +1,187 @@
-# lark-a2a-hub — Multi-Agent Hub on a Lark Bitable Bus
+<div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+# lark-a2a-hub
+
+**Turn a Lark (Feishu) Bitable into a dispatch bus for multi-agent work.**
+No server to run, no inbound ports, every step on the record.
+
+[![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
+[![Version](https://img.shields.io/badge/version-0.6.3-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.5.7-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
-[![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.2-orange.svg)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[中文](README.md) · [Standard](docs/standard.md) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md)
+[中文](README.md) · [Quick start](#quick-start) · [Standard](docs/standard.md) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Changelog](CHANGELOG.md)
 
-A production multi-agent collaboration system: **a Lark (Feishu) Bitable acts as
-the message bus and state layer**, with a data model borrowed from the A2A
-protocol. One hub decomposes work, dispatches tasks, runs approvals and
-presents results; any terminal with the node adapter installed can join and
-work, and cloud agents can join directly by following the protocol. Tasks have
-exactly one entry surface and one state surface, fully auditable end to end.
+</div>
 
-> Direction (standard v3.5): the hub is a logical role and a **single-process
-> superset** of a node, carried by `lah daemon --role node|hub` (CLI name
-> `lah`, with a `hub-node` compatibility alias). One process and one config
-> directory can serve both as the hub (network-wide approval cards, result
-> presentation, staleness alerts) and as an execution node (claim and run
-> tasks). This repository contains the only Node implementation. Wake-up modes
-> are ws / poll / webhook (webhook means Feishu automation outbound
-> notifications; no process in this project ever pushes, and none ever opens a
-> listening port). The hub role forces ws.
+---
 
-What's in the repo:
+You have several machines and several agents: a Mac at home, a work box, a bot in the cloud. Each can do something useful.
+Getting them to hand tasks to each other, ask questions midway, and wait for your approval before spending money or sending a message usually means building a server.
 
-| Part | Location | Description |
-|---|---|---|
-| Hub standard v3.5 | [docs/standard.md](docs/standard.md) | Seven-table object model, A2A eight-state machine, messaging / approval / idempotency protocol (normative) |
-| Architecture | [docs/architecture.md](docs/architecture.md) | Layering, core decisions and rationale, lifecycle, failure model |
-| Base schema | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | Field-level definitions of the seven tables, generated from the live Base (generator included) |
-| Hub integration | [docs/hub-integration.md](docs/hub-integration.md) · `src/hub/` | Hub duties, task-creation discipline, presentation and approval loops; implemented by `lah daemon --role hub` |
-| Node adapter | `bin/` `src/` · [DESIGN.md](DESIGN.md) | Turns any terminal into an execution node: claim → launch local script/Agent → collect receipt → log the run |
-| Agent templates | [docs/agent-templates.md](docs/agent-templates.md) | Final headless CLI commands, three permission classes, and known pitfalls |
-| Protocol nodes | [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | How a daemon-less agent joins by watching the tables (same protocol) |
+lark-a2a-hub skips the server: **it uses a Bitable you already have as the message bus and state layer.**
+Each machine runs a small daemon, `lah`. It only connects outward and opens no inbound port. It claims tasks, launches a local script or agent, and writes the result back to the table.
+Actions that need the owner's authorization pop up an approval card in Lark, and nothing runs until the owner taps approve.
+
+Running in production. The data model comes from the [A2A protocol](https://a2a-protocol.org) (eight task states, messages separate from artifacts, capability cards). Communication is table reads and writes only; A2A's HTTP transports are not implemented.
+
+> The detailed docs under `docs/` (standard, architecture, configuration) are written in Chinese. This page covers the essentials.
+
+## Why use it
+
+| You want | How it works |
+|---|---|
+| **No servers to operate** | The bus is a Lark Bitable. No database, queue or public endpoint to manage |
+| **Any machine can join** | One-line install. The wizard detects Claude Code, Codex, agy, Paseo, Orca and others on the machine and generates the capability table |
+| **Add capabilities without code** | A capability is one command template in `commands.json`. The kernel contains no agent-specific code |
+| **Humans approve risky actions** | Sending messages, editing or deleting data, spending money, changing permissions all go through an approval card that only the owner can answer |
+| **Debuggable after the fact** | Status, messages, runs and artifacts all live in the tables; `lah task why` rebuilds a timeline in one command |
+| **Crash-safe** | An in-flight ledger keeps a restart from running a command twice. Failures back off and retry with a cap, and a hop limit breaks loops |
+
+## How it works
 
 ```mermaid
 flowchart LR
-    OP["Operator"] --> HUB["Hub"]
-    HUB -->|"create task (message first, task row last)"| BUS["Lark Bitable bus<br/>Tasks · Messages · Parts · Runs<br/>Artifacts · AgentCards · Rules"]
-    BUS -->|"event push + sweep fallback"| NODES["Nodes: home / work machines / cloud agents"]
-    NODES -->|"status · messages · artifacts"| BUS
-    BUS -->|"terminal / needs-answer / needs-approval"| HUB
+    OP["You / terminal agent"] -->|"lah task create"| BUS
+    subgraph BUS["Lark Bitable bus (single source of truth)"]
+        direction TB
+        T["Tasks: state"]
+        M["Messages · Parts: content"]
+        R["Runs · Artifacts"]
+        C["AgentCards: capabilities"]
+    end
+    BUS -->|"event doorbell + 15-min sweep"| N1["Node: home Mac"]
+    BUS -->|"event doorbell + 15-min sweep"| N2["Node: work machine"]
+    BUS -.->|"Feishu automation webhook"| N3["Cloud bot (protocol node)"]
+    N1 & N2 & N3 -->|"status · messages · artifacts"| BUS
+    BUS -->|"needs approval / result / alert"| HUB["Hub: approval cards · result delivery · scheduling"]
+    HUB -->|"Lark interactive card"| OWNER["Owner"]
 ```
+
+Every participant (node, hub, cloud bot) does two things: **read the table, write the table.** Event pushes are only a doorbell; content is always fetched from the table, so a dropped connection or restart loses no work.
+
+A task's lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> submitted: created
+    submitted --> working: node claims
+    submitted --> auth_required: owner approval needed
+    auth_required --> submitted: owner approves
+    auth_required --> canceled: owner rejects
+    working --> input_required: agent asks a question
+    input_required --> working: answer arrives, same task resumes
+    working --> completed
+    working --> failed
+    working --> submitted: failure or timeout reclaim, backoff retry
+    submitted --> rejected: no such capability / offline / invalid params
+    completed --> [*]
+    failed --> [*]
+    canceled --> [*]
+    rejected --> [*]
+```
+
+> `auth_required` and `input_required` in the diagram are `auth-required` and `input-required` in the standard. Terminal states are immutable; follow-up work becomes a new task in the same `Context_ID`.
 
 ## Quick start
 
-### Path A: join an existing hub (install one node)
+Prerequisites: Node.js >= 20 and a Lark Bitable (ask your hub admin, or build your own, see below).
 
-Get the Base link from your hub admin — three steps:
-
-1. **Install** (requires Node.js >= 20):
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
-   ```
-   Installs to `~/.hub-node/app`; the entry point is linked to
-   `~/.local/bin/lah` (with the `hub-node` alias kept).
-
-2. **Configure with the wizard**:
-   ```bash
-   lah setup [--kind host|agent]
-   ```
-   - **`kind: host`** (a computer, default): auto-discovers the lark-cli app,
-     detects locally installed agents (Claude Code, Codex, agy, Paseo, Orca,
-     …) and generates `commands.json`; the daemon launches them as
-     subprocesses to do the work.
-   - **`kind: agent`** (a standalone agent entity, e.g. Muse): the agent
-     itself is the worker. setup never scans PATH and registers no external
-     CLI; the only capability is `agent` (`mode: inbox`). The daemon claims
-     tasks into a local `agent_inbox.jsonl` and keeps heartbeats alive; the
-     agent picks work up and closes it out itself.
-   > [!IMPORTANT]
-   > `kind=agent` + inbox only fits agents with a resident process that can
-   > call `lah inbox`. Cloud agents without one (e.g. Grok Bot) must use the
-   > protocol-node path (`Receive_Mode=automation` + Feishu automation
-   > webhook) instead — an external webhook cannot wake a local inbox file.
-   
-   The wizard resolves the six table IDs, writes `app.env` (mode 600) and
-   `node.json`, subscribes to document events for second-level wake-up, runs
-   `doctor`, and can register boot autostart.
-
-3. **Verify**:
-   ```bash
-   lah doctor      # connectivity and capability registration
-   lah daemon      # foreground trial (already resident if autostart was set)
-   ```
-   The wizard also installs the `lah` Skill for terminal agents
-   (`~/.agents/skills/lah`), so a terminal agent can dispatch cross-node work
-   directly.
-
----
-
-### Dispatching and interacting (CLI / agent surface)
-
-Any joined node or terminal agent can dispatch tasks and receive results on
-the return path:
-
-- **Dispatch**:
-  ```bash
-  lah task create --to <Target_Node> --cap <Skill_ID> --text "instruction" [--params '{"k":"v"}'] [--idempotency-key <key>]
-  ```
-- **Consume receipts** (delivered to local files, no chat spam in Feishu):
-  ```bash
-  lah present --pop
-  ```
-  Reads and drains this node's receipt queue
-  (`~/.hub-node/present_queue.jsonl`). A `present_bell` file next to it is
-  refreshed whenever new receipts land, so a local agent can watch one mtime
-  instead of polling the queue.
-- **Answer a question**: when a task is `input-required`, reply on the same
-  task and the executor resumes in place:
-  ```bash
-  lah task reply --task TASK-XXXX --text "answer"
-  ```
-- **Inspect**: `lah task show TASK-XXXX`
-- **Timeline & why**: `lah task why TASK-XXXX [--json]` (assembles chronological timeline from Tasks, Messages, Runs, Artifacts, and local outbox)
-- **Cancel**: `lah task cancel --task TASK-XXXX [--text "reason"]` (an initiator cancels only their own task; a hub role can cancel any; a terminal status errors and writes nothing)
-- **Approvals**: actions needing the owner's authorization move to
-  `auth-required`; the hub sends an approval card in Feishu, and the owner's
-  tap resumes or cancels the task. Forged decision rows written directly to
-  the table do not take effect (verified in testing).
-- **Inbox workflow** (for `kind: agent` nodes):
-  ```bash
-  lah inbox --pop                                                     # pick up work
-  lah inbox done --task TASK-XXXX --text "result" [--artifact <path>] # close out, receipt returns to the requester
-  lah inbox ask  --task TASK-XXXX --text "question"                   # → input-required
-  lah inbox fail --task TASK-XXXX --text "reason"                     # → failed, requester notified
-  ```
-
----
-
-### Path B: run your own hub
-
-One machine can be both hub and node, one process, one config directory:
-
-1. **Prepare the Base**: create the seven standard tables per
-   [docs/base-schema.md](docs/base-schema.md), get the Base link and the
-   owner's `open_id`, then install as above.
-2. **Configure and start**:
-   ```bash
-   lah setup --role hub --owner <owner-open-id>
-   lah doctor --role hub
-   ```
-
----
-
-### External bots (e.g. Grok Bot): Feishu automation + webhook
-
-For agents hosted on external cloud platforms — no resident process, no Node
-daemon, no long connection:
-
-1. **Register** the bot's capability in AgentCards with
-   `Receive_Mode=automation`.
-2. **Feishu automation**: when a Tasks row is created or changes state with
-   `Target_Node` = that bot, Feishu automation POSTs to the bot's public
-   endpoint — **IDs only (Task_ID, status, Msg_ID), never task bodies or
-   secrets**.
-3. **Fetch and write back**: on the webhook doorbell, the bot reads
-   Messages/Parts via the Feishu REST API, executes, and writes back
-   Messages, Parts, Runs and the Tasks status per the A2A-shaped protocol. A
-   low-frequency sweep (e.g. every 15 min) covers missed events.
-
-> **Red line**: daemons in this project never open listening ports, port
-> mappings or reverse tunnels, and never push to external nodes (standard §0.3,
-> §10.3). Outbound notification is driven entirely by Feishu's official
-> Bitable automation. See the [protocol node runbook](docs/protocol-node-runbook.md).
-
-## Node configuration notes
-
-- `node.json`: node identity (node/zone), bus parameters (baseToken/tables),
-  credential source, poll and sweep intervals. Hub may also set `tz` (IANA
-  name, default `Asia/Shanghai`); it applies only to cron wall time and ignores
-  the host timezone.
-- `commands.json`: the capability table. Keys are Skill_IDs, values are
-  command templates — `mode: "json"` for scripts (task envelope on stdin,
-  result JSON on the last stdout line) and `mode: "agent"` for agent CLIs
-  (template contains `{prompt}`). Adding, changing or removing a capability
-  means editing this file only; the daemon reconciles AgentCards from it and
-  marks removed capabilities `Dispatchable=No`.
-- Capabilities come in three tiers — deterministic scripts, a designated local
-  agent running a designated skill, and general agent+tooling — all just
-  command templates. The daemon is a thin shell with no built-in executors.
-- Credentials live only on the node, never on the bus; nodes make outbound
-  connections only and open no listening ports.
-
-### carrier: capabilities that need the LAN (macOS)
-
-Daemons launched by launchd on macOS are blocked from the LAN by the local
-network privacy mechanism (DESIGN.md §9). Mark such capabilities
-`"context": "carrier"` in `commands.json` and run, in an everyday terminal:
+**1. Install**
 
 ```bash
-lah host     # foreground; keep the terminal open; Ctrl-C to exit
+curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 ```
 
-The daemon hands those commands to the carrier over a local unix socket.
-When the carrier is offline the capabilities are marked offline on their
-cards and tasks are rejected explicitly — never silently run directly.
-Probe a target through the carrier with `lah doctor --probe <host:port>`.
+**2. Configure with the wizard** (resolves table IDs, writes credentials with mode 600, detects local agents, subscribes to events, runs a self-check, optionally registers autostart)
 
-## Versions and changes
+```bash
+lah setup
+```
 
-See [CHANGELOG.md](CHANGELOG.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+**3. Verify**
 
-License: MIT
+```bash
+lah doctor      # connectivity and capability registration
+lah daemon      # foreground trial (already resident if you chose autostart)
+```
+
+Dispatch a task and read the receipt:
+
+```bash
+lah task create --to <node> --cap <cap_id> --text "summarize today's todos"
+lah present --pop               # receipts land locally, no chat spam in Lark
+lah task reply --task TASK-XXXX --text "answer"   # when the task asks you something, same task resumes
+lah task why TASK-XXXX          # timeline when something goes wrong
+```
+
+The wizard also installs the `lah` Skill for your terminal agent (`~/.agents/skills/lah`), so it can start cross-node work on its own.
+
+**Running your own hub?** Create the seven tables per [base-schema.md](docs/base-schema.md), then `lah setup --role hub --owner <owner open_id>`. One process serves as both hub and execution node. See the [configuration reference](docs/configuration.md#7-自建中台hub-角色).
+
+**A cloud bot that cannot run a daemon?** Join through the Feishu automation webhook as a protocol node: [configuration reference](docs/configuration.md#8-接入外部-bot飞书自动化--webhook) and the [protocol node runbook](docs/protocol-node-runbook.md).
+
+## Feature overview
+
+- **One process, two roles**: the hub is a single-process superset of a node, `lah daemon --role node|hub`, one config directory.
+- **Capabilities as config**: one template in `commands.json` plugs in a script (`json` mode), an agent CLI (`agent` mode) or a resident agent itself (`inbox` mode). Editing the file hot-reloads the cards. A broken file keeps the previous table and pauses new claims until fixed.
+- **Questions and resume**: an agent can ask the requester mid-task (`input-required`); the answer resumes the same task. With a session id, `resume_command` can continue the same conversation.
+- **Owner approval**: tasks marked `approve` (per row or per local capability) enter `auth-required`; the hub sends the card early, and only the owner's tap counts. Forged decision rows have no effect.
+- **In-flight ledger**: a `direct` command is written to a ledger before it is spawned. After a restart, a live process only gets its heartbeat renewed, never a second run. If the process identity does not match, no signal is sent, so nothing gets killed by mistake.
+- **Disciplined failure**: at most 2 retries with backoff starting at 60 s, doubling, capped at 10 min. More than 8 hops trips the breaker. Invalid receipts and failed submissions are not re-run, to avoid repeating side effects.
+- **Observable**: `lah task why` joins task, messages, runs, artifacts and local pending state. Receipts may carry `USAGE:`, accumulated into task metadata.
+- **Cancel and follow-up**: `lah task cancel` withdraws a task. A completed receipt may carry `LATER:`, and the hub creates a follow-up task in the same context when it comes due.
+- **Scheduling**: the hub owns the only network-wide clock. Cron rows in the Rules table create tasks on schedule, idempotently.
+- **LAN context**: on macOS a daemon cannot reach the LAN; a `carrier` runs those commands in your terminal. When the carrier is offline, tasks are rejected explicitly, never silently downgraded.
+- **Tests and CI**: `npm test` (Node's built-in `node:test` and an in-memory bus, no real Base) covers the core paths. GitHub Actions runs on ubuntu and macOS with Node 20 and 22.
+
+## Security model
+
+These are red lines written into the standard and the code:
+
+- **Outbound only**: no listening ports (the carrier's local unix socket excepted), no port mapping or tunnels, no inbound webhook. Card callbacks also use the long connection.
+- **Instructions and data are separate**: what command runs, in which directory, in which context comes only from the local `commands.json`. Task text and parameters are written as data into a restricted-permission `input.json`, never spliced into the instruction. A task whose parameters smuggle in execution control keys is rejected, which blocks prompt-injection takeover.
+- **Owner approval**: sending messages, editing or deleting data, spending money, submitting forms and changing permissions all need approval. Only a structured decision written by the hub on the owner's action counts, not text and not a flag on the task row. A node can tighten the approval class locally but never loosen it.
+- **Credentials stay off the bus**: secrets live only in a mode-600 file on the machine. The bus carries tasks and file pointers. Logs never print credentials.
+- **Append-only messages**: Messages and Parts are never modified or deleted, and terminal tasks are never reopened.
+- **Fail loudly**: when a task cannot run, the system says so, marks the capability offline and rejects. It never quietly takes another path.
+
+## Design trade-offs
+
+The kernel design borrows from [agent-autoloop](https://github.com/KKKKhazix/agent-autoloop) (thin kernel, command templates for agents, structured receipts, hop breaker, instruction/data separation, one-line install). The differences come from the problem we target:
+
+| | agent-autoloop | lark-a2a-hub |
+|---|---|---|
+| Where state lives | Its own kernel database; chat tools act as the decision surface | A Lark Bitable is the bus; nothing for you to self-host |
+| Runtime form | Lives inside the user's session | Unattended, resident, starts at boot |
+| Data model | Its own | A2A-shaped: eight states, messages separate from artifacts, capability cards |
+| Cross-machine work | Centered on a local fact log | Nodes cooperate through one table; the hub centralizes approval and delivery |
+
+We took its resilience and observability ideas, and left out the SQLite fact log, inbound HTTP and third-party plugin loading, which conflict with our outbound-only, nothing-to-self-host red lines. Use this project when several machines and agents must cooperate over one protocol with an audit trail; otherwise read its docs and pick what fits.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/configuration.md](docs/configuration.md) | Config directory, `node.json` / `commands.json`, receipt conventions, carrier, CLI cheat sheet (Chinese) |
+| [docs/standard.md](docs/standard.md) | **The hub standard (normative)**: seven-table model, eight-state machine, messaging / approval / idempotency protocol (Chinese) |
+| [docs/architecture.md](docs/architecture.md) | Layering, core decisions and rationale, lifecycle, failure model |
+| [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | Field-level definitions of the seven tables, generated from the live Base |
+| [docs/hub-integration.md](docs/hub-integration.md) | Hub duties, task-creation discipline, presentation and approval loops |
+| [docs/agent-templates.md](docs/agent-templates.md) | Final headless CLI commands, permission semantics and known pitfalls |
+| [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | How a daemon-less agent joins by watching the tables |
+| [DESIGN.md](DESIGN.md) | Node adapter design and macOS LAN findings |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+
+## Contributing
+
+Issues and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. To verify locally:
+
+```bash
+npm install --omit=dev && npm test
+```
+
+## License
+
+[MIT](LICENSE)

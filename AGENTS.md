@@ -17,6 +17,7 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 - `src/hub/`：hub 角色——单进程超集（每轮扫表先由 `Kernel` 认领执行任务并登记能力，再由 `approval` 审批发卡、回调校验机主写 `auth_decision`、写 `canceled`、`present` 结果呈递到本地队列、`stale` 陈旧任务告警）。建单入口为 `lah task create`（写表前按 AgentCards 名册校验 `--to` / `--cap` 存在性），撤单入口为 `lah task cancel`，只读排障入口为 `lah task why`；`schedule` 服务除 cron 外还负责触发已完成任务的 `later` 复查。Rules 自动路由仍为计划。守护进程的 node 角色代码路径从不写 `auth_decision` 与 `canceled`；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。飞书端仅发审批交互卡，不发大段纯文本刷屏。
 - `src/transport/`：唤醒工厂（`createWaker`），支持 `ws`（长连接门铃 + 卡片回调）与 `poll`（默认 45 秒）两种入站唤醒，外加 15 分钟对账定时兜底；webhook 专指飞书自动化出站 POST，本项目不主动推送。hub 角色强制 ws。
 - `docs/standard.md`：**中台标准，权威**。`docs/base-schema.md` 与 `schema/base-schema.json` 是生成物，由 `schema/generate_schema.mjs` 产出。
+- `docs/configuration.md`：配置目录、`node.json` / `commands.json` 字段、回执约定、carrier 与 CLI 速查；README 只保留价值主张与上手，细节放这里。改 CLI 或配置字段时同步它。
 - `config/*.example.json`：配置样例，只放占位符。
 - `tests/`：`node:test` 测试（`tests/*.test.mjs`）与内存总线 `tests/mocks/`。不连真实 Base，状态只写临时目录。
 

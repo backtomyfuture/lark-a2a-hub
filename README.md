@@ -1,200 +1,185 @@
-# lark-a2a-hub —— 多 Agent 中台（飞书多维表格总线）
+<div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+# lark-a2a-hub
+
+**把飞书多维表格变成多 Agent 的调度总线。**
+零服务器、零入站端口、每一步都留痕可查。
+
+[![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
+[![Version](https://img.shields.io/badge/version-0.6.3-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.5.7-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
-[![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.2-orange.svg)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[English](README.en.md) · [中台标准](docs/standard.md) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md)
+[English](README.en.md) · [快速上手](#30-秒上手) · [中台标准](docs/standard.md) · [架构](docs/architecture.md) · [配置参考](docs/configuration.md) · [更新日志](CHANGELOG.md)
 
-一套已经在生产运行的多 Agent 协作系统：**用飞书多维表格当消息总线与
-状态层**，数据模型借 A2A 协议；一个枢纽（hub）负责拆解、派发、审批与
-结果呈递；任意终端装上节点适配器即可入列干活，云端 Agent 也能按协议
-直接接入。任务只有一个发起面和一个状态面，全程留痕可查。
+</div>
 
-> 方向说明（标准 v3.5）：枢纽（hub）是逻辑角色，并且是 `node` 的**单进程超集**，
-> 由 `lah daemon --role node|hub`（CLI 简称 `lah`，向下兼容 `hub-node` 别名）承载
-> （省略 `--role` 时读 `node.json` 的 `role`，缺省 node）。单进程单配置目录即可同时
-> 承担 Hub 枢纽职责（全网审批发卡、结果呈递、超时告警）与 Node 执行节点能力（认领执行任务）。
-> 仓库只有这一份 Node 实现。唤醒方式为 ws / poll / webhook 三种（webhook 专指飞书自动化出站通知，
-> 本项目任何进程不主动推送），本项目任何进程都不开监听端口。hub 角色强制 ws。
+---
 
-本仓库包含系统的全部公开部分：
+你有好几台机器、好几个 Agent：家里的 Mac、工作机、云端的 bot，各自能干点活。
+想让它们互相派单、中途提问、需要花钱或发消息时让你点头，通常得自己搭一套服务端。
 
-| 组成 | 位置 | 说明 |
-|---|---|---|
-| 中台标准 v3.5 | [docs/standard.md](docs/standard.md) | 七表对象模型、A2A 八态状态机、通信/审批/幂等协议（规范性文件） |
-| 系统架构 | [docs/architecture.md](docs/architecture.md) | 分层、核心决策与理由、生命周期、故障模型 |
-| Base 结构 | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | 七表字段级定义，由运行中的 Base 生成（附生成器） |
-| 枢纽对接 | [docs/hub-integration.md](docs/hub-integration.md) · `src/hub/` | 枢纽职责、建单纪律、呈递与审批回路；实现是 `lah daemon --role hub` |
-| 节点适配器 | 本仓库 `bin/` `src/` · [DESIGN.md](DESIGN.md) | 把任何终端变成执行节点：认领 → 拉起本机脚本/Agent → 收回执 → 落日志 |
-| 能力模板库 | [docs/agent-templates.md](docs/agent-templates.md) | 各家无头 CLI 定版命令、三类权限语义与已知坑 |
-| 协议接入 | [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | 无守护进程的 Agent 按手册盯表接入（同一套协议） |
+lark-a2a-hub 的做法是：**不搭服务端，用你已有的飞书多维表格当消息总线和状态层。**
+每台机器装一个轻量守护进程 `lah`，它只往外连、不开任何入站端口，认领任务、拉起本机脚本或 Agent、把结果写回表里。
+需要机主授权的动作，会在飞书里弹一张审批卡，你点了才执行。
+
+已在生产运行。数据模型借自 [A2A 协议](https://a2a-protocol.org)（八态任务、消息与产物分离、能力名片），通信只读写表，不实现 A2A 的 HTTP 传输。
+
+## 为什么用它
+
+| 你想要 | 它怎么做 |
+|---|---|
+| **不想运维服务器** | 总线就是飞书多维表格，没有数据库、消息队列、公网入口要管 |
+| **任何机器都能入列** | 一行命令安装，向导自动识别本机的 Claude Code、Codex、agy、Paseo、Orca 等，生成能力表 |
+| **加能力不改代码** | 能力 = `commands.json` 里一条命令模板，内核不含任何具体 Agent 的代码 |
+| **危险动作要人点头** | 对外发消息、删改数据、花钱、改权限，走审批卡，只认机主本人 |
+| **出了事查得清** | 状态、消息、执行记录、产物全在表里，`lah task why` 一条命令还原时间线 |
+| **进程崩了也不乱** | 在途账本保证重启后不二次执行；失败有退避重试、有上限，有熔断 |
+
+## 它怎么工作
 
 ```mermaid
 flowchart LR
-    OP["操作者"] --> HUB["枢纽 hub"]
-    HUB -->|"建单（先消息、后任务行）"| BUS["飞书多维表格总线<br/>Tasks · Messages · Parts · Runs<br/>Artifacts · AgentCards · Rules"]
-    BUS -->|"事件推送＋对账兜底"| NODES["节点们：家用机 / 工作机 / 云端 Agent"]
-    NODES -->|"状态 · 消息 · 产物回写"| BUS
-    BUS -->|"终态 / 待答 / 待批"| HUB
+    OP["你 / 终端 Agent"] -->|"lah task create"| BUS
+    subgraph BUS["飞书多维表格总线（唯一事实来源）"]
+        direction TB
+        T["Tasks 任务状态"]
+        M["Messages · Parts 消息与内容"]
+        R["Runs · Artifacts 执行与产物"]
+        C["AgentCards 能力名片"]
+    end
+    BUS -->|"事件门铃 + 15 分钟对账"| N1["节点：家用 Mac"]
+    BUS -->|"事件门铃 + 15 分钟对账"| N2["节点：工作机"]
+    BUS -.->|"飞书自动化 webhook"| N3["云端 bot（协议接入）"]
+    N1 & N2 & N3 -->|"状态 · 消息 · 产物回写"| BUS
+    BUS -->|"待批 / 结果 / 告警"| HUB["hub：审批卡 · 结果呈递 · 定时调度"]
+    HUB -->|"飞书交互卡"| OWNER["机主"]
 ```
 
-## 快速上手
+所有参与者（节点、hub、云端 bot）只做两件事：**读表、写表**。事件推送只是叫醒门铃，内容一律回表拉取，所以断线、重启都不丢活。
 
-### 路径 A：加入现成中台（装一个 node）
+一个任务的生命周期：
 
-向中台管理员获取已建好的 Base 链接，只需 3 步：
+```mermaid
+stateDiagram-v2
+    [*] --> submitted: 建单
+    submitted --> working: 节点认领
+    submitted --> auth_required: 需机主审批
+    auth_required --> submitted: 机主批准
+    auth_required --> canceled: 机主驳回
+    working --> input_required: Agent 提问
+    input_required --> working: 收到答复，原任务续跑
+    working --> completed
+    working --> failed
+    working --> submitted: 失败或超时回收，退避重试
+    submitted --> rejected: 能力不存在 / 离线 / 参数违规
+    completed --> [*]
+    failed --> [*]
+    canceled --> [*]
+    rejected --> [*]
+```
 
-1. **安装程序**（前置需 Node.js >= 20）：
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
-   ```
-   程序安装到 `~/.hub-node/app`，可执行入口链接至 `~/.local/bin/lah`（同时保留 `hub-node` 兼容别名）。
+> 图中 `auth_required`、`input_required` 即标准里的 `auth-required`、`input-required`。终态不可变，后续工作在同一 `Context_ID` 下新建任务。
 
-2. **一键向导配置**：
-   ```bash
-   lah setup [--kind host|agent]
-   ```
-   提示式向导支持选择机器类型（1=电脑宿主，2=独立 Agent 本尊）：
-   - **`kind: host`（电脑宿主，默认）**：自动发现 lark-cli 应用、自动识别本机已安装的 Agent（Claude Code、Codex、agy、Paseo、Orca 等）并生成 `commands.json`，由守护进程拉起子进程干活；
-   - **`kind: agent`（独立 Agent，如 Muse、本地 Agent 会话或常驻 Agent 容器）**：本身即为 Agent 实体，适用于有常驻守护进程或能在主循环中定期调用 `lah inbox` 的 Agent。setup 绝不扫描 PATH、不注册任何外部 CLI，只注册 `agent` 能力（`mode: inbox`）。守护进程认领任务后写入本地 `agent_inbox.jsonl` 并刷新心跳保活，由本尊自行接单与处理。
-   > [!IMPORTANT]
-   > **架构分界提示**：`kind=agent` + inbox 仅适用于有常驻进程/能主动调用 `lah inbox` 的 Agent。没有常驻进程的云端外部 Agent（如 Grok Bot）请勿选择 `kind=agent`，而应走「协议接入型节点（`Receive_Mode=automation`）＋飞书自动化 webhook」（见下方接入外部 bot）；因为飞书自动化 webhook 是向外部 HTTP 端点 POST，**不会读取本机收件箱，收件箱也绝不会被平台 webhook 唤醒**。
-   自动解析 Base 六表 ID、写入 600 权限的 `app.env` 与 `node.json`，注册云文档事件订阅实现秒级唤醒，并运行 `doctor` 自检。最后可直接确认注册开机自启。
+## 30 秒上手
 
-3. **验收运行**：
-   ```bash
-   lah doctor      # 检查连通性与能力登记
-   lah daemon      # 前台试跑（若 setup 中已注册自启则已常驻）
-   ```
-   安装向导已自动为终端 Agent 安装 `lah` Skill（位于 `~/.agents/skills/lah`），终端 Agent 可以直接发起跨节点调度！
+前置：Node.js >= 20，一个飞书多维表格（向中台管理员要，或自建，见下）。
 
----
-
-### 多 Agent 调度与任务交互（CLI / Agent 通用）
-
-任何入网节点或终端 Agent 都可以派发任务并按原路接收结果：
-
-- **派单**：
-  ```bash
-  lah task create --to <Target_Node> --cap <Skill_ID> --text "指令文本" [--params '{"k":"v"}']
-  ```
-  默认自动以当前节点作为发起方（`From_Node` 与 `Source`）。
-- **消费回执（原路落盘，飞书不刷屏）**：
-  ```bash
-  lah present --pop
-  ```
-  读取并清空属于本机发起的任务回执队列（`~/.hub-node/present_queue.jsonl`），终端 Agent 即可直接在当前对话中向用户汇报。
-- **答复追问**：
-  当任务状态为 `input-required` 时，直接原路答复，目标节点在原任务自动续跑：
-  ```bash
-  lah task reply --task TASK-XXXX --text "答复内容"
-  ```
-- **查看状态与产物**：
-  ```bash
-  lah task show TASK-XXXX
-  ```
-- **追溯来龙去脉与时间线**：
-  ```bash
-  lah task why TASK-XXXX [--json]
-  ```
-- **取消**：`lah task cancel --task TASK-XXXX [--text "说明"]`（发起方只撤自己的单，hub 可撤任意单；终态报错不改状态）
-- **审批安全红线**：
-  需要机主授权的动作自动转入 `auth-required`，由主节点在飞书向机主发送卡片，机主点击批准/驳回后自动恢复执行或取消，无需终端手动干预。
-- **独立 Agent 接单与回执（收件箱工作流）**：
-  若节点以 `--kind agent` 运行，Agent 本尊在循环开头接单，处理后原路提交回执：
-  ```bash
-  lah inbox --pop                                                    # 接单：读取并确认待办
-  lah inbox done --task TASK-XXXX --text "执行结论" [--artifact <路径>]  # 完单：关单并原路回传
-  lah inbox ask  --task TASK-XXXX --text "追问问题"                   # 追问：转入 input-required 待答
-  lah inbox fail --task TASK-XXXX --text "失败原因"                   # 失败：置 failed 并原路通知
-  ```
-
----
-
-### 路径 B：自建中台（Hub 角色：单进程兼任中台与执行节点）
-
-一台机器即可同时承担枢纽（发审批/呈递/告警）与执行节点能力（认领执行任务），单进程单目录常驻：
-
-1. **准备 Base**：
-   按照 [docs/base-schema.md](docs/base-schema.md) 在飞书多维表格中建好七张标准表，获取 Base 链接与机主的 `open_id`。安装程序：
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
-   ```
-
-2. **配置并启动枢纽（hub）**：
-   ```bash
-   lah setup --role hub --owner <机主open_id>
-   ```
-   hub 角色自动包含 node 的全部功能：扫描本机 Agent、生成 `commands.json`、注册事件长连接与云文档事件订阅（秒级门铃），并承担全网审批发卡与结果呈递。在向导末尾确认即可直接注册常驻系统自启。
-
-3. **验收运行**：
-   ```bash
-   lah doctor --role hub
-   ```
-   服务单进程承载 Hub 与 Node 双重职责，无需额外启动两个进程或维护两套配置目录。
-
----
-
-### 接入外部 bot（如 Grok bot）：飞书自动化 + webhook
-
-对于托管在外部云平台、没有常驻进程、无法运行 Node 守护进程且无长连接能力的外部 Agent（如 Grok bot）：
-> **选型界限**：没有常驻进程的外部 Agent 必须走本路径（协议节点 + 飞书自动化 webhook），不能走 `kind=agent` 的收件箱（inbox）模式，因为外部 webhook 无法唤醒本地收件箱文件。
-
-1. **定义与名片**：在 AgentCards 表登记该 bot 的能力与节点标识，`Receive_Mode` 设为 `automation`。
-2. **飞书多维表格自动化**：在 Base 配置自动化流程——当 Tasks 表有新记录写入或状态变更（且 `Target_Node` 为该 bot）时，触发飞书自动化向该 bot 的公网端点发送 HTTP POST。**只发送 ID（Task_ID、状态、Msg_ID），不带任务正文与敏感数据**。
-3. **拉取与回写**：外部 bot 收到 webhook 门铃后，通过飞书 REST API 回查 Messages / Parts 拉取参数；执行完毕后按 A2A 协议写回 Messages、Parts、Runs 并更新 Tasks 状态。外部 bot 须自行设置低频对账（如 15 分钟）兜底扫表（注意：平台 webhook 与定时对账不能写在同一个飞书自动化内，详见 [协议节点运行手册](docs/protocol-node-runbook.md)）。
-> **红线原则**：本项目守护进程绝不开监听端口、不做端口映射与反向隧道，也不主动向外部节点发起推送（标准 §0 第 3 条、§10.3）。出站通知完全由飞书官方多维表格自动化驱动。详细规范见 [协议节点运行手册](docs/protocol-node-runbook.md)。
-
-## 节点配置要点
-
-- `node.json`：节点身份（node/zone）、总线参数（baseToken/tables）、凭据来源
-  （appEnv 指向本地 env 文件，或 appId/appSecret 直填）、轮询与对账周期。
-  hub 另可写 `tz`（IANA 时区名，缺省 `Asia/Shanghai`），只用于定时调度的 cron 墙钟，与宿主机时区无关。
-- `commands.json`：能力表。键是 Skill_ID，值是命令模板：
-  - `mode: "json"` —— 脚本类：stdin 收任务信封，stdout 最后一行输出结果 JSON；
-  - `mode: "agent"` —— Agent 类：模板含 `{prompt}`，输出纯文本＋结构化回执块。
-  - 加能力、改能力或删能力只改这个文件。守护进程每轮用文件 mtime 与内容
-    哈希判断它变没变；变了就串行对账 AgentCards：新增或修改的能力更新名片，
-    从文件里删掉的能力把名片 `Dispatchable` 置为 `No`。进程启动后的第一次同步，
-    以及 carrier 在线状态变化时，也会强制校准名片。`registeredCards` 和
-    `carrierAvailability` 只在这一轮写表全部成功之后才更新；写到一半失败就保持
-    上一版缓存，下一轮再补，不会把“没写上”当成“已经同步”。
-  - `commands.json` 临时解析失败时保留上一版有效能力表，并暂停派发新任务
-    （任务留在 `submitted`，不会因为能力表被清空而拒成终态 `rejected`）。
-    文件修好后，下一轮检测到变更会自行恢复派发。
-- 能力分三层：确定性脚本、指定本地 Agent 执行指定 Skill、通用能力
-  （Agent＋工具面）——都是命令模板，守护进程是薄壳，不内嵌执行器。
-- 凭据只存节点本地，绝不进总线；节点只发起出站连接，不开监听端口。
-
-### carrier：需要局域网的能力（macOS）
-
-macOS 上由 launchd 拉起的守护进程访问局域网会被系统本地网络隐私机制拦截
-（见 DESIGN.md §9）。需要局域网的能力，在 `commands.json` 的条目里加
-`"context": "carrier"`，再在你日常的终端（比如常开的 Ghostty/tmux 里）跑：
+**1. 安装**
 
 ```bash
-lah host     # 前台常驻，保持终端开启；Ctrl-C 退出
+curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 ```
 
-守护进程会经本地 unix socket 把这类命令交给 carrier 在终端语境里代跑；
-carrier 不在线时，这些能力在名片上自动标离线、任务明确拒收，绝不静默
-改走直跑。在线状态相对上次成功写表发生变化时，会再强制校准一次名片，
-并且仍是写表成功之后才记住新的 `carrierAvailability`。`lah doctor`
-默认只报告 carrier socket 是否在线。
-
-[DESIGN.md](DESIGN.md) §9 注记④ 的限定：carrier 必须由用户在拥有局域网路由
-和本地网络权限的交互终端里启动（守护进程只连接、从不拉起它）。socket
-在线只说明本机 carrier 在听，不代表远端局域网目标一定可达。要实测该目标：
+**2. 向导配置**（解析表 ID、写 600 权限的凭据、识别本机 Agent、订阅事件、自检、可选开机自启）
 
 ```bash
-lah doctor --probe <host:port>   # 经在线 carrier 做一次只读 TCP 探测
+lah setup
 ```
 
-## 版本与变更
+**3. 验收**
 
-见 [CHANGELOG.md](CHANGELOG.md)。参与改进见
-[CONTRIBUTING.md](CONTRIBUTING.md)。
+```bash
+lah doctor      # 连通性与能力登记
+lah daemon      # 前台试跑；setup 里选了自启则已常驻
+```
 
-License: MIT
+派一个任务，再看回执：
+
+```bash
+lah task create --to <节点> --cap <能力ID> --text "帮我汇总今天的待办"
+lah present --pop               # 取回执，飞书里不刷屏
+lah task reply --task TASK-XXXX --text "答复内容"   # 任务向你提问时，原任务续跑
+lah task why TASK-XXXX          # 出问题时看时间线
+```
+
+向导还会给你的终端 Agent 装上 `lah` Skill（`~/.agents/skills/lah`），Agent 就能自己发起跨节点调度。
+
+**自建中台？** 按 [base-schema.md](docs/base-schema.md) 建好七张表，然后 `lah setup --role hub --owner <机主 open_id>`。一个进程同时担任 hub 与执行节点。详见 [配置参考](docs/configuration.md#7-自建中台hub-角色)。
+
+**云端 bot 没法跑守护进程？** 走飞书自动化 webhook 的协议接入，见 [配置参考](docs/configuration.md#8-接入外部-bot飞书自动化--webhook) 与 [协议节点手册](docs/protocol-node-runbook.md)。
+
+## 能力一览
+
+- **角色合一**：hub 是 node 的单进程超集，`lah daemon --role node|hub`，单进程单目录。
+- **能力即配置**：`commands.json` 一条模板接入脚本（`json` 模式）、Agent（`agent` 模式）或常驻 Agent 本尊（`inbox` 模式）。改文件即热更新名片，配置写坏时保留旧表并暂停接新单，修好自动恢复。
+- **提问与续跑**：Agent 可以中途向发起方提问（`input-required`），答复后在原任务续跑，不另开新任务；有 session 时可经 `resume_command` 续接同一会话。
+- **机主审批**：行级或本机声明为 `approve` 的任务进入 `auth-required`，由 hub 提前发卡，只认机主点击；伪造的决定行不生效。
+- **在途账本**：`direct` 命令的进程信息先落账本再 spawn。守护重启后进程还在就续心跳、不二次执行；身份对不上不发信号，免得误杀。
+- **失败有章法**：重试上限 2 次，60 秒起翻倍退避、封顶 10 分钟；跳数超过 8 熔断；回执无效或提交失败不重跑，避免副作用重复。
+- **可观测**：`lah task why` 汇总任务、消息、执行、产物与本机待补交状态；回执可带 `USAGE:` 用量，累计到任务元数据。
+- **取消与复查**：`lah task cancel` 撤单；完成回执可带 `LATER:` 预约复查，hub 到点在同一上下文新建复查任务。
+- **定时调度**：hub 持有全网唯一时钟，Rules 表里的 cron 行到期自动建单，幂等防重。
+- **局域网语境**：macOS 守护进程碰不到局域网，用 `carrier` 在你的终端里代跑；carrier 离线时明确拒收，不静默降级。
+- **测试与 CI**：`npm test`（Node 内置 `node:test` 与内存总线，不连真实 Base）覆盖核心路径；GitHub Actions 在 ubuntu / macOS × Node 20 / 22 上跑。
+
+## 安全模型
+
+这些是写进标准、写进代码的红线：
+
+- **只出不进**：不开监听端口（carrier 的本地 unix socket 除外），不做端口映射或隧道，不实现入站 webhook。卡片回调也走长连接。
+- **指令与数据分离**：执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。任务正文与参数只作为数据写进一份受限权限的 `input.json`，不拼进指令；参数里夹带执行控制键的任务直接拒收，防提示注入夺权。
+- **机主审批**：发消息、删改数据、花钱、提交表单、改权限，一律走审批。审批只认 hub 写入、机主操作的结构化决定，不认文字、不认任务行上的标记。本机可以把审批级别调严，不能放松。
+- **凭据不入总线**：密钥只在本机 600 权限的文件里；总线只放任务与文件指针；日志不打印凭据。
+- **消息只追加**：Messages、Parts 永不修改或删除，终态任务不可重启，留痕不可篡改。
+- **失败要响**：达不到执行条件就明说、标离线、拒收，绝不静默换路径硬跑。
+
+## 设计取舍
+
+本项目的内核设计借鉴了 [agent-autoloop](https://github.com/KKKKhazix/agent-autoloop)（薄内核、命令模板接 Agent、结构化回执、跳数熔断、指令数据分离、一行安装）。差异在于我们要解决的场景：
+
+| | agent-autoloop | lark-a2a-hub |
+|---|---|---|
+| 状态存哪 | 自带内核数据库，聊天工具做决策面 | 飞书多维表格即总线，读者零自建 |
+| 运行形态 | 活在用户会话里 | 无人值守常驻，开机自启 |
+| 数据模型 | 自有 | 按 A2A 形状：八态、消息与产物分离、能力名片 |
+| 跨机器协作 | 以本机事实日志为核心 | 多节点经同一张表协作，hub 统一审批与呈递 |
+
+我们取了它的韧性与可观测性思路，没有取 SQLite 事实日志、入站 HTTP、第三方插件加载这类与「只出不进、零自建」红线冲突的部分。要让多台机器、多个 Agent 以统一协议协作并留痕，用本项目；其他场景请看它的文档，选合适的。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/configuration.md](docs/configuration.md) | 配置目录、`node.json` / `commands.json`、回执约定、carrier、CLI 速查 |
+| [docs/standard.md](docs/standard.md) | **中台标准（权威）**：七表对象模型、八态状态机、通信/审批/幂等协议 |
+| [docs/architecture.md](docs/architecture.md) | 分层、核心决策与理由、生命周期、故障模型 |
+| [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | 七表字段级定义，由线上 Base 生成 |
+| [docs/hub-integration.md](docs/hub-integration.md) | hub 职责、建单纪律、呈递与审批回路 |
+| [docs/agent-templates.md](docs/agent-templates.md) | 各家无头 CLI 的定版命令、权限语义与已知坑 |
+| [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | 无守护进程的 Agent 如何按协议盯表接入 |
+| [DESIGN.md](DESIGN.md) | 节点适配器设计与 macOS 局域网实测 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
+
+## 参与
+
+欢迎 issue 与 PR，开始前请读 [CONTRIBUTING.md](CONTRIBUTING.md)。本地验证：
+
+```bash
+npm install --omit=dev && npm test
+```
+
+## License
+
+[MIT](LICENSE)
