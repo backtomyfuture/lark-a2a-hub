@@ -92,7 +92,7 @@ stateDiagram-v2
 curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 ```
 
-**2. 向导配置**（解析表 ID、写 600 权限的凭据、识别本机 Agent、订阅事件、自检、可选开机自启）
+**2. 向导配置**（自动检测或一键克隆多维表格、解析表 ID、写 600 权限的凭据、识别本机 Agent、订阅事件、自检、可选开机自启）
 
 ```bash
 lah setup
@@ -118,7 +118,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 
 向导还会给你的终端 Agent 装上 `lah` Skill（`~/.agents/skills/lah`），Agent 就能自己发起跨节点调度。
 
-**自建中台？** 按 [base-schema.md](docs/base-schema.md) 建好七张表，然后 `lah setup --role hub --owner <机主 open_id>`。一个进程同时担任 hub 与执行节点。详见 [配置参考](docs/configuration.md#7-自建中台hub-角色)。
+**自建中台？** 打开 [飞书多维表格标准模板](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) 点击右上角「使用该模板」即可一键克隆 7 张标准表（向导 `lah setup` 未扫描到可用 Base 时也会自动弹窗调起该模板页面），随后运行 `lah setup --role hub --owner <机主 open_id>`。一个进程同时担任 hub 与执行节点。详见 [配置参考](docs/configuration.md#7-自建中台hub-角色)。
 
 **云端 bot 没法跑守护进程？** 走飞书自动化 webhook 的协议接入，见 [配置参考](docs/configuration.md#8-接入外部-bot飞书自动化--webhook) 与 [协议节点手册](docs/protocol-node-runbook.md)。
 

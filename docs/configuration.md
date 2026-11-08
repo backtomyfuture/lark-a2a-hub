@@ -138,7 +138,7 @@ DESIGN.md §9 注记④ 记录了本项目作者机器上的限定：长驻进�
 
 ## 7. 自建中台（Hub 角色）
 
-1. 按 [base-schema.md](base-schema.md) 在飞书多维表格里建好七张标准表，拿到 Base 链接与机主 `open_id`。
+1. **一键克隆多维表格**：打开 [飞书多维表格标准模板](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) 点击右上角「使用该模板」即可一键复制全部七张标准表，无需手动建表；字段与选项细节可参阅 [base-schema.md](base-schema.md)。（若此前未建表，`lah setup` 向导在未检测到可用 Base 时也会自动调起浏览器弹出此模板供一键克隆）。
 2. 安装后运行 `lah setup --role hub --owner <机主 open_id>`。hub 角色包含 node 的全部能力，并承担全网审批发卡、结果呈递、陈旧任务告警、定时调度与 `later` 复查。
 3. `lah doctor --role hub` 验收。单进程、单配置目录，不需要拆两个进程。
 

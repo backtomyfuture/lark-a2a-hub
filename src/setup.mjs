@@ -11,13 +11,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
-import { execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { FeishuBus } from "./bus/feishu.mjs";
 import { doctor, checkAppEventSubscribed } from "./doctor.mjs";
 import { service } from "./service.mjs";
 
 const REQUIRED_TABLES = ["Tasks", "Messages", "Parts", "Runs", "Artifacts", "AgentCards"];
 const TABLE_KEYS = { Tasks: "tasks", Messages: "messages", Parts: "parts", Runs: "runs", Artifacts: "artifacts", AgentCards: "agentCards" };
+export const OFFICIAL_BASE_TEMPLATE_URL = "https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe";
 
 export function parseFlags(argv) {
   const f = { yes: false, force: false, service: false, role: "node", kind: "", skipSkill: false };
@@ -98,6 +99,23 @@ function findLarkCliBin() {
 function run(cmd, args, opts = {}) {
   const resolvedCmd = cmd === "lark-cli" ? findLarkCliBin() : cmd;
   return execFileSync(resolvedCmd, args, { encoding: "utf8", env: { ...process.env, PATH: richPath() }, stdio: ["ignore", "pipe", "ignore"], ...opts });
+}
+
+export function openBrowser(url) {
+  try {
+    if (process.platform === "darwin") {
+      execFile("open", [url], () => {});
+      return true;
+    } else if (process.platform === "win32") {
+      execFile("cmd.exe", ["/c", "start", "", url], () => {});
+      return true;
+    } else {
+      execFile("xdg-open", [url], () => {});
+      return true;
+    }
+  } catch {
+    return false;
+  }
 }
 
 function checkDriveSubscription(baseToken, appId) {
@@ -962,8 +980,8 @@ export async function runSetup(configDir, argv, appDir) {
     // 3. Base 与表发现
     let defaultBase = null;
     let defaultBaseLabel = "";
+    const tempBus = new FeishuBus({ appId, appSecret: secret, baseToken: "", tables: {} });
     if (!flags.base) {
-      const tempBus = new FeishuBus({ appId, appSecret: secret, baseToken: "", tables: {} });
       const candidates = await discoverCandidateBases(tempBus, appId);
       if (candidates.length === 1) {
         defaultBase = candidates[0].token;
@@ -971,29 +989,64 @@ export async function runSetup(configDir, argv, appDir) {
         console.log(`  ✓ 自动发现多维表格 Base：${defaultBaseLabel}`);
       } else if (candidates.length > 1) {
         console.log("  · 发现多个候选多维表格 Base：");
+        console.log(`    0. [新建] 打开官方模板，一键克隆全新标准 Base`);
         candidates.forEach((c, idx) => {
           console.log(`    ${idx + 1}. ${c.name} (${c.token})${c.hasStandardTables ? " [含6张标准表]" : ""}`);
         });
         if (interactive) {
-          const pick = await ask("选择要使用的 Base 序号或直接粘贴链接", "1");
-          const num = Number(pick);
-          if (Number.isInteger(num) && num >= 1 && num <= candidates.length) {
-            defaultBase = candidates[num - 1].token;
-            defaultBaseLabel = candidates[num - 1].name ? `${candidates[num - 1].name}（${candidates[num - 1].token}）` : candidates[num - 1].token;
+          const pick = await ask("选择要使用的 Base 序号、输入 0 打开模板新建，或直接粘贴 Base 链接", "1");
+          if (pick === "0") {
+            console.log(`  · 正在打开官方标准多维表格模板页面…\n    👉 ${OFFICIAL_BASE_TEMPLATE_URL}`);
+            openBrowser(OFFICIAL_BASE_TEMPLATE_URL);
           } else {
-            defaultBase = extractBaseToken(pick) || pick;
+            const num = Number(pick);
+            if (Number.isInteger(num) && num >= 1 && num <= candidates.length) {
+              defaultBase = candidates[num - 1].token;
+              defaultBaseLabel = candidates[num - 1].name ? `${candidates[num - 1].name}（${candidates[num - 1].token}）` : candidates[num - 1].token;
+            } else {
+              defaultBase = extractBaseToken(pick) || pick;
+            }
           }
         } else {
           defaultBase = candidates[0].token;
+        }
+      } else {
+        console.log("  · 未搜索到现成的「Agent中台」多维表格 Base。");
+        console.log("  · 正在为你打开官方标准多维表格模板页面（含全部 7 张标准表，点击右上角「使用该模板」即可一键克隆）：");
+        console.log(`    👉 ${OFFICIAL_BASE_TEMPLATE_URL}`);
+        if (interactive) {
+          openBrowser(OFFICIAL_BASE_TEMPLATE_URL);
         }
       }
     }
 
     const basePrompt = defaultBaseLabel
       ? "确认或修改多维表格 Base 链接/token"
-      : "把多维表格 Base 的链接粘贴进来（打开 Base 页面复制网址即可，或直接给 token）";
+      : "请在打开的页面中点击右上角「使用该模板」创建，再把你的新 Base 网址粘贴进来（或直接给 token）";
     const baseInput = flags.base || (await ask(basePrompt, defaultBase || undefined));
-    const baseToken = extractBaseToken(baseInput);
+    let baseToken = extractBaseToken(baseInput);
+    if (!baseToken) {
+      const wikiMatch = String(baseInput).match(/\/wiki\/([A-Za-z0-9_-]+)/);
+      if (wikiMatch) {
+        const wikiToken = wikiMatch[1];
+        try {
+          const nodeRes = await tempBus.api("GET", `/wiki/v2/spaces/get_node?token=${wikiToken}`);
+          if (nodeRes?.node?.obj_token) {
+            baseToken = nodeRes.node.obj_token;
+            console.log(`  ✓ 已从知识库节点自动解析出 Base token: ${baseToken}`);
+          }
+        } catch {
+          try {
+            const out = run("lark-cli", ["api", "GET", "/open-apis/wiki/v2/spaces/get_node", "--params", JSON.stringify({ token: wikiToken }), "--as", "bot", "--json"]);
+            const parsed = JSON.parse(out);
+            if (parsed?.data?.node?.obj_token) {
+              baseToken = parsed.data.node.obj_token;
+              console.log(`  ✓ 已从知识库节点自动解析出 Base token: ${baseToken}`);
+            }
+          } catch {}
+        }
+      }
+    }
     if (!baseToken) { console.error("  ✗ 没能从输入里解析出 Base token。"); return 2; }
     const bus = new FeishuBus({ appId, appSecret: secret, baseToken, tables: {} });
     let tableItems;
@@ -1029,6 +1082,7 @@ export async function runSetup(configDir, argv, appDir) {
     const missing = REQUIRED_TABLES.filter((n) => !byName.has(n));
     if (missing.length) {
       console.error(`  ✗ Base 缺少标准表：${missing.join(", ")}（现有表：${[...byName.keys()].join(", ") || "无"}）。中台标准 Base 需含 Tasks/Messages/Parts/Runs/Artifacts/AgentCards 六表。`);
+      console.error(`    提示：你可以直接一键克隆官方标准模板，免去手动建表：\n    👉 ${OFFICIAL_BASE_TEMPLATE_URL}\n    点击右上角「使用该模板」创建，再把新链接粘贴过来。`);
       return 3;
     }
     const tables = {};
