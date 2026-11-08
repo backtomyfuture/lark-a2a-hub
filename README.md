@@ -39,6 +39,11 @@ lark-a2a-hub 的做法是：**不搭服务端，用你已有的飞书多维表�
 
 ## 它怎么工作
 
+![架构总览：所有 Agent 只读写同一张飞书多维表格](docs/images/architecture.png)
+
+<details>
+<summary>精确结构图（Mermaid）</summary>
+
 ```mermaid
 flowchart LR
     OP["你 / 终端 Agent"] -->|"lah task create"| BUS
@@ -57,9 +62,16 @@ flowchart LR
     HUB -->|"飞书交互卡"| OWNER["机主"]
 ```
 
+</details>
+
 所有参与者（节点、hub、云端 bot）只做两件事：**读表、写表**。事件推送只是叫醒门铃，内容一律回表拉取，所以断线、重启都不丢活。
 
 一个任务的生命周期：
+
+![任务生命周期：八种状态，全程留痕](docs/images/lifecycle.png)
+
+<details>
+<summary>精确状态图（Mermaid）</summary>
 
 ```mermaid
 stateDiagram-v2
@@ -80,7 +92,13 @@ stateDiagram-v2
     rejected --> [*]
 ```
 
+</details>
+
 > 图中 `auth_required`、`input_required` 即标准里的 `auth-required`、`input-required`。终态不可变，后续工作在同一 `Context_ID` 下新建任务。
+
+实测中的一次跨节点协作——hub 拆题、双节点并行、第三个节点拿结论接力核对、结果原路呈递机主：
+
+![跨节点协作：拆题、并行、接力、汇总](docs/images/collaboration.png)
 
 ## 30 秒上手
 
