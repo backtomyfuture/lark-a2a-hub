@@ -109,7 +109,16 @@ lark-a2a-hub/
   bin/hub-node.mjs      # CLI：setup / daemon / doctor / service / host / task
                         #   支持 --role node|hub；task create 建单
                         #   省略 --role 时读 node.json 的 role，缺省 node
-  src/kernel.mjs        # node 角色的协议状态机（认领/心跳/回执/熔断/对账）
+  src/kernel.mjs          # 状态机骨架（认领/心跳/熔断/对账主循环）
+  src/kernel-util.mjs     # 日志、时间、脱敏与终态集合
+  src/receipt.mjs         # 回执解析与命令模板占位符
+  src/retry-state.mjs     # retry_state.json 退避水位
+  src/session-store.mjs   # session.json 读写
+  src/config.mjs          # 节点配置、控制键拒收、超时夹紧
+  src/kernel-direct.mjs   # direct 在途命令编排（原型混入）
+  src/kernel-approval.mjs # 审批请求与决定（原型混入）
+  src/kernel-outbox.mjs   # 回执 outbox（原型混入）
+  src/kernel-metadata.mjs # usage/later 的 Metadata 合并写（原型混入）
   src/bus/              # feishu.mjs（Bitable REST）、feishu-events.mjs（ws 长连接门铃）
   src/carrier.mjs       # carrier 语境（unix socket 上的 NDJSON）
   src/setup.mjs         # 装机向导（支持 --role node|hub，hub 配置机主 open_id）
