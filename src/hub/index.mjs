@@ -95,7 +95,7 @@ export async function hubDoctor(configDir) {
       bad("陈旧告警模块不可用");
       problems++;
     } else {
-      ok("陈旧告警：working 心跳超过 20 分钟或为空、submitted 超过 20 分钟无人认领。每种情况每个任务只告警一次，不回收租约。状态在 stale_state.json");
+      ok("陈旧告警与回收：working 心跳超过 20 分钟或为空先告警，告警后宽限 30 分钟无心跳恢复则由 hub 置 failed 回收（心跳恢复自动撤销告警）；submitted 超过 20 分钟无人认领只告警。状态在 stale_state.json");
     }
   } catch (e) {
     bad("呈递或告警模块加载失败：" + e.message);

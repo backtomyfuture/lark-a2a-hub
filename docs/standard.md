@@ -196,6 +196,8 @@
 
 ## 修订记录
 
+**v3.5.1（2026-11-08，陈旧回收）**：§10.1 第 6 条由「只告警、不回收」改为两段式（机主 2026-11-08 拍板）：working 心跳超时 20 分钟先告警，告警后宽限 30 分钟，心跳恢复即撤销告警；届满仍无心跳，hub 置 failed 回收（清认领、关 Run、写 notice），迟到回执按终态守卫拒绝。submitted 无人认领仍只告警。此前口径下陈旧任务会无限期挂在 working（2026-11-07 R2 实测），本次补齐回收段。
+
 **v3.5（2026-11-07，字段瘦身与总线契约）**：原则：A2A 字段够用就不加扩展列；删改字段走「先改标准 → 通知节点停写 → 观察 → 快照 → 删列」的迁移顺序（本版首批删除在授权下先行落表，标准随即对齐，后续批次严格按序）。
 - 删除无消费者字段：Tasks.Worktree、AgentCards.Required_Assets / Tags / Examples、Messages.Metadata、Parts.Metadata（Parts 与 Messages 的 Metadata 从未被写入或读取；Tasks 与 AgentCards 的 Metadata 有真实消费者，不在此列）。
 - AgentCards 的 Modes 与 capabilities 三开关、Zone、Skill_Name 收拢进名片 Metadata 的 `a2a` 子对象（见 §6）；列保留至代码切换与一个登记周期观察后删除。Side_Effect 保留独立列。
@@ -264,7 +266,7 @@
   3. 审批中继：给机主发审批卡；处理卡片回调时校验操作者是机主本人；通过后写 auth_decision（From_Node=hub、Role=user、In_Reply_To=任务当前 Status_Msg），并按决定把任务置回 submitted 或置 canceled（§8.3）；
   4. 取消：写 canceled（审批驳回，或代发起方落表取消请求）；
   5. 结果呈递：将本节点或主节点归属的任务结果（终态、input-required、rejected）落入本地 `present_queue.jsonl`，去重按 §8.5；飞书端只发审批卡，不发大段文本刷屏；
-  6. 陈旧任务告警：working 且心跳超时的任务只告警，不替节点回收租约。
+  6. 陈旧任务告警与回收：working 且心跳超时（20 分钟）的任务先告警机主；告警后宽限 30 分钟，心跳恢复则撤销告警、不留痕迹；宽限届满仍无心跳，由 hub 将任务置 `failed`、清空认领、关账未结束的 Run，并写一条 notice 说明回收原因（原节点事后恢复时，其迟到回执按终态守卫处理）。这是 hub 唯一可代写的任务终态——与 `canceled`（机主/发起方意愿）严格区分，语义为「执行方失联」。它也区别于节点对本机认领的超时回收（§4：回 submitted 重试并计 Retry_Count）——节点复活时自会处理本机认领；hub 回收针对的是执行节点整体失联（告警＋宽限共 50 分钟无任何心跳），此时回 submitted 只是把任务放回无人区，直接终局更诚实。submitted 无人认领的任务只告警、不回收。
 - **角色边界**：auth_decision 消息与 canceled 状态只能由 hub 角色的代码路径写入；node 角色从不写这两样，hub 角色是唯一写方。
 - From_Node=hub 是 hub 角色的逻辑名，与它跑在哪台机器无关；node 角色写出的消息，From_Node 仍是本节点名。
 - §8.3 的「有效决定」四条判定、回调鉴权与「终态不可变」等约束不因角色合并而放宽。
