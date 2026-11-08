@@ -14,7 +14,7 @@ Task：一件工作的信封与状态机，一行一任务
 | Title | Text | 主字段 |
 | Task_ID | Text | 业务编号，唯一、人可读，发起方生成后不变 |
 | Source | SingleSelect | （扩展）任务来源：hub / cron / manual / agent-derived 等（选项：muse / cron / manual / agent-derived / hub） |
-| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：home-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub） |
+| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：home-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev） |
 | Worker_Hint | SingleSelect | 选项：amp / agy / droid / grok-cli / hermes / local-skill / other |
 | Skill_ID | Text | （扩展）要调用的技能 id，与 AgentCards.Skill_ID 对应 |
 | Status | SingleSelect | A2A 八态状态机，见标准 §2；终态不可变（选项：submitted / working / input-required / auth-required / completed / failed / canceled / rejected） |
@@ -103,7 +103,7 @@ AgentCard 规范化展开：一行一项能力
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | Cap_ID | Text | 主字段。（扩展）行主键：CAP-<节点前缀>-<技能> |
-| Node | SingleSelect | 节点名（AgentCard name 的节点部分）（选项：home-mini / ipad / nas / work-mba / work-5070ti / grokbot / node-dev / m3test / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub） |
+| Node | SingleSelect | 节点名（AgentCard name 的节点部分）（选项：home-mini / ipad / nas / work-mba / work-5070ti / grokbot / node-dev / m3test / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev / hub-test） |
 | Zone | SingleSelect | 选项：personal / unit / home / test / work |
 | Description | Text | 技能说明（skill.description） |
 | Skill_ID | Text | 技能 id（skill.id） |
@@ -138,3 +138,6 @@ AgentCard 规范化展开：一行一项能力
 | Priority | Number | 多规则命中时按优先级取一 |
 | Enabled | SingleSelect | 是否生效（Yes/No）（选项：Yes / No） |
 | Note | Text |  |
+| Schedule | Text |  |
+| Text | Text |  |
+| Last_Fired | Text |  |

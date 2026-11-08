@@ -49,7 +49,8 @@
       "workbuddy",
       "jarod-macbook-air",
       "mba",
-      "hub"
+      "hub",
+      "hub-dev"
      ]
     },
     {
@@ -481,7 +482,9 @@
       "workbuddy",
       "jarod-macbook-air",
       "mba",
-      "hub"
+      "hub",
+      "hub-dev",
+      "hub-test"
      ]
     },
     {
@@ -705,6 +708,24 @@
     },
     {
      "name": "Note",
+     "ui_type": "Text",
+     "type": 1,
+     "primary": false
+    },
+    {
+     "name": "Schedule",
+     "ui_type": "Text",
+     "type": 1,
+     "primary": false
+    },
+    {
+     "name": "Text",
+     "ui_type": "Text",
+     "type": 1,
+     "primary": false
+    },
+    {
+     "name": "Last_Fired",
      "ui_type": "Text",
      "type": 1,
      "primary": false

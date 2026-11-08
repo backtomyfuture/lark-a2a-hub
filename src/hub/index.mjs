@@ -11,6 +11,7 @@ import { Kernel } from "../kernel.mjs";
 import { ApprovalService } from "./approval.mjs";
 import { PresentService } from "./present.mjs";
 import { StaleService } from "./stale.mjs";
+import { ScheduleService } from "./schedule.mjs";
 import { readOwnerFromConfigDir } from "./owner.mjs";
 
 function logLine(msg) {
@@ -85,6 +86,7 @@ export async function hubDoctor(configDir) {
   try {
     const present = await import("./present.mjs");
     const stale = await import("./stale.mjs");
+    const schedule = await import("./schedule.mjs");
     if (typeof present.PresentService !== "function" || typeof present.presentKey !== "function") {
       bad("结果呈递模块不可用");
       problems++;
@@ -96,6 +98,15 @@ export async function hubDoctor(configDir) {
       problems++;
     } else {
       ok("陈旧告警与回收：working 心跳超过 20 分钟或为空先告警，告警后宽限 30 分钟无心跳恢复则由 hub 置 failed 回收（心跳恢复自动撤销告警）；submitted 超过 20 分钟无人认领只告警。状态在 stale_state.json");
+    }
+    if (typeof schedule.ScheduleService !== "function" || typeof schedule.parseCron !== "function") {
+      bad("定时调度模块不可用");
+      problems++;
+    } else {
+      ok("定时调度：全网唯一的时钟在 hub；Rules 中 Enabled=Yes 且 Schedule 非空的行即计划行，到期建 Source=cron 的任务，只补最近一期，水位线 Last_Fired 与幂等键防重复");
+    }
+    if (!raw?.tables?.rules) {
+      info("定时调度将跳过：本配置 node.json 缺 tables.rules 映射（重跑 setup 或手动补上 Rules 表 id 后生效）");
     }
   } catch (e) {
     bad("呈递或告警模块加载失败：" + e.message);
@@ -148,18 +159,20 @@ export async function runHub(cfg, log = logLine, hooks = {}) {
     statePath: path.join(cfg.configDir, "stale_state.json"),
     log,
   });
-  const runtime = new HubRuntime({ cfg, approval, present, stale, log });
+  const schedule = new ScheduleService({ bus: cfg.bus, log });
+  const runtime = new HubRuntime({ cfg, approval, present, stale, schedule, log });
   if (typeof hooks.onRuntime === "function") hooks.onRuntime(runtime);
   runtime.startWsLoop();
   await runtime.run();
 }
 
 export class HubRuntime {
-  constructor({ cfg, approval, present, stale, log, createWaker, retryMs }) {
+  constructor({ cfg, approval, present, stale, schedule, log, createWaker, retryMs }) {
     this.cfg = cfg;
     this.approval = approval;
     this.present = present;
     this.stale = stale;
+    this.schedule = schedule;
     this.log = log;
     this.createWaker = createWaker ?? null;
     this.kernel = new Kernel(this.cfg);
@@ -306,7 +319,7 @@ export class HubRuntime {
   }
 
   async run() {
-    this.log(`hub daemon starting on ${this.cfg.node}（对账 ${this.sweepSec()}s，长连接必需，不使用 poll 退路；含能力登记与接单、审批、呈递、陈旧告警）`);
+    this.log(`hub daemon starting on ${this.cfg.node}（对账 ${this.sweepSec()}s，长连接必需，不使用 poll 退路；含能力登记与接单、审批、呈递、陈旧告警、定时调度）`);
     try {
       await this.cfg.bus.tenantToken();
     } catch (e) {
@@ -328,6 +341,7 @@ export class HubRuntime {
         ["approval", () => this.approval?.scan()],
         ["present", () => this.present?.scan()],
         ["stale", () => this.stale?.scan()],
+        ["schedule", () => this.schedule?.scan()],
       ]) {
         try {
           await job();
