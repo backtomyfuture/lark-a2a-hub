@@ -139,7 +139,7 @@ webhook 通知由飞书自动化发出：端点由对方平台托管，本项目
 
 ## 运维要点
 
-- **进程托管**：用 `hub-node service --role hub` 注册用户级 launchd / systemd。
+- **进程托管**：用 `hub-node service --role hub` 注册用户级 launchd / systemd / Windows 任务计划程序。
   长连接断开且 SDK 不再重连时，进程退避后只重建一条连接，不退化为纯轮询。
 - **本地状态**：`approval_state.json`、`present_state.json`、`stale_state.json`、
   `schedule_state.json`（定时调度基线：Rule_ID → Schedule 文本；缺文件时首轮只回写水位线）

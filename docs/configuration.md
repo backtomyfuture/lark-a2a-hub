@@ -5,7 +5,7 @@
 
 ## 1. 配置目录
 
-配置目录取 `--config <dir>` > 环境变量 `HUB_NODE_HOME` > `~/.hub-node`。里面有：
+配置目录取 `--config <dir>` > 环境变量 `HUB_NODE_HOME` > `~/.hub-node`（Windows 为 `%USERPROFILE%\.hub-node`）。里面有：
 
 | 文件 | 作用 | 能否提交仓库 |
 |---|---|---|
@@ -120,8 +120,8 @@ DESIGN.md §9 注记④ 记录了本项目作者机器上的限定：长驻进�
 | `lah setup [--role node\|hub] [--kind host\|agent] [--wake poll\|event\|sweep] [--skip-skill]` | 一键向导：解析表 ID、写 `app.env` 与 `node.json`、生成 `commands.json`、订阅事件、自检、可选注册自启 |
 | `lah daemon [--role node\|hub]` | 常驻守护进程 |
 | `lah doctor [--role node\|hub] [--probe <host:port>]` | 只读自检：配置合法性、连通性、能力登记、carrier |
-| `lah service [--role node\|hub] [--remove]` | 注册（或卸载）开机自启：macOS LaunchAgent / Linux systemd 用户服务 |
-| `lah update [--check] [--skip-skill]` | 自更新程序本体：git pull、依赖重装、软链与 Skill 补齐；不碰配置目录。`--check` 只看远端有没有新版本。tarball 安装请重跑 install.sh |
+| `lah service [--role node\|hub] [--remove]` | 注册（或卸载）开机自启：macOS LaunchAgent / Linux systemd 用户服务 / Windows 当前用户的任务计划程序（登录时启动，无需管理员）。日志在配置目录 `daemon.log` |
+| `lah update [--check] [--skip-skill]` | 自更新程序本体：git pull、依赖重装、入口与 Skill 补齐；不碰配置目录。`--check` 只看远端有没有新版本。tarball 安装请重跑 install.sh（Windows 为 install.ps1） |
 | `lah host` | carrier 进程，只能由用户在终端里启动 |
 | `lah reconcile` | 单次回表认领与对账后退出 |
 | `lah inventory` | 只读盘点本节点名片与任务 |

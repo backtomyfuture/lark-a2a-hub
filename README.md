@@ -88,15 +88,27 @@ stateDiagram-v2
 
 **1. 安装**
 
+macOS / Linux：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 ```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.ps1 | iex
+```
+
+两条命令做同一件事：程序放在 `~/.hub-node/app`（Windows 为 `%USERPROFILE%\.hub-node\app`），不改已有配置。Windows 的命令入口是同目录下的 `bin\lah.cmd` 与 `bin\hub-node.cmd`，安装时加入当前用户的 PATH。当前窗口若还不认识 `lah`，新开一个终端。跳过 Skill：Unix 用 `LAH_SKIP_SKILL=1`，Windows 用 `$env:LAH_SKIP_SKILL=1`。
 
 **2. 向导配置**（自动检测或一键克隆多维表格、解析表 ID、写 600 权限的凭据、识别本机 Agent、订阅事件、自检、可选开机自启）
 
 ```bash
 lah setup
 ```
+
+向导里直接回车即可注册开机自启，并马上把守护进程拉起来。macOS 用 LaunchAgent，Linux 用 systemd 用户服务，Windows 用当前用户的任务计划程序：登录时启动，进程异常退出后大约 5 秒再拉起，不限运行时长，不因用电池而停，不需要管理员。日志在配置目录的 `daemon.log`。卸载是 `lah service --remove`。
 
 **3. 验收**
 
@@ -105,7 +117,7 @@ lah doctor      # 连通性与能力登记
 lah daemon      # 前台试跑；setup 里选了自启则已常驻
 ```
 
-以后升级只需 `lah update`（先 `lah update --check` 看一眼也行）；它做与重跑 install.sh 相同的拉取、装依赖和软链/Skill 补齐，不碰已有配置。
+以后升级：已经是 git 检出时运行 `lah update`（先 `lah update --check` 看一眼也行）。它拉取、重装依赖并补齐 Skill，不碰已有配置。压缩包安装没有 `.git`，请重跑上面的安装命令。Windows 的 `lah.cmd` 用相对路径指向 `app\bin\lah.mjs`，更新程序后入口不用重建。
 
 派一个任务，再看回执：
 

@@ -782,6 +782,18 @@ export async function doctor(configDir, appDir, opts = {}) {
         : [];
       if (units.length) ok(`systemd 用户单元在册：${units.join(", ")}`);
       else info("未发现 systemd 用户单元（可用 lah service 安装）");
+    } else if (process.platform === "win32") {
+      try {
+        const out = execFileSync("schtasks", ["/Query", "/TN", "\\lah\\", "/FO", "LIST"], { encoding: "utf8" });
+        const mine = [...new Set(out.split(/\r?\n/).map((line) => {
+          const at = line.indexOf("\\lah\\hub-node");
+          return at >= 0 ? line.slice(at).trim() : "";
+        }).filter(Boolean))];
+        if (mine.length) ok(`任务计划程序自启在册：${mine.join(", ")}`);
+        else info("未发现任务计划程序自启（可用 lah service 安装）");
+      } catch {
+        info("未发现任务计划程序自启（可用 lah service 安装）");
+      }
     }
   } catch { /* 自启状态查不到不算失败 */ }
 

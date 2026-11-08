@@ -1,6 +1,7 @@
 // service —— 把守护进程注册为开机自启（M3）。
 //   macOS：写 LaunchAgent 并 launchctl bootstrap（用户级，无需 sudo）
 //   Linux：写 systemd 用户单元并 enable --now（用户级，无需 sudo）
+//   Windows：写当前用户的任务计划程序任务（登录触发，无需管理员）
 // --remove 反向卸载。carrier 语境进程是另一个概念（设计 §9），不在此命令内。
 
 import fs from "node:fs";
@@ -165,6 +166,238 @@ ${serviceLines.join("\n")}
 [Install]
 WantedBy=${isSystem ? "multi-user.target" : "default.target"}
 `;
+}
+
+// 任务名跟 LaunchAgent 标签对齐：同一配置目录可以各挂一个 node 与 hub。
+export function windowsTaskName(role, node) {
+  return `\\lah\\hub-node-${role}.${node}`;
+}
+
+export function windowsLegacyTaskName(node) {
+  return `\\lah\\hub-node.${node}`;
+}
+
+// 登记当时的 PATH 写进启动器。登录后的计划任务拿不到「当时这个终端」的 PATH，
+// 不写进去，node 和 lah 这类用户目录里的命令会找不到。
+export function windowsServicePath(configDir, currentPath, execPath) {
+  // 用 win32 规则切路径：这个函数的入参是 Windows 路径，测试和 CI 跑在 macOS / Linux 上。
+  const extra = [path.win32.dirname(execPath), path.win32.join(configDir, "bin")];
+  const cur = String(currentPath || "").split(";").filter(Boolean);
+  return [...new Set([...extra, ...cur])].join(";");
+}
+
+export function windowsLauncherPath(configDir, role, node) {
+  return path.join(configDir, "service", `hub-node-${role}.${node}.mjs`);
+}
+
+export function windowsStarterPath(configDir, role, node) {
+  return path.join(configDir, "service", `hub-node-${role}.${node}.vbs`);
+}
+
+// 计划任务直接跑 node.exe 会弹出控制台。wscript 是窗口程序，用窗口样式 0 把 node 藏起来，
+// 并等它退出，好把退出码交回任务计划程序（非 0 才按 RestartOnFailure 拉起）。
+export function renderWindowsStarter({ nodeExe, launcher }) {
+  const command = `"${nodeExe}" "${launcher}"`.replaceAll('"', '""');
+  return `Set sh = CreateObject("Wscript.Shell")\r\nWScript.Quit sh.Run("${command}", 0, True)\r\n`;
+}
+
+// 启动器停在前台：自己负责环境变量和 daemon.log。计划任务结束时，作业对象会连带结束子进程。
+export function renderWindowsLauncher(spec) {
+  const payload = JSON.stringify(spec);
+  return `// 由 lah service 生成。任务计划程序经 vbs 拉起本文件，本文件再拉起守护进程。
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+const spec = ${payload};
+const outFd = fs.openSync(spec.logPath, "a");
+const errFd = fs.openSync(spec.logPath, "a");
+const child = spawn(spec.node, [spec.appBin, "daemon", "--config", spec.configDir, "--role", spec.role], {
+  cwd: spec.configDir,
+  env: { ...process.env, ...spec.env },
+  stdio: ["ignore", outFd, errFd],
+  windowsHide: true,
+});
+const stop = () => { try { child.kill(); } catch { /* 子进程已退出 */ } };
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+child.on("error", (err) => {
+  try { fs.writeSync(errFd, String(err && err.message || err) + "\\n"); } catch { /* 日志写不了也要退出，好让计划任务重拉 */ }
+  process.exit(1);
+});
+child.on("exit", (code) => { process.exit(code == null ? 1 : code); });
+`;
+}
+
+export function renderWindowsTaskXml({ starter, configDir, role, node, userId, wscript }) {
+  const userLine = userId ? `\n      <UserId>${xmlEscape(userId)}</UserId>` : "";
+  const args = `//B //Nologo "${starter}"`;
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>${xmlEscape(`hub-node daemon (${role}: ${node})`)}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>${userLine}
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT5S</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${xmlEscape(wscript)}</Command>
+      <Arguments>${xmlEscape(args)}</Arguments>
+      <WorkingDirectory>${xmlEscape(configDir)}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+// schtasks /XML 认 UTF-16 LE。带 BOM，避免它把声明当成别的编码。
+export function windowsTaskXmlBuffer(xml) {
+  return Buffer.from(`\ufeff${xml}`, "utf16le");
+}
+
+function windowsUserId() {
+  try {
+    return execFileSync("whoami", { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function nodeBinary() {
+  try { return fs.realpathSync(process.execPath); }
+  catch { return process.execPath; }
+}
+
+// 只认本仓库守护进程的命令行，避免锁文件里的 pid 被系统复用后误杀别的进程。
+export function isLahDaemonCommandLine(text) {
+  // 子命令必须紧跟 lah.mjs。路径里碰巧有 daemon 字样不能算。
+  return /lah\.mjs["']?\s+daemon\b/.test(String(text ?? ""));
+}
+
+// 计划任务结束时，子进程有时不会跟着退出。锁里若仍是本次 lah daemon，就结束它，
+// 否则重新注册会因为「daemon 已在运行」起不来。
+function stopLockedDaemon(configDir) {
+  let pid;
+  try {
+    pid = Number(fs.readFileSync(path.join(configDir, "daemon.lock"), "utf8").trim());
+  } catch {
+    return;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  let commandLine = "";
+  try {
+    commandLine = execFileSync(ps, [
+      "-NoProfile", "-NonInteractive", "-Command",
+      `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`,
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch {
+    return;
+  }
+  if (!isLahDaemonCommandLine(commandLine)) return;
+  run("taskkill", ["/PID", String(pid), "/F"], { ignore: true });
+}
+
+// 先停用再结束再删除：进程自己退出（非 0）会触发重启，卸载时不能让它马上被拉起来。
+async function stopWindowsTask(taskName) {
+  run("schtasks", ["/Change", "/TN", taskName, "/DISABLE"], { ignore: true });
+  const ended = run("schtasks", ["/End", "/TN", taskName], { ignore: true });
+  run("schtasks", ["/Delete", "/F", "/TN", taskName], { ignore: true });
+  if (ended.trim()) await new Promise((resolve) => setTimeout(resolve, 400));
+}
+
+function removeFile(file) {
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+async function registerWindowsService({ configDir, role, node, appBin, logPath, remove }) {
+  const taskName = windowsTaskName(role, node);
+  const legacyName = windowsLegacyTaskName(node);
+  const launcher = windowsLauncherPath(configDir, role, node);
+  const starter = windowsStarterPath(configDir, role, node);
+  const legacyLauncher = path.join(configDir, "service", `hub-node.${node}.mjs`);
+  const legacyStarter = path.join(configDir, "service", `hub-node.${node}.vbs`);
+
+  if (remove) {
+    await stopWindowsTask(taskName);
+    if (legacyName !== taskName) await stopWindowsTask(legacyName);
+    stopLockedDaemon(configDir);
+    for (const file of [launcher, starter, legacyLauncher, legacyStarter]) removeFile(file);
+    console.log(`已卸载自启：${taskName}`);
+    return 0;
+  }
+
+  await stopWindowsTask(taskName);
+  if (legacyName !== taskName) await stopWindowsTask(legacyName);
+  stopLockedDaemon(configDir);
+  removeFile(legacyLauncher);
+  removeFile(legacyStarter);
+
+  const nodeExe = nodeBinary();
+  const env = { PATH: windowsServicePath(configDir, process.env.PATH, nodeExe) };
+  for (const key of PROXY_ENV_KEYS) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  fs.mkdirSync(path.dirname(launcher), { recursive: true });
+  fs.writeFileSync(launcher, renderWindowsLauncher({
+    node: nodeExe,
+    appBin,
+    configDir,
+    role,
+    logPath,
+    env,
+  }));
+  fs.writeFileSync(starter, Buffer.from(`\ufeff${renderWindowsStarter({ nodeExe, launcher })}`, "utf16le"));
+
+  const wscript = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe");
+  const xml = renderWindowsTaskXml({
+    starter,
+    configDir,
+    role,
+    node,
+    userId: windowsUserId(),
+    wscript,
+  });
+  const xmlPath = path.join(os.tmpdir(), `lah-task-${process.pid}-${role}-${node}.xml`);
+  try {
+    fs.writeFileSync(xmlPath, windowsTaskXmlBuffer(xml));
+    run("schtasks", ["/Create", "/F", "/TN", taskName, "/XML", xmlPath]);
+  } finally {
+    try { fs.unlinkSync(xmlPath); } catch { /* 临时 XML 删不掉不影响任务 */ }
+  }
+  run("schtasks", ["/Run", "/TN", taskName]);
+  console.log(`自启已安装并启动：${taskName}（role: ${role}）`);
+  console.log(`  任务：任务计划程序库 ${taskName}`);
+  console.log(`  启动器：${launcher}`);
+  console.log(`  日志：${logPath}`);
+  console.log(`  卸载：lah service --remove --role ${role} --config ${configDir}`);
+  return 0;
 }
 
 export async function service(configDir, { remove = false, role: explicitRole } = {}, appDir) {
@@ -344,6 +577,10 @@ export async function service(configDir, { remove = false, role: explicitRole } 
       console.error(`  ✗ 后台拉起守护进程失败：${e.message}`);
       return 1;
     }
+  }
+
+  if (process.platform === "win32") {
+    return registerWindowsService({ configDir, role, node, appBin, logPath, remove });
   }
 
   console.log(`暂不支持在 ${process.platform} 上自动注册自启；请用任务计划程序手动安排：`);

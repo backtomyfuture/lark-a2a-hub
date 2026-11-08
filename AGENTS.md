@@ -11,7 +11,7 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 - `src/bus/feishu.mjs`：Bitable REST 客户端（全局 `fetch`）；对 1254291 写冲突与 429/5xx 退避重试；`f1()` 把单元素数组字段取成标量。
 - `src/bus/feishu-events.mjs`：长连接订阅 `drive.file.bitable_record_changed_v1`，只当门铃叫醒内核，不解析事件内容。
 - `src/carrier.mjs`：carrier 语境（unix socket 上的 NDJSON，`ping` / `exec` 两种帧）。
-- `src/setup.mjs` / `src/doctor.mjs` / `src/service.mjs`：装机向导、只读自检、LaunchAgent/systemd 用户级自启（均支持 `--role node|hub` 与 `--kind host|agent`）；自动安装 `lah` Agent Skill。
+- `src/setup.mjs` / `src/doctor.mjs` / `src/service.mjs`：装机向导、只读自检、LaunchAgent / systemd / Windows 任务计划程序用户级自启（均支持 `--role node|hub` 与 `--kind host|agent`）；自动安装 `lah` Agent Skill。
 - `src/inbox.mjs`：独立 Agent 收件箱操作库，承载 `agent_inbox.jsonl` 的读写、心跳核验与 `lah inbox (done|ask|fail)` 总线回执。
 - `src/executors/echo.mjs`：json 模式示例执行器（stdin 读信封，stdout 回显）。
 - `src/hub/`：hub 角色——单进程超集（每轮扫表先由 `Kernel` 认领执行任务并登记能力，再由 `approval` 审批发卡、回调校验机主写 `auth_decision`、写 `canceled`、`present` 结果呈递到本地队列、`stale` 陈旧任务告警）。建单入口为 `lah task create`（写表前按 AgentCards 名册校验 `--to` / `--cap` 存在性），撤单入口为 `lah task cancel`，只读排障入口为 `lah task why`；`schedule` 服务除 cron 外还负责触发已完成任务的 `later` 复查。Rules 自动路由仍为计划。守护进程的 node 角色代码路径从不写 `auth_decision` 与 `canceled`；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。飞书端仅发审批交互卡，不发大段纯文本刷屏。

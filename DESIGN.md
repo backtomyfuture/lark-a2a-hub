@@ -23,7 +23,7 @@
 ## 3. 总体形态
 
 - **Node 命令行工具**：零或极少运行时依赖，`curl` 一行安装（形态参照 Agent-Autoloop 的分发方式）。
-- **单进程守护**：安装时自动注册开机自启（macOS 用 LaunchAgent、Linux 用 systemd 用户服务），常驻后台。
+- **单进程守护**：安装时自动注册开机自启（macOS 用 LaunchAgent、Linux 用 systemd 用户服务、Windows 用当前用户的任务计划程序），常驻后台。
 - 核心循环只有一句：**认领任务 → 拉起 Agent → 收回执 → 落日志**。
 
 ## 4. 内核职责（协议状态机）

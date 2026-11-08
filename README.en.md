@@ -90,15 +90,27 @@ Prerequisites: Node.js >= 20 and a Lark Bitable (ask your hub admin, or build yo
 
 **1. Install**
 
+macOS / Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 ```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.ps1 | iex
+```
+
+Both commands do the same thing: the program lands in `~/.hub-node/app` (on Windows, `%USERPROFILE%\.hub-node\app`) and existing configuration is left alone. On Windows the commands are `bin\lah.cmd` and `bin\hub-node.cmd` next to that directory, and the installer adds that `bin` folder to the user PATH. If the current window does not see `lah` yet, open a new terminal. To skip the Skill, set `LAH_SKIP_SKILL=1` on Unix or `$env:LAH_SKIP_SKILL=1` on Windows.
 
 **2. Configure with the wizard** (resolves table IDs, writes credentials with mode 600, detects local agents, subscribes to events, runs a self-check, optionally registers autostart)
 
 ```bash
 lah setup
 ```
+
+Press Enter in the wizard to register autostart and start the daemon immediately. macOS uses a LaunchAgent, Linux uses a systemd user service, and Windows uses a Task Scheduler task for the current user: it starts at logon, restarts about 5 seconds after an unexpected exit, has no runtime limit, keeps running on battery, and does not need an administrator. The log is `daemon.log` in the config directory. Remove it with `lah service --remove`.
 
 **3. Verify**
 
@@ -107,7 +119,7 @@ lah doctor      # connectivity and capability registration
 lah daemon      # foreground trial (already resident if you chose autostart)
 ```
 
-To upgrade later, just run `lah update` (or `lah update --check` first); it does the same fetch, dependency install, and symlink/skill refresh as re-running install.sh, without touching your existing configuration.
+To upgrade a git checkout, run `lah update` (or `lah update --check` first). It fetches, reinstalls dependencies, and refreshes the Skill, without touching your existing configuration. A tarball install has no `.git`; re-run the install command above. The Windows `lah.cmd` points at `app\bin\lah.mjs` with a relative path, so the entry does not need to be rewritten after an update.
 
 Dispatch a task and read the receipt:
 

@@ -1,8 +1,8 @@
 // lah update —— 自更新程序本体。
-// 等价于重跑 install.sh 的「更新已有安装」分支：git pull + 依赖重装 +
-// 软链补齐 + Skill 重拷，但不碰配置目录里的任何文件。
-// 只支持 git 检出（install.sh 装出来的就是）：tarball 装的没有 .git，
-// 让用户重跑 install.sh，而不是在这里再实现一遍下载解包。
+// 等价于重跑 install.sh / install.ps1 的「更新已有安装」分支：git pull + 依赖重装 +
+// 入口补齐 + Skill 重拷，但不碰配置目录里的任何文件。
+// 只支持 git 检出（安装脚本装出来的就是）：tarball 装的没有 .git，
+// 让用户重跑安装脚本，而不是在这里再实现一遍下载解包。
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +27,8 @@ function readAppVersion(appDir) {
 
 // 软链只在缺失时补建、指向别处时警告：install.sh 的软链指向 $APP/bin/，
 // git pull 后路径不变，本来就不用刷新；指向别处说明用户自管入口，不抢。
+// Windows 入口是 install.ps1 写的 lah.cmd（相对路径指向 app\bin\lah.mjs），
+// 不在这里建 Unix 软链：未开开发者模式时会抛错，把已经完成的更新报成失败。
 function ensureSymlink(target, link) {
   const name = path.basename(link);
   try {
@@ -41,6 +43,10 @@ function ensureSymlink(target, link) {
 }
 
 function ensureEntrySymlinks(appDir) {
+  if (process.platform === "win32") {
+    console.log("  · Windows 命令入口由 install.ps1 维护，本次不重建");
+    return;
+  }
   const binDir = path.join(os.homedir(), ".local", "bin");
   const entry = path.join(appDir, "bin", "lah.mjs");
   for (const name of ["lah", "hub-node"]) {
@@ -88,7 +94,8 @@ function daemonHint(configDir) {
 
 export async function update(appDir, { check = false, skipSkill = false, configDir = "" } = {}) {
   if (!fs.existsSync(path.join(appDir, ".git"))) {
-    console.error(`当前程序不是 git 检出（${appDir}），无法自动更新；请重跑 install.sh。`);
+    const installer = process.platform === "win32" ? "install.ps1" : "install.sh";
+    console.error(`当前程序不是 git 检出（${appDir}），无法自动更新；请重跑 ${installer}。`);
     return 1;
   }
 
