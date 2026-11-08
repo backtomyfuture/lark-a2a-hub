@@ -141,7 +141,8 @@ webhook 通知由飞书自动化发出：端点由对方平台托管，本项目
 
 - **进程托管**：用 `hub-node service --role hub` 注册用户级 launchd / systemd。
   长连接断开且 SDK 不再重连时，进程退避后只重建一条连接，不退化为纯轮询。
-- **本地状态**：`approval_state.json`、`present_state.json`、`stale_state.json`
+- **本地状态**：`approval_state.json`、`present_state.json`、`stale_state.json`、
+  `schedule_state.json`（定时调度基线：Rule_ID → Schedule 文本；缺文件时首轮只回写水位线）
   写在配置目录，不进仓库。
 - **归档轮换**：单表 2 万条上限；终态任务与 Runs 定期迁归档 Base 或
   导出后删除，规则与窗口由操作者定。

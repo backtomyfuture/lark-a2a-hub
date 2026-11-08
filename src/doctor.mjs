@@ -8,6 +8,7 @@ import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
+import { resolveScheduleTz } from "./hub/schedule.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { execViaCarrier, pingCarrier } from "./carrier.mjs";
 
@@ -444,6 +445,19 @@ export async function doctor(configDir, appDir, opts = {}) {
   } else {
     bad(`node.json 读不了：${rawError?.message ?? "文件不存在"}`);
     problems++;
+  }
+
+  // 调度时区只跟 hub 有关。非法值必须在自检里计问题，和运行时「跳过本轮、不回退宿主机」一致。
+  if (role === "hub" && raw) {
+    const configured = Object.prototype.hasOwnProperty.call(raw, "tz") && String(raw.tz ?? "").trim() !== "";
+    try {
+      const tz = resolveScheduleTz(raw.tz);
+      if (configured) ok(`定时调度时区：${tz}（node.json 的 tz，与宿主机时区无关）`);
+      else info(`定时调度时区：${tz}（未配置 tz，hub 默认 Asia/Shanghai）`);
+    } catch (e) {
+      bad(`定时调度时区非法（node.json 的 tz=${JSON.stringify(raw.tz)}）：${e.message}。本轮调度会跳过，直到改成合法 IANA 名`);
+      problems++;
+    }
   }
 
   try {

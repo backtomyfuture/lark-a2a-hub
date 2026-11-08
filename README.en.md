@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.1-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.2-orange.svg)](CHANGELOG.md)
 
 [中文](README.md) · [Standard](docs/standard.md) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md)
 
@@ -168,7 +168,9 @@ daemon, no long connection:
 ## Node configuration notes
 
 - `node.json`: node identity (node/zone), bus parameters (baseToken/tables),
-  credential source, poll and sweep intervals.
+  credential source, poll and sweep intervals. Hub may also set `tz` (IANA
+  name, default `Asia/Shanghai`); it applies only to cron wall time and ignores
+  the host timezone.
 - `commands.json`: the capability table. Keys are Skill_IDs, values are
   command templates — `mode: "json"` for scripts (task envelope on stdin,
   result JSON on the last stdout line) and `mode: "agent"` for agent CLIs

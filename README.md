@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![Standard](https://img.shields.io/badge/standard-v3.5-blue.svg)](docs/standard.md)
-[![Version](https://img.shields.io/badge/version-0.6.1-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.6.2-orange.svg)](CHANGELOG.md)
 
 [English](README.en.md) · [中台标准](docs/standard.md) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md)
 
@@ -146,6 +146,7 @@ flowchart LR
 
 - `node.json`：节点身份（node/zone）、总线参数（baseToken/tables）、凭据来源
   （appEnv 指向本地 env 文件，或 appId/appSecret 直填）、轮询与对账周期。
+  hub 另可写 `tz`（IANA 时区名，缺省 `Asia/Shanghai`），只用于定时调度的 cron 墙钟，与宿主机时区无关。
 - `commands.json`：能力表。键是 Skill_ID，值是命令模板：
   - `mode: "json"` —— 脚本类：stdin 收任务信封，stdout 最后一行输出结果 JSON；
   - `mode: "agent"` —— Agent 类：模板含 `{prompt}`，输出纯文本＋结构化回执块。

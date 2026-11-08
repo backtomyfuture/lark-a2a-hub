@@ -13,7 +13,7 @@ import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
 
-export const DAEMON_VERSION = "node-0.6.1";
+export const DAEMON_VERSION = "node-0.6.2";
 const HOP_LIMIT = 8;
 const MAX_RETRIES = 2;
 const STALE_MIN = 20;
@@ -152,6 +152,8 @@ export function loadConfig(configDir) {
     doorbellFile: cfg.doorbellFile ? cfg.doorbellFile.replace(/^~/, os.homedir()) : null,
     carrierSocket: cfg.carrierSocket ? cfg.carrierSocket.replace(/^~/, os.homedir()) : path.join(configDir, "carrier.sock"),
     capPrefix: cfg.capPrefix ?? cfg.node,
+    // 只给 hub 定时调度读。缺省由 ScheduleService 解释成 Asia/Shanghai，这里不套宿主机时区。
+    tz: cfg.tz,
     // 缺省 undefined。hub 角色由传输层强制走长连接；不在这里把缺省改写成 node，避免和角色改造抢字段语义。
     bus: new FeishuBus({ appId, appSecret, baseToken: cfg.baseToken, tables: cfg.tables }),
     configDir,

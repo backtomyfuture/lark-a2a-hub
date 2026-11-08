@@ -84,7 +84,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 ## 禁止事项
 
-- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`，以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
+- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`、`schedule_state.json`，以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
 - 不要修改或删除 Messages / Parts 行，不要重开终态任务，不要给 Tasks 加参数列。
 - 不要让守护进程因启动期或单轮错误退出，不要吞掉错误后假装成功。
 - 不要手改 `schema/base-schema.json`、`docs/base-schema.md`。

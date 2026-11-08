@@ -103,7 +103,7 @@ export async function hubDoctor(configDir) {
       bad("定时调度模块不可用");
       problems++;
     } else {
-      ok("定时调度：全网唯一的时钟在 hub；Rules 中 Enabled=Yes 且 Schedule 非空的行即计划行，到期建 Source=cron 的任务，只补最近一期，水位线 Last_Fired 与幂等键防重复");
+      ok("定时调度：全网唯一的时钟在 hub；Rules 中 Enabled=Yes 且 Schedule 非空的行即计划行，期次按 node.json 的 tz（缺省 Asia/Shanghai，与宿主机时区无关）；基线未建立或 Schedule 变化时只回写 Last_Fired，之后只补最近一期。基线在 schedule_state.json");
     }
     if (!raw?.tables?.rules) {
       info("定时调度将跳过：本配置 node.json 缺 tables.rules 映射（重跑 setup 或手动补上 Rules 表 id 后生效）");
@@ -159,7 +159,12 @@ export async function runHub(cfg, log = logLine, hooks = {}) {
     statePath: path.join(cfg.configDir, "stale_state.json"),
     log,
   });
-  const schedule = new ScheduleService({ bus: cfg.bus, log });
+  const schedule = new ScheduleService({
+    bus: cfg.bus,
+    log,
+    tz: cfg.tz,
+    statePath: path.join(cfg.configDir, "schedule_state.json"),
+  });
   const runtime = new HubRuntime({ cfg, approval, present, stale, schedule, log });
   if (typeof hooks.onRuntime === "function") hooks.onRuntime(runtime);
   runtime.startWsLoop();
