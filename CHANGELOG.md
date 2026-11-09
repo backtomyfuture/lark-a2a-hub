@@ -5,6 +5,8 @@
 
 ## [未发布]
 
+- **修复：老格式 `commands.json` 无法添加本地计划**：`lah schedule add`、本地调度服务与 `lah doctor` 的 cap 校验只认条目里的 `cap_id` 字段，而存量配置没有这个字段（名片 Cap_ID 一直由内核按 `CAP-<capPrefix>-<技能名>` 兜底登记），导致能力集合为空、任何计划都被拒收。现改为内核登记与三处校验共用 `config.mjs` 的 `capIdOf` / `capIdsOf`：`cap_id` 优先，缺省按 `CAP-<capPrefix>-<技能名>` 兜底（`capPrefix` 缺省取 `node`）。无需改 `commands.json`，也不改变已登记的名片。
+
 ## [0.7.0] - 2026-11-09（中台标准 v3.6：节点本地定时调度、双时钟与 Rules 观察镜像）
 
 中台标准现行 v3.6。`DAEMON_VERSION` 为 `node-0.7.0`。

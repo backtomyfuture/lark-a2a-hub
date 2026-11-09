@@ -143,6 +143,40 @@ test("add 的各种校验失败不写文件", async () => {
   });
 });
 
+test("老格式 commands.json（无 cap_id）按 CAP-<前缀>-<技能> 兜底，与内核登记同口径", async () => {
+  await withTemp(async (dir) => {
+    setupDir(dir);
+    const bus = mockBus();
+    fs.writeFileSync(path.join(dir, "commands.json"), JSON.stringify({
+      echo: { command: "echo", mode: "json" },
+      agent: { mode: "inbox" },
+      pinned: { command: "echo", cap_id: "CAP-custom" },
+    }), { mode: 0o600 });
+
+    // setupDir 写的 node.json 没有 capPrefix，缺省取 node
+    assert.deepEqual(
+      [...loadCommandsCaps(dir)].sort(),
+      ["CAP-custom", "CAP-node-a-agent", "CAP-node-a-echo"],
+    );
+
+    await scheduleAdd({ configDir: dir, id: "LEGACY", cron: "0 9 * * *", cap: "CAP-node-a-echo", text: "t", bus });
+    await scheduleAdd({ configDir: dir, id: "PINNED", cron: "0 9 * * *", cap: "CAP-custom", text: "t", bus });
+    assert.equal(readSchedules(dir).length, 2);
+
+    // 显式 cap_id 的条目不再同时认兜底值
+    await assert.rejects(
+      () => scheduleAdd({ configDir: dir, id: "BAD", cron: "0 9 * * *", cap: "CAP-node-a-pinned", text: "t", bus }),
+      /不在本机 commands\.json/,
+    );
+
+    // node.json 显式 capPrefix 优先于 node
+    const nodeJson = JSON.parse(fs.readFileSync(path.join(dir, "node.json"), "utf8"));
+    fs.writeFileSync(path.join(dir, "node.json"), JSON.stringify({ ...nodeJson, capPrefix: "pfx" }), { mode: 0o600 });
+    assert.ok(loadCommandsCaps(dir).has("CAP-pfx-echo"));
+    assert.ok(!loadCommandsCaps(dir).has("CAP-node-a-echo"));
+  });
+});
+
 test("add/ls/rm/enable/disable 往返与文件权限 600", async () => {
   await withTemp(async (dir) => {
     setupDir(dir);

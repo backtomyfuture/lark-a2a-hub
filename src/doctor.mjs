@@ -8,6 +8,7 @@ import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
+import { capIdsOf } from "./config.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
 import { LocalScheduleService } from "./local-schedule.mjs";
 import { f1 } from "./bus/feishu.mjs";
@@ -445,18 +446,9 @@ async function checkBusContract(bus, appDir, nodeName) {
   return problems;
 }
 
-function capIdsFromCommands(configDir) {
+function capIdsFromCommands(configDir, capPrefix) {
   try {
-    const cmds = JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8"));
-    if (!cmds || typeof cmds !== "object" || Array.isArray(cmds)) return new Set();
-    const caps = new Set();
-    for (const entry of Object.values(cmds)) {
-      const id = entry && typeof entry === "object" && !Array.isArray(entry)
-        ? String(entry.cap_id ?? "").trim()
-        : "";
-      if (id) caps.add(id);
-    }
-    return caps;
+    return capIdsOf(JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8")), capPrefix);
   } catch {
     return new Set();
   }
@@ -486,7 +478,7 @@ export function reportLocalSchedules(configDir, raw) {
     } catch (e) {
       warn(`定时调度时区非法（node.json 的 tz=${JSON.stringify(raw?.tz)}）：${e.message}。本地调度会整体停用，不回退宿主机时区`);
     }
-    const caps = capIdsFromCommands(configDir);
+    const caps = capIdsFromCommands(configDir, raw?.capPrefix ?? raw?.node ?? "");
     const svc = new LocalScheduleService({
       schedulesPath: file,
       tz: raw?.tz,

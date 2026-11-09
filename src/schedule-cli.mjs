@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "./bus/feishu.mjs";
-import { controlKeysIn, loadConfig } from "./config.mjs";
+import { capIdsOf, capPrefixFromNodeJson, controlKeysIn, loadConfig } from "./config.mjs";
 import { createTask } from "./hub/create.mjs";
 import { formatOccurrenceKey, latestOccurrence, parseCron, resolveScheduleTz, wallClock, DEFAULT_SCHEDULE_TZ } from "./schedule-cron.mjs";
 import { ScheduleMirror } from "./schedule-mirror.mjs";
@@ -29,14 +29,7 @@ export function loadCommandsCaps(configDir) {
   const file = path.join(configDir, "commands.json");
   try {
     const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return new Set();
-    const caps = new Set();
-    for (const entry of Object.values(raw)) {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const id = String(entry.cap_id ?? "").trim();
-      if (id) caps.add(id);
-    }
-    return caps;
+    return capIdsOf(raw, capPrefixFromNodeJson(configDir));
   } catch {
     return new Set();
   }

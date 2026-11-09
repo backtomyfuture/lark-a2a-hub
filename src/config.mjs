@@ -34,6 +34,34 @@ export function clampTimeoutSec(raw, entry) {
   return Math.min(cap, Math.max(1, chosen));
 }
 
+// 能力 Cap_ID 的唯一推导口径：条目显式 cap_id 优先，否则 CAP-<capPrefix>-<能力名>。
+// 老配置没有 cap_id 字段，名片却一直按兜底值登记；内核登记、本地调度校验、doctor 必须共用这一份，
+// 否则校验认不得线上已有的名片。
+export function capIdOf(skill, entry, capPrefix) {
+  const explicit = entry && typeof entry === "object" ? String(entry.cap_id ?? "").trim() : "";
+  return explicit || `CAP-${capPrefix}-${skill}`;
+}
+
+export function capIdsOf(commands, capPrefix) {
+  const caps = new Set();
+  if (!commands || typeof commands !== "object" || Array.isArray(commands)) return caps;
+  for (const [skill, entry] of Object.entries(commands)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    caps.add(capIdOf(skill, entry, capPrefix));
+  }
+  return caps;
+}
+
+// 不走 loadConfig（它要凭据），只取推导 Cap_ID 需要的前缀，与 loadConfig 的 capPrefix 缺省同口径。
+export function capPrefixFromNodeJson(configDir) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(configDir, "node.json"), "utf8"));
+    return raw?.capPrefix ?? raw?.node ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function readEnvFile(p) {
   const kv = {};
   for (const line of fs.readFileSync(p, "utf8").split("\n")) {

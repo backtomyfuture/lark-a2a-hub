@@ -32,7 +32,7 @@ import {
   saveRetryWatermark,
 } from "./retry-state.mjs";
 import { clearSessionId, readSessionId, writeSessionId } from "./session-store.mjs";
-import { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
+import { capIdOf, capIdsOf, clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 import { LocalScheduleService } from "./local-schedule.mjs";
 
 export {
@@ -53,16 +53,6 @@ export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./con
 
 export const DAEMON_VERSION = "node-0.7.0";
 const HOP_LIMIT = 8;
-
-function capIdsOf(commands) {
-  const caps = new Set();
-  if (!commands || typeof commands !== "object") return caps;
-  for (const entry of Object.values(commands)) {
-    const id = entry && typeof entry === "object" ? String(entry.cap_id ?? "").trim() : "";
-    if (id) caps.add(id);
-  }
-  return caps;
-}
 
 // 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。
 function msUntilNextMinute(nowMs) {
@@ -116,7 +106,7 @@ export class Kernel {
       statePath: path.join(this.cfg.configDir, "schedule_local_state.json"),
       log,
       createTask,
-      commandsOf: () => capIdsOf(this.commands),
+      commandsOf: () => capIdsOf(this.commands, this.cfg.capPrefix),
       notify: () => this.pulseWake(),
     });
     this._hookBus();
@@ -621,7 +611,7 @@ export class Kernel {
   // ---------- 能力登记 ----------
 
   capIdFor(skill, entry) {
-    return entry?.cap_id || `CAP-${this.cfg.capPrefix}-${skill}`;
+    return capIdOf(skill, entry, this.cfg.capPrefix);
   }
 
   desiredCard(skill, entry, carrierUp) {

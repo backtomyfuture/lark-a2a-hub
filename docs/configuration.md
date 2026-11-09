@@ -74,7 +74,7 @@
 | `side_effect` | 副作用等级，写进名片，如 `read` / `write` |
 | `approval_class` | 本机审批下限，只收紧不放宽。设为 `approve` 的能力执行前必走机主审批 |
 | `resume_command` | 可选，含 `{session}` 与 `{prompt}`。仅 direct 问答续跑且本机已有 session 时替换 `command` |
-| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息 |
+| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；计划里的 `cap` 按这个口径匹配 |
 
 命令、目录、语境只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` 等执行控制键，会被直接拒收，不会被当作指令。
 
