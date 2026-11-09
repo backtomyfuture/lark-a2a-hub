@@ -511,8 +511,11 @@ if (cmd === "setup") {
         process.exitCode = 1;
       }
     }
+  } else if (sub === "begin") {
+    const { handleTaskBegin } = await import("../src/schedule-cli.mjs");
+    process.exitCode = await handleTaskBegin(rest.slice(1), { configDir: configDirFrom(rest) });
   } else {
-    console.error("用法：lah task create | reply | show | why | cancel");
+    console.error("用法：lah task create | reply | show | why | cancel | begin");
     process.exitCode = 1;
   }
 } else if (cmd === "inbox") {
@@ -637,6 +640,9 @@ if (cmd === "setup") {
     console.error("读取 present_queue.jsonl 失败：" + (e?.message ?? e));
     process.exitCode = 1;
   }
+} else if (cmd === "schedule") {
+  const { handleScheduleCli } = await import("../src/schedule-cli.mjs");
+  process.exitCode = await handleScheduleCli(rest, { configDir: configDirFrom(rest) });
 } else if (cmd === "update") {
   const { update } = await import("../src/update.mjs");
   process.exitCode = await update(APP_DIR, {
@@ -666,5 +672,12 @@ if (cmd === "setup") {
   lah task show   <Task_ID>
   lah task why    <Task_ID> [--config <dir>] [--json]
   lah task cancel --task <Task_ID> [--text <说明>] [--config <dir>]
+  lah task begin  --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <指令>]  Agent 定时触发（同一期次不要并发调用；建 submitted 任务由本节点守护进程认领；Agent 完成后用 lah inbox done|ask|fail 登记结果）
+  lah schedule ls [--config <dir>] [--json]  列出本机定时调度计划
+  lah schedule add --id <id> --cron "<五段>" --cap <cap_id> --text <指令> [--approval auto|notify|approve] [--disabled]  添加本机定时计划
+  lah schedule rm <id> [--config <dir>]  删除本机计划
+  lah schedule enable <id> [--config <dir>]  启用本机计划
+  lah schedule disable <id> [--config <dir>]  停用本机计划
+  lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>]  登记 Agent 观察镜像（不写本机计划）
   lah present     [--pop]  读取本机结果呈递队列（--pop 同时清空）`);
 }

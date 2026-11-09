@@ -36,10 +36,13 @@ export function shouldPresent(task, messages, { nodeName = "", role = "hub" } = 
   const instr = taskMsgs.find((m) => f1(m, "Kind") === "instruction");
   const from = instr ? String(f1(instr, "From_Node") ?? "").trim() : "";
   const source = String(f1(task, "Source") ?? "").trim();
+  // 发起方先看指令的 From_Node。没有指令时才退回 Source，
+  // 这样 Source=cron 不会把别的节点发起的单算成 hub 该收的。
   const initiator = from || source;
 
   if (nodeName && initiator === nodeName) return true;
-  if (role === "hub" && (!initiator || initiator === "hub" || initiator === "cron" || source === "cron")) {
+  // hub 只收发起方为空、为 hub、或字面为 cron 的单。节点自己的定时任务由该节点入队。
+  if (role === "hub" && (!initiator || initiator === "hub" || initiator === "cron")) {
     return true;
   }
   return false;

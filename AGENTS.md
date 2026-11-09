@@ -6,15 +6,19 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 
 ## 目录与职责
 
-- `bin/lah.mjs` / `bin/hub-node.mjs`：CLI 分发 `setup | daemon | doctor | service | host | task (create|reply|show|why|cancel) | present | update`（支持 `--role node|hub`；省略时 daemon / doctor / service 读 `node.json` 的 role，缺省 node）；配置目录取 `--config <dir>` > `HUB_NODE_HOME` > `~/.hub-node`（内含 `node.json` 与 `commands.json`）。
+- `bin/lah.mjs` / `bin/hub-node.mjs`：CLI 分发 `setup | daemon | doctor | service | host | task (create|reply|show|why|cancel|begin) | schedule (ls|add|rm|enable|disable|register) | present | inbox | update`（支持 `--role node|hub`；省略时 daemon / doctor / service 读 `node.json` 的 role，缺省 node）；配置目录取 `--config <dir>` > `HUB_NODE_HOME` > `~/.hub-node`（内含 `node.json` 与 `commands.json`）。
 - `src/kernel.mjs`：状态机骨架（构造、`sweepOnce`/`run` 主循环与状态迁移），唯一写任务状态的节点代码。辅助拆在 `receipt.mjs`（回执与命令模板）、`retry-state.mjs`（退避水位）、`session-store.mjs`（session.json）、`config.mjs`（配置与控制键）、`kernel-util.mjs`（日志与小工具），以及原型混入的 `kernel-direct.mjs`、`kernel-approval.mjs`、`kernel-outbox.mjs`、`kernel-metadata.mjs`。常量 `DAEMON_VERSION`、`HOP_LIMIT=8`、`MAX_RETRIES=2`、`STALE_MIN=20`（无心跳 20 分钟回收）留在本文件。写回执（result/question/notice）时 `To_Node` 原路指向发起方 `From_Node`（auth_request 除外，指向 hub）。node 与 hub 角色在扫表与事件唤醒时均通过 `PresentService` 将属于本节点发起的任务回执落入本地 `present_queue.jsonl` 原路唤醒 Agent。`context=direct` 的 json/agent 命令在 spawn 前把在途账本写到配置目录 `runs/<Task_ID>/entry.json`（不进总线）；扫表认领并 spawn 后立即返回，同一时刻只保留一条 direct 命令，结果在下一轮收口时串行写回。carrier 与 inbox 仍走同步路径。
+- `src/schedule-cron.mjs`：五段 cron 解析、时区墙钟转换与期次键计算纯函数（共享模块）。
+- `src/local-schedule.mjs`：节点本地定时调度服务（`LocalScheduleService`），从配置目录 `schedules.json` 读取计划，经内置分钟定时器与扫表触发，基线优先于补期，只补最近一期，建单 `submitted` 并置唤醒标志由本进程认领。
+- `src/schedule-mirror.mjs`：计划在 Rules 表的单向观察镜像（`ScheduleMirror`），只写本机行 `Rule_ID=<Node_ID>:<计划id>`，不读 Rules 触发，供全网总览页查看。
+- `src/schedule-cli.mjs`：`lah schedule (ls|add|rm|enable|disable|register)` 与 `lah task begin` CLI 实现。
 - `src/bus/feishu.mjs`：Bitable REST 客户端（全局 `fetch`）；对 1254291 写冲突与 429/5xx 退避重试；`f1()` 把单元素数组字段取成标量。
 - `src/bus/feishu-events.mjs`：长连接订阅 `drive.file.bitable_record_changed_v1`，只当门铃叫醒内核，不解析事件内容。
 - `src/carrier.mjs`：carrier 语境（unix socket 上的 NDJSON，`ping` / `exec` 两种帧）。
 - `src/setup.mjs` / `src/doctor.mjs` / `src/service.mjs`：装机向导、只读自检、LaunchAgent / systemd / Windows 任务计划程序用户级自启（均支持 `--role node|hub` 与 `--kind host|agent`）；自动安装 `lah` Agent Skill。
 - `src/inbox.mjs`：独立 Agent 收件箱操作库，承载 `agent_inbox.jsonl` 的读写、心跳核验与 `lah inbox (done|ask|fail)` 总线回执。
 - `src/executors/echo.mjs`：json 模式示例执行器（stdin 读信封，stdout 回显）。
-- `src/hub/`：hub 角色——单进程超集（每轮扫表先由 `Kernel` 认领执行任务并登记能力，再由 `approval` 审批发卡、回调校验机主写 `auth_decision`、写 `canceled`、`present` 结果呈递到本地队列、`stale` 陈旧任务告警）。建单入口为 `lah task create`（写表前按 AgentCards 名册校验 `--to` / `--cap` 存在性），撤单入口为 `lah task cancel`，只读排障入口为 `lah task why`；`schedule` 服务除 cron 外还负责触发已完成任务的 `later` 复查。Rules 自动路由仍为计划。守护进程的 node 角色代码路径从不写 `auth_decision` 与 `canceled`；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。飞书端仅发审批交互卡，不发大段纯文本刷屏。
+- `src/hub/`：hub 角色——单进程超集（每轮扫表先由 `Kernel` 认领执行任务并登记能力，再由 `approval` 审批发卡、回调校验机主写 `auth_decision`、写 `canceled`、`present` 结果呈递到本地队列、`stale` 陈旧任务告警）。建单入口为 `lah task create`（写表前按 AgentCards 名册校验 `--to` / `--cap` 存在性），撤单入口为 `lah task cancel`，只读排障入口为 `lah task why`；`schedule` 服务仅负责触发已完成任务的 `later` 复查（定时调度已下沉至各节点本地）。Rules 自动路由仍为计划。守护进程的 node 角色代码路径从不写 `auth_decision` 与 `canceled`；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。飞书端仅发审批交互卡，不发大段纯文本刷屏。
 - `src/transport/`：唤醒工厂（`createWaker`），支持 `ws`（长连接门铃 + 卡片回调）与 `poll`（默认 45 秒）两种入站唤醒，外加 15 分钟对账定时兜底；webhook 专指飞书自动化出站 POST，本项目不主动推送。hub 角色强制 ws。
 - `docs/standard.md`：**中台标准，权威**。`docs/base-schema.md` 与 `schema/base-schema.json` 是生成物，由 `schema/generate_schema.mjs` 产出。
 - `docs/configuration.md`：配置目录、`node.json` / `commands.json` 字段、回执约定、carrier 与 CLI 速查；README 只保留价值主张与上手，细节放这里。改 CLI 或配置字段时同步它。
@@ -38,6 +42,12 @@ node bin/lah.mjs task reply --config <dir> --task <Task_ID> --text <答复内容
 node bin/lah.mjs task show <Task_ID> [--config <dir>]
 node bin/lah.mjs task why <Task_ID> [--config <dir>] [--json]
 node bin/lah.mjs task cancel --config <dir> --task <Task_ID> [--text <说明>]
+node bin/lah.mjs task begin  --config <dir> --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <指令>]
+node bin/lah.mjs schedule ls [--config <dir>] [--json]
+node bin/lah.mjs schedule add --id <id> --cron "<五段>" --cap <cap_id> --text <指令> [--approval auto|notify|approve] [--disabled] [--config <dir>]
+node bin/lah.mjs schedule rm <id> [--config <dir>]
+node bin/lah.mjs schedule enable|disable <id> [--config <dir>]
+node bin/lah.mjs schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>] [--config <dir>]
 node bin/lah.mjs present [--pop] [--config <dir>]
 node bin/lah.mjs inbox [--pop] [--json] [--config <dir>]
 node bin/lah.mjs inbox done --task <Task_ID> --text <结果> [--artifact <路径或URL>]
@@ -64,7 +74,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 - 只借数据模型，不借通信：不实现 JSON-RPC / gRPC / HTTP+JSON / SSE，不实现入站 webhook，节点只读写表。出站通知：webhook 专指飞书多维表格自动化在 Tasks 行写入后向协议接入型节点的端点 POST，只带 ID 不带正文；本项目任何进程不主动推送（标准 §10.3）。
 - 状态八态，拼写固定：`submitted`、`working`、`input-required`、`auth-required`、`completed`、`failed`、`canceled`（单 l）、`rejected`。
-- 节点允许的迁移：`submitted→working`（写 `Claimed_By`、`Heartbeat_At`，认领后回读校验，丢了就放手）；`working→completed | input-required | failed`；执行失败未达 `MAX_RETRIES` 或心跳超时回收时回 `submitted`（回收计入 `Retry_Count`、与执行失败共用上限，超限置 `failed` + notice；回 `submitted` 前在本机 `retry_state.json` 记退避水位，60 秒起翻倍、上限 10 分钟，水位未到本节点跳过认领、不耗重试次数）；守护重启后，在途账本显示命令进程仍在则只续心跳、不二次执行；执行成功但回执无效直接 `failed` + notice，提交总线中途失败只补齐提交，二者都不计重试、不重跑（标准 §4）；`submitted→auth-required | rejected | failed`（熔断；行级 `Approval_Class=approve` 的 `auth-required` 也可由 hub 在 `submitted` 阶段提前写 `auth_request` 并发卡，节点认领时按既有请求收敛，全程只有一条 `auth_request`，标准 §8.3）；已有 `result` 消息的 `submitted` 任务对账为 `completed`。`canceled` 只由发起方/hub 角色写。
+- 节点允许的迁移：`submitted→working`（写 `Claimed_By`、`Heartbeat_At`，认领后回读校验，丢了就放手；节点本地定时任务建为 `submitted` 后走同一认领链路）；`working→completed | input-required | failed`；执行失败未达 `MAX_RETRIES` 或心跳超时回收时回 `submitted`（回收计入 `Retry_Count`、与执行失败共用上限，超限置 `failed` + notice；回 `submitted` 前在本机 `retry_state.json` 记退避水位，60 秒起翻倍、上限 10 分钟，水位未到本节点跳过认领、不耗重试次数）；守护重启后，在途账本显示命令进程仍在则只续心跳、不二次执行；执行成功但回执无效直接 `failed` + notice，提交总线中途失败只补齐提交，二者都不计重试、不重跑（标准 §4）；`submitted→auth-required | rejected | failed`（熔断；行级 `Approval_Class=approve` 的 `auth-required` 也可由 hub 在 `submitted` 阶段提前写 `auth_request` 并发卡，节点认领时按既有请求收敛，全程只有一条 `auth_request`，标准 §8.3）；已有 `result` 消息的 `submitted` 任务对账为 `completed`。`canceled` 只由发起方/hub 角色写。
 - 终态不可变、不可重启：终态任务不得改回非终态。后续工作在同一 `Context_ID` 下新建任务，新任务首条 instruction 消息的 `Ref_Task_IDs` 指回前任。
 - 中断态在原任务续跑：`question` 之后出现 `answer` 就在同一任务继续（`resumeCheck`），禁止为答问题新开任务。
 - 状态与消息配套：`input-required` ↔ `question`，`auth-required` ↔ `auth_request`（`Status_Msg` 指向该 Msg_ID），`completed` ↔ `result`（有产物先登记 Artifacts），`failed` / `rejected` ↔ `notice` 说明原因。
@@ -88,7 +98,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 ## 禁止事项
 
-- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`、`schedule_state.json`、`retry_state.json`、`runs/`（在途账本、输入与命令输出），以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
+- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`、`schedule_state.json`、`schedule_local_state.json`、`schedules.json`、`retry_state.json`、`runs/`（在途账本、输入与命令输出），以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
 - 不要修改或删除 Messages / Parts 行，不要重开终态任务，不要给 Tasks 加参数列。
 - 不要让守护进程因启动期或单轮错误退出，不要吞掉错误后假装成功。
 - 不要手改 `schema/base-schema.json`、`docs/base-schema.md`。

@@ -141,13 +141,34 @@ lah inbox fail --task <Task_ID> --text "<失败原因说明>"
 
 ---
 
-### 7. 检查节点与总线状态 (`lah doctor`)
+### 7. 本地定时调度与 Agent 触发 (`lah schedule` / `lah task begin`)
+
+节点本地拥有独立时钟（`schedules.json`）。针对自带 cron 定时器的 Agent（如 Muse、Grok），通过双时钟机制协同：
+
+#### 7.1 查看与配置本机计划 (`lah schedule`)
+- 查看计划：`lah schedule ls [--json]`
+- 添加计划：`lah schedule add --id <id> --cron "<五段>" --cap <cap_id> --text "<指令>"`
+- 删除/启用/停用：`lah schedule rm <id>` / `lah schedule enable <id>` / `lah schedule disable <id>`
+- 仅登记观察镜像：`lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text "<指令>"]`（Agent 类向 Rules 镜像同步计划展示，不写入本机 schedules.json）
+
+#### 7.2 Agent 定时器到点触发 (`lah task begin`)
+当 Agent 自带定时器到点时，调用此命令生成调度任务：
+```bash
+lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] --text "<指令>"
+```
+- 命令在总线生成 `Status=submitted`、`Source=cron` 的任务，并输出 `Task_ID`；已存在同键任务时直接输出已有 ID，不重复建单；
+- 本机 `lah daemon` 自动认领该任务并写入 `agent_inbox.jsonl`；
+- Agent 在执行完成后调用 `lah inbox done --task <Task_ID> --text "..."`（或 `ask`/`fail`）完成闭环交付。
+
+---
+
+### 8. 检查节点与总线状态 (`lah doctor`)
 查看当前环境、配置凭据、长连接状态以及本节点和全网在册的 Agent 能力：
 ```bash
 lah doctor
 ```
 
-### 8. 协议节点单次对账与只读盘点
+### 9. 协议节点单次对账与只读盘点
 无法长驻 daemon 的外部节点（例如 Grok Bot）收到 webhook 门铃后，或每 15 分钟兜底时，跑一次：
 ```bash
 lah reconcile

@@ -6,8 +6,8 @@
 No server to run, no inbound ports, every step on the record.
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.6.3-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.5.7-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.6-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -60,7 +60,7 @@ flowchart LR
     BUS -->|"event doorbell + 15-min sweep"| N2["Node: work machine"]
     BUS -.->|"Feishu automation webhook"| N3["Cloud bot (protocol node)"]
     N1 & N2 & N3 -->|"status · messages · artifacts"| BUS
-    BUS -->|"needs approval / result / alert"| HUB["Hub: approval cards · result delivery · scheduling"]
+    BUS -->|"needs approval / result / alert"| HUB["Hub: approval cards · result delivery · follow-up scheduling"]
     HUB -->|"Lark interactive card"| OWNER["Owner"]
 ```
 
@@ -164,7 +164,7 @@ The wizard also installs the `lah` Skill for your terminal agent (`~/.agents/ski
 - **Disciplined failure**: at most 2 retries with backoff starting at 60 s, doubling, capped at 10 min. More than 8 hops trips the breaker. Invalid receipts and failed submissions are not re-run, to avoid repeating side effects.
 - **Observable**: `lah task why` joins task, messages, runs, artifacts and local pending state. Receipts may carry `USAGE:`, accumulated into task metadata.
 - **Cancel and follow-up**: `lah task cancel` withdraws a task. A completed receipt may carry `LATER:`, and the hub creates a follow-up task in the same context when it comes due.
-- **Scheduling**: the hub owns the only network-wide clock. Cron rows in the Rules table create tasks on schedule, idempotently.
+- **Scheduling**: each node owns its local clock (`schedules.json` and agent `lah task begin`), automatically creating and claiming tasks on schedule; the Rules table acts as a read-only mirror for visibility, with idempotent deduplication.
 - **LAN context**: on macOS a daemon cannot reach the LAN; a `carrier` runs those commands in your terminal. When the carrier is offline, tasks are rejected explicitly, never silently downgraded.
 - **Tests and CI**: `npm test` (Node's built-in `node:test` and an in-memory bus, no real Base) covers the core paths. GitHub Actions runs on ubuntu and macOS with Node 20 and 22.
 

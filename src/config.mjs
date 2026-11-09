@@ -67,7 +67,7 @@ export function loadConfig(configDir) {
     doorbellFile: cfg.doorbellFile ? cfg.doorbellFile.replace(/^~/, os.homedir()) : null,
     carrierSocket: cfg.carrierSocket ? cfg.carrierSocket.replace(/^~/, os.homedir()) : path.join(configDir, "carrier.sock"),
     capPrefix: cfg.capPrefix ?? cfg.node,
-    // 只给 hub 定时调度读。缺省由 ScheduleService 解释成 Asia/Shanghai，这里不套宿主机时区。
+    // 只给节点本地定时调度读。缺省由 resolveScheduleTz 解释成 Asia/Shanghai，这里不套宿主机时区。
     tz: cfg.tz,
     // 缺省 undefined。hub 角色由传输层强制走长连接；不在这里把缺省改写成 node，避免和角色改造抢字段语义。
     bus: new FeishuBus({ appId, appSecret, baseToken: cfg.baseToken, tables: cfg.tables }),

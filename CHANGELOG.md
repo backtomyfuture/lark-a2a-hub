@@ -1,13 +1,40 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.5.7）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.6）。
 
 ## [未发布]
 
-- **运行时口径对齐 Node 24**：测试基线（tests/）在 Node 20/22 下有 12 个端到端用例被测试运行器取消（Node 24 下 78/78 通过），CI 自测试落地起即为红。经机主拍板，支持口径收窄为 Node >= 24：CI 矩阵改为 Node 24、package.json engines、install.sh 与 doctor 的版本门、README 徽章与 CONTRIBUTING / AGENTS.md 同步。
+## [0.7.0] - 2026-11-09（中台标准 v3.6：节点本地定时调度、双时钟与 Rules 观察镜像）
 
-- **新增 `lah update`**：一条命令自更新程序本体——git pull（--ff-only）、依赖重装、`~/.local/bin` 软链补齐、`~/.agents/skills/lah` Skill 重拷，与重跑 install.sh 的更新分支等价，但绝不碰配置目录。`lah update --check` 只 fetch 并比对远端提交数，不落盘；`--skip-skill` / `LAH_SKIP_SKILL=1` 跳过 Skill 更新。只支持 git 检出（install.sh 装出来的就是），tarball 安装与 detached HEAD 报错指路；发现 daemon 仍在运行时提示重启后生效，不强杀。更新后 README / install.sh 注释同步指路。
+中台标准现行 v3.6。`DAEMON_VERSION` 为 `node-0.7.0`。
+
+- **节点本地定时调度（标准 v3.6 §7）**：定时调度从 hub 集中扫表下沉至节点本地驱动，解决延时链长与单点时钟错位。双时钟来源：终端类节点（`kind: host` 与 hub 所在机）由守护进程内置分钟级时钟读取配置目录 `schedules.json` 触发；独立 Agent 类节点（`kind: agent`，如 Muse、Grok）由 Agent 自身时钟到点调用 `lah task begin` 触发。
+- **状态机与认领统一**：定时任务一律以 `Status=submitted`、`Source=cron`、`From_Node=Target_Node=本节点` 建单入总线，并立即唤醒本进程走统一认领链路（在途账本、心跳、单并发、审批下限）。严禁跳过 submitted 直写 `working`。
+- **幂等键升级与防重**：幂等键格式升级为 `sched:<Node_ID>:<Schedule_ID>:<期次键>`（废止旧格式 `sched:<Rule_ID>:<期次>`），支持多节点同计划独立执行一份；触发前按幂等键查验总线防重。基线优先于补期：新建或修改计划只锚定基线、不建单；已有基线且错过多期只补最近一期；节点睡眠或关机不代偿。
+- **Rules 降级为只读观察镜像（标准 §7）**：各节点将本机计划摘要单向镜像至 Rules 表（`Rule_ID=<Node_ID>:<Schedule_ID>`），仅供全网总览页查看；任何节点不从 Rules 读计划触发任务，Base 中修改 Rules 不影响本地执行。Agent 类可用 `lah schedule register` 登记镜像。
+- **呈递归属对齐原路返回（标准 §8.5）**：遵循「谁发起、回给谁」，节点发起的定时任务由该节点自身队列 `present_queue.jsonl` 呈递；hub 仅接收发起方为空、为 `hub` 或发起方字面为 `cron` 的单，不再截留其他节点发起的定时任务。
+- **hub 职责调整（标准 §10.1 第 7 条）**：hub 不再按 Rules 扫表建单，仅保留事项级 `later` 预约复查建单。表结构完全不变（不加列）。
+- **CLI 子命令与自检**：
+  - 新增 `lah schedule ls|add|rm|enable|disable|register` 管理本机计划与镜像；
+  - 新增 `lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] --text <指令>` 供 Agent 类自带时钟终端到点建单；
+  - `lah doctor` 增检 `schedules.json`（cap 存在、cron 合法、tz 合法、控制键拦截），只告警不阻断守护启动；时区检查放开至所有含有计划的节点；
+  - `lah task why` 输出补充调度计划来源（`sched:` 幂等键解析）。
+- **运行时与维护**：
+  - 运行时口径对齐 Node >= 24；
+  - 新增 `lah update` 一键自更新程序本体。
+
+### 迁移与部署顺序
+
+- **必须先升级 hub，再升级其它节点**：旧版 hub 仍会从 Rules 中读取 `Enabled=Yes` 且 `Schedule` 非空的行建单，若新节点先写入镜像行会被旧 hub 误读触发，导致双跑。
+- **存量计划迁移**：如 hub 上的 `SCHED-HUB-MORNING`，先在 Rules 旧行置 `Enabled=No`，在 hub 配置目录使用 `lah schedule add --id SCHED-HUB-MORNING --cron "50 8 * * *" --cap agent --text "..."` 登记并锚定基线。
+- 旧状态文件 `schedule_state.json` 保留废弃，新状态由 `schedule_local_state.json` 承载。
+
+### 已知限制
+
+- 节点关机或睡眠期间未执行的期次不做代偿，开机后仅补发最近一期。
+- 调度期次依赖系统时钟，生产环境需配置 NTP 同步。
+- Rules 镜像字段使用现有列，扩展筛选字段待后续规划。
 
 ## [0.6.3] - 2026-11-08（中台标准 v3.5.7：执行账本、审批提前发卡、task cancel、later 与测试基线）
 

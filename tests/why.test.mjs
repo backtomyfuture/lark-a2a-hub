@@ -102,3 +102,42 @@ test("formatWhyText 不包含 DataPart 的值", async () => {
     assert.equal(bus.journal.some((item) => item.op === "create" || item.op === "update"), false);
   });
 });
+
+test("formatWhyText 显示幂等键，sched 键标出定时计划", async () => {
+  await withTemp(async (dir) => {
+    const bus = new MockFeishuBus({ tables: TABLES });
+    await bus.createRecord(TABLES.tasks, {
+      Task_ID: "TASK-WHY-SCHED",
+      Title: "早报",
+      Status: "completed",
+      Target_Node: "node-a",
+      Source: "cron",
+      Skill_ID: "echo",
+      Idempotency_Key: "sched:node-a:DAILY:2026-01-16T09:30:00+0800",
+    });
+    await bus.createRecord(TABLES.messages, {
+      Msg_ID: "MSG-WHY-SCHED-01",
+      Task_ID: "TASK-WHY-SCHED",
+      Kind: "result",
+      From_Node: "node-a",
+      To_Node: "node-a",
+      Role: "agent",
+      Created_At: "2026-01-16T09:30:00+0800",
+    });
+    const data = await getTaskWhy({ bus, configDir: dir, taskId: "TASK-WHY-SCHED" });
+    const text = formatWhyText(data);
+    assert.match(text, /幂等键: sched:node-a:DAILY:2026-01-16T09:30:00\+0800/);
+    assert.match(text, /来源：定时计划 node-a\/DAILY\/2026-01-16T09:30:00\+0800/);
+    assert.match(text, /任务来源: cron/);
+
+    data.task.idempotency_key = "manual-key";
+    const manual = formatWhyText(data);
+    assert.match(manual, /幂等键: manual-key/);
+    assert.equal(manual.includes("来源：定时计划"), false);
+
+    data.task.idempotency_key = "";
+    const none = formatWhyText(data);
+    assert.match(none, /幂等键: \(无\)/);
+    assert.equal(none.includes("来源：定时计划"), false);
+  });
+});

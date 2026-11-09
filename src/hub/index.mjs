@@ -103,10 +103,10 @@ export async function hubDoctor(configDir) {
       bad("定时调度模块不可用");
       problems++;
     } else {
-      ok("定时调度：全网唯一的时钟在 hub；Rules 中 Enabled=Yes 且 Schedule 非空的行即计划行，期次按 node.json 的 tz（缺省 Asia/Shanghai，与宿主机时区无关）；基线未建立或 Schedule 变化时只回写 Last_Fired，之后只补最近一期。基线在 schedule_state.json");
+      ok("定时调度由各节点本地执行（schedules.json＋本地时钟），hub 不再按 Rules 建单；hub 只处理 later 复查。Rules 的计划行是节点写的只读观察镜像。");
     }
     if (!raw?.tables?.rules) {
-      info("定时调度将跳过：本配置 node.json 缺 tables.rules 映射（重跑 setup 或手动补上 Rules 表 id 后生效）");
+      info("Rules 观察镜像将跳过");
     }
   } catch (e) {
     bad("呈递或告警模块加载失败：" + e.message);
@@ -162,8 +162,6 @@ export async function runHub(cfg, log = logLine, hooks = {}) {
   const schedule = new ScheduleService({
     bus: cfg.bus,
     log,
-    tz: cfg.tz,
-    statePath: path.join(cfg.configDir, "schedule_state.json"),
   });
   const runtime = new HubRuntime({ cfg, approval, present, stale, schedule, log });
   if (typeof hooks.onRuntime === "function") hooks.onRuntime(runtime);
@@ -220,6 +218,9 @@ export class HubRuntime {
     this._stopped = true;
     clearTimeout(this._kickTimer);
     this._kickTimer = null;
+    // 分钟定时器挂在内核上。这里清掉，避免 hub 退出后它还握着进程。
+    try { this.kernel?.stopMinuteTimer(); }
+    catch (e) { this.log("停止分钟定时器失败：" + (e?.message ?? e)); }
     this.closeConnection();
   }
 
@@ -328,7 +329,10 @@ export class HubRuntime {
   }
 
   async run() {
-    this.log(`hub daemon starting on ${this.cfg.node}（对账 ${this.sweepSec()}s，长连接必需，不使用 poll 退路；含能力登记与接单、审批、呈递、陈旧告警、定时调度）`);
+    this.log(`hub daemon starting on ${this.cfg.node}（对账 ${this.sweepSec()}s，长连接必需，不使用 poll 退路；含能力登记与接单、审批、呈递、陈旧告警、later 复查；本机计划由内核本地调度）`);
+    // hub 不走 Kernel.run。分钟定时器仍要起：到点经 kernel._notifyWake 抬这里的 _wakeFlag。
+    this.kernel?.startMinuteTimer();
+    try {
     try {
       await this.cfg.bus.tenantToken();
     } catch (e) {
@@ -360,6 +364,10 @@ export class HubRuntime {
       }
       if (this._wakeFlag) continue;
       await this.waitWake();
+    }
+    } finally {
+      try { this.kernel?.stopMinuteTimer(); }
+      catch (e) { this.log("停止分钟定时器失败：" + (e?.message ?? e)); }
     }
   }
 }

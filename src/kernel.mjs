@@ -9,6 +9,7 @@ import path from "node:path";
 import { f1 } from "./bus/feishu.mjs";
 import { createWaker } from "./transport/index.mjs";
 import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
+import { createTask } from "./hub/create.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
 import { TERMINAL_STATUSES, annotateElapsed, approvalRank, log, nowStr } from "./kernel-util.mjs";
@@ -32,6 +33,7 @@ import {
 } from "./retry-state.mjs";
 import { clearSessionId, readSessionId, writeSessionId } from "./session-store.mjs";
 import { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
+import { LocalScheduleService } from "./local-schedule.mjs";
 
 export {
   addUsage,
@@ -49,8 +51,27 @@ export {
 export { readSessionId } from "./session-store.mjs";
 export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 
-export const DAEMON_VERSION = "node-0.6.3";
+export const DAEMON_VERSION = "node-0.7.0";
 const HOP_LIMIT = 8;
+
+function capIdsOf(commands) {
+  const caps = new Set();
+  if (!commands || typeof commands !== "object") return caps;
+  for (const entry of Object.values(commands)) {
+    const id = entry && typeof entry === "object" ? String(entry.cap_id ?? "").trim() : "";
+    if (id) caps.add(id);
+  }
+  return caps;
+}
+
+// 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。
+function msUntilNextMinute(nowMs) {
+  const ms = Number(nowMs);
+  if (!Number.isFinite(ms)) return 60_000;
+  const rem = Math.floor(ms) % 60_000;
+  if (rem < 0) return 60_000;
+  return rem === 0 ? 60_000 : 60_000 - rem;
+}
 const MAX_RETRIES = 2;
 const STALE_MIN = 20;
 
@@ -76,6 +97,8 @@ export class Kernel {
     // 同一时刻只保留一条 direct 命令，避免收口写和别的扫表写同一张表。
     this._directFlight = null;
     this._sweepBusy = false;
+    this._minuteTimer = null;
+    this._minuteTimerOn = false;
     this.present = new PresentService({
       bus: this.bus,
       nodeName: this.cfg.node,
@@ -84,8 +107,27 @@ export class Kernel {
       queuePath: path.join(this.cfg.configDir, "present_queue.jsonl"),
       log,
     });
+    // 没有 schedules.json 时 tick 直接返回。node 与 hub 共用这一份，hub 只是包着同一个 Kernel。
+    this.localSchedule = new LocalScheduleService({
+      bus: this.bus,
+      node: this.cfg.node,
+      tz: this.cfg.tz,
+      schedulesPath: path.join(this.cfg.configDir, "schedules.json"),
+      statePath: path.join(this.cfg.configDir, "schedule_local_state.json"),
+      log,
+      createTask,
+      commandsOf: () => capIdsOf(this.commands),
+      notify: () => this.pulseWake(),
+    });
     this._hookBus();
     this.loadCommands();
+  }
+
+  // 到点只抬旗。hub 的等待看的是自己的 _wakeFlag，靠已有的 _notifyWake 接过去。
+  pulseWake() {
+    this._wakeFlag = true;
+    try { this._notifyWake?.(); }
+    catch (e) { log("wake notify failed: " + (e?.message ?? e)); }
   }
 
   // updateRecord 成功后把本轮 Messages/Parts 索引里的同一行补上，避免刚写完又整表重拉。
@@ -1258,6 +1300,14 @@ export class Kernel {
       log("能力名片未登记，本轮不派发任务");
       return;
     }
+    // 先建本轮到期的 submitted，下面的 listRecords 才能在同一轮认领。
+    if (this.localSchedule) {
+      try {
+        await this.localSchedule.tick();
+      } catch (e) {
+        log("local schedule tick error: " + (e?.message ?? e));
+      }
+    }
     const caps = await this.myCapabilities();
     const tasks = await this.bus.listRecords(this.T.tasks);
     for (const t of tasks) {
@@ -1276,6 +1326,13 @@ export class Kernel {
     if (flight && (flight.localExited || (flight.exitPath && fs.existsSync(flight.exitPath)))) {
       await this.pokeFlight(flight);
     }
+    if (this.localSchedule) {
+      try {
+        await this.localSchedule.observe(tasks);
+      } catch (e) {
+        log("schedule mirror error: " + (e?.message ?? e));
+      }
+    }
     if (this.cfg.role !== "hub" && this.present) {
       try {
         await this.present.scan();
@@ -1290,6 +1347,7 @@ export class Kernel {
 
   requestStop() {
     this._stopping = true;
+    this.stopMinuteTimer();
     this._wakeFlag = true;
     this.waker?.stop();
     const waiter = this._directFlight?.waiter;
@@ -1349,21 +1407,80 @@ export class Kernel {
       await this.markOffline();
       return;
     }
-    this.startEventReceiver();
-    for (;;) {
-      // 唤醒标志在扫表前消费：本次扫表会看到最新状态，扫表之后
-      // 再到的事件由 waitWake 立刻响应，不会被误清。
-      if (this._stopping) break;
-      this._wakeFlag = false;
-      try {
-        await this.sweepOnce();
-      } catch (e) {
-        log("poll error: " + e.message);
+    // once 对账不挂分钟定时器，避免一次运行把进程留住。
+    this.startMinuteTimer();
+    try {
+      this.startEventReceiver();
+      for (;;) {
+        // 唤醒标志在扫表前消费：本次扫表会看到最新状态，扫表之后
+        // 再到的事件由 waitWake 立刻响应，不会被误清。
+        if (this._stopping) break;
+        this._wakeFlag = false;
+        try {
+          await this.sweepOnce();
+        } catch (e) {
+          log("poll error: " + e.message);
+        }
+        if (this._stopping) break;
+        await this.waitWake();
       }
-      if (this._stopping) break;
-      await this.waitWake();
+    } finally {
+      this.stopMinuteTimer();
     }
     await this.markOffline();
+  }
+
+  startMinuteTimer() {
+    if (this._minuteTimerOn || this._stopping) return;
+    this._minuteTimerOn = true;
+    this._armMinuteTimer();
+  }
+
+  stopMinuteTimer() {
+    this._minuteTimerOn = false;
+    if (this._minuteTimer) {
+      clearTimeout(this._minuteTimer);
+      this._minuteTimer = null;
+    }
+  }
+
+  _armMinuteTimer() {
+    if (!this._minuteTimerOn || this._stopping) return;
+    let delay = typeof this._minuteDelayMs === "function"
+      ? Number(this._minuteDelayMs())
+      : msUntilNextMinute(Date.now());
+    if (!Number.isFinite(delay) || delay < 1) delay = msUntilNextMinute(Date.now());
+    this._minuteTimer = setTimeout(() => {
+      this._minuteTimer = null;
+      try {
+        if (this._stopping || !this._minuteTimerOn) return;
+        // 没到期就不扫表。空转叫醒会把 Tasks 和 hub 的整表扫描放大到每分钟一次。
+        this._onMinute();
+      } catch (e) {
+        log("minute timer failed: " + (e?.message ?? e));
+      }
+      try {
+        if (!this._stopping && this._minuteTimerOn) this._armMinuteTimer();
+      } catch (e) {
+        log("minute timer rearm failed: " + (e?.message ?? e));
+      }
+    }, delay);
+    // 不靠这个定时器撑住事件循环。waitWake 自己有睡眠；停的时候再清掉，避免退出后还响。
+    this._minuteTimer.unref?.();
+  }
+
+  // 定时器回调本体。只做本地到期判断，真有事才抬唤醒标志。
+  _onMinute() {
+    let due = false;
+    try {
+      const raw = typeof this._scheduleNowMs === "function" ? Number(this._scheduleNowMs()) : Date.now();
+      const nowMs = Number.isFinite(raw) ? raw : Date.now();
+      due = this.localSchedule?.hasDue?.(nowMs) === true;
+    } catch (e) {
+      log("minute timer failed: " + (e?.message ?? e));
+      return;
+    }
+    if (due) this.pulseWake();
   }
 }
 

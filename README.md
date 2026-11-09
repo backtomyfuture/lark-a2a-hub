@@ -6,8 +6,8 @@
 零服务器、零入站端口、每一步都留痕可查。
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.6.3-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.5.7-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.6-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -58,7 +58,7 @@ flowchart LR
     BUS -->|"事件门铃 + 15 分钟对账"| N2["节点：工作机"]
     BUS -.->|"飞书自动化 webhook"| N3["云端 bot（协议接入）"]
     N1 & N2 & N3 -->|"状态 · 消息 · 产物回写"| BUS
-    BUS -->|"待批 / 结果 / 告警"| HUB["hub：审批卡 · 结果呈递 · 定时调度"]
+    BUS -->|"待批 / 结果 / 告警"| HUB["hub：审批卡 · 结果呈递 · 复查调度"]
     HUB -->|"飞书交互卡"| OWNER["机主"]
 ```
 
@@ -162,7 +162,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 - **失败有章法**：重试上限 2 次，60 秒起翻倍退避、封顶 10 分钟；跳数超过 8 熔断；回执无效或提交失败不重跑，避免副作用重复。
 - **可观测**：`lah task why` 汇总任务、消息、执行、产物与本机待补交状态；回执可带 `USAGE:` 用量，累计到任务元数据。
 - **取消与复查**：`lah task cancel` 撤单；完成回执可带 `LATER:` 预约复查，hub 到点在同一上下文新建复查任务。
-- **定时调度**：hub 持有全网唯一时钟，Rules 表里的 cron 行到期自动建单，幂等防重。
+- **定时调度**：各节点本地持有独立时钟（`schedules.json` 与 Agent `lah task begin`），到点自动建单并经认领执行；Rules 表单向镜像总览，幂等防重。
 - **局域网语境**：macOS 守护进程碰不到局域网，用 `carrier` 在你的终端里代跑；carrier 离线时明确拒收，不静默降级。
 - **测试与 CI**：`npm test`（Node 内置 `node:test` 与内存总线，不连真实 Base）覆盖核心路径；GitHub Actions 在 ubuntu / macOS × Node 20 / 22 上跑。
 

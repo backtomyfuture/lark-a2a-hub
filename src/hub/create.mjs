@@ -5,7 +5,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { controlKeysIn } from "../kernel.mjs";
+import { controlKeysIn } from "../config.mjs";
 import { f1 } from "../bus/feishu.mjs";
 
 const APPROVALS = new Set(["auto", "notify", "approve"]);

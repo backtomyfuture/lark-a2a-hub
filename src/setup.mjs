@@ -1087,9 +1087,8 @@ export async function runSetup(configDir, argv, appDir) {
     }
     const tables = {};
     for (const n of REQUIRED_TABLES) tables[TABLE_KEYS[n]] = byName.get(n);
-    // Rules 不是建单/执行路径的必需表，但 hub 的定时调度要读它：Base 里有就一并
-    // 登记映射。缺了这条映射时调度会静默跳过（2026-11-08 实测踩过），所以发现
-    // 阶段就把它补上，doctor 对 hub 角色另有缺失警告。
+    // Rules 不是建单/执行路径的必需表。Rules 现为各节点写入的计划观察镜像：
+    // Base 里有就一并登记映射。缺了这条映射时镜像会跳过，所以发现阶段就把它补上。
     if (byName.has("Rules")) tables.rules = byName.get("Rules");
     console.log(`  ✓ Base 表发现完成（${REQUIRED_TABLES.length} 张标准表齐全）`);
 

@@ -9,7 +9,7 @@ import {
   parseCron,
   resolveScheduleTz,
   wallClock,
-} from "../src/hub/schedule.mjs";
+} from "../src/schedule-cron.mjs";
 
 // 红线：非法表达式在建单前失败，不能算出一个错位的期次。
 test("parseCron 只接受五段，步长和星期 7 可解析", () => {

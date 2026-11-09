@@ -478,6 +478,14 @@ export async function getTaskWhy({ bus, configDir, taskId }) {
   };
 }
 
+// sched:<节点>:<计划id>:<期次键>。期次键本身含冒号，只切开前两段。
+function schedKeyNote(key) {
+  const text = String(key ?? "").trim();
+  const matched = text.match(/^sched:([^:]+):([^:]+):(.+)$/);
+  if (!matched) return "";
+  return `来源：定时计划 ${matched[1]}/${matched[2]}/${matched[3]}`;
+}
+
 // 格式化文本输出：清晰呈现来龙去脉全链
 export function formatWhyText(data) {
   const { task, timeline, outbox } = data;
@@ -496,6 +504,9 @@ export function formatWhyText(data) {
   lines.push(`派生跳数: ${task.hop_count}`);
   lines.push(`目标节点: ${task.target_node || "(未指定)"}`);
   lines.push(`任务来源: ${task.source || "(未指定)"}`);
+  lines.push(`幂等键: ${task.idempotency_key || "(无)"}`);
+  const schedNote = schedKeyNote(task.idempotency_key);
+  if (schedNote) lines.push(schedNote);
   lines.push(`技能/能力: ${task.skill_id || task.worker_hint || "(默认)"}`);
   lines.push(`会话编号: ${task.context_id || "(无)"}`);
   if (task.approval_class) lines.push(`审批等级: ${task.approval_class}`);

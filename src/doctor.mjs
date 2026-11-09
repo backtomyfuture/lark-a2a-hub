@@ -9,6 +9,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
+import { LocalScheduleService } from "./local-schedule.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { execViaCarrier, pingCarrier } from "./carrier.mjs";
 
@@ -444,6 +445,77 @@ async function checkBusContract(bus, appDir, nodeName) {
   return problems;
 }
 
+function capIdsFromCommands(configDir) {
+  try {
+    const cmds = JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8"));
+    if (!cmds || typeof cmds !== "object" || Array.isArray(cmds)) return new Set();
+    const caps = new Set();
+    for (const entry of Object.values(cmds)) {
+      const id = entry && typeof entry === "object" && !Array.isArray(entry)
+        ? String(entry.cap_id ?? "").trim()
+        : "";
+      if (id) caps.add(id);
+    }
+    return caps;
+  } catch {
+    return new Set();
+  }
+}
+
+function scheduleBrief(entry, index) {
+  const obj = entry && typeof entry === "object" && !Array.isArray(entry) ? entry : null;
+  const id = obj && typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : `#${index}`;
+  const cron = obj && typeof obj.cron === "string" ? obj.cron.trim() : "";
+  const cap = obj && typeof obj.cap === "string" ? obj.cap.trim() : "";
+  const enabled = obj?.enabled === true ? "启用" : "未启用";
+  return `本地计划 ${id}：cron ${cron || "(空)"}，cap ${cap || "(空)"}，${enabled}`;
+}
+
+// schedules.json 不存在时什么都不打印。存在时复用 LocalScheduleService 的读取和拒收口径，
+// 只告警，不计入 problems：坏计划不能让 doctor 非零退出，也不能挡住守护进程启动。
+export function reportLocalSchedules(configDir, raw) {
+  const file = path.join(configDir, "schedules.json");
+  if (!fs.existsSync(file)) return 0;
+  const warn = (msg) => info("告警：" + msg);
+  try {
+    const configured = raw && Object.prototype.hasOwnProperty.call(raw, "tz") && String(raw.tz ?? "").trim() !== "";
+    try {
+      const tz = resolveScheduleTz(raw?.tz);
+      if (configured) ok(`定时调度时区：${tz}（node.json 的 tz，与宿主机时区无关）`);
+      else info(`定时调度时区：${tz}（未配置 tz，默认 Asia/Shanghai）`);
+    } catch (e) {
+      warn(`定时调度时区非法（node.json 的 tz=${JSON.stringify(raw?.tz)}）：${e.message}。本地调度会整体停用，不回退宿主机时区`);
+    }
+    const caps = capIdsFromCommands(configDir);
+    const svc = new LocalScheduleService({
+      schedulesPath: file,
+      tz: raw?.tz,
+      commandsOf: () => caps,
+      log: () => {},
+    });
+    const loaded = svc._readFile();
+    if (loaded.missing) return 0;
+    if (loaded.broken) {
+      warn(`schedules.json 损坏，本地调度整体停用：${loaded.broken}`);
+      return 0;
+    }
+    const seen = new Set();
+    loaded.list.forEach((entry, index) => {
+      const reason = svc._rejectReason(entry, seen, caps);
+      const brief = scheduleBrief(entry, index);
+      if (reason) {
+        warn(`${brief}；${reason}`);
+        return;
+      }
+      seen.add(String(entry.id).trim());
+      ok(brief);
+    });
+  } catch (e) {
+    warn(`schedules.json 检查失败（不阻断）：${e?.message ?? e}`);
+  }
+  return 0;
+}
+
 function roleFrom(argv, opts, raw) {
   if (opts?.role === "node" || opts?.role === "hub") return opts.role;
   for (let i = 0; i < argv.length; i++) {
@@ -522,8 +594,10 @@ export async function doctor(configDir, appDir, opts = {}) {
     problems++;
   }
 
-  // 调度时区只跟 hub 有关。非法值必须在自检里计问题，和运行时「跳过本轮、不回退宿主机」一致。
-  if (role === "hub" && raw) {
+  // 没有本地计划时，时区仍只跟 hub 的旧口径有关，非法值计问题。
+  // 有 schedules.json 时改由 reportLocalSchedules 覆盖到任何角色，并且只告警。
+  const schedulesPresent = fs.existsSync(path.join(configDir, "schedules.json"));
+  if (role === "hub" && raw && !schedulesPresent) {
     const configured = Object.prototype.hasOwnProperty.call(raw, "tz") && String(raw.tz ?? "").trim() !== "";
     try {
       const tz = resolveScheduleTz(raw.tz);
@@ -534,6 +608,7 @@ export async function doctor(configDir, appDir, opts = {}) {
       problems++;
     }
   }
+  if (schedulesPresent) reportLocalSchedules(configDir, raw);
 
   try {
     const cmdsPath = path.join(configDir, "commands.json");

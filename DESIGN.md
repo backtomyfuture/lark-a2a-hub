@@ -126,7 +126,11 @@ lark-a2a-hub/
   src/service.mjs       # launchd / systemd 用户级自启（带 --role，hub/node 独立服务名）
   src/executors/        # 示例执行器（echo.mjs）
   src/hub/              # hub 角色（建单、审批发卡、卡片回调与机主校验、
-                        #   auth_decision、canceled、结果呈递、陈旧告警）
+                        #   auth_decision、canceled、结果呈递、陈旧告警、later 复查）
+  src/schedule-cron.mjs # cron 解析与期次键纯函数（节点本地调度共用）
+  src/local-schedule.mjs # 节点本地定时调度（schedules.json、基线、建 submitted 任务）
+  src/schedule-mirror.mjs # 计划摘要单向镜像到 Rules（只写自己的行，只供观察）
+  src/schedule-cli.mjs  # lah schedule (ls|add|rm|enable|disable|register) 与 lah task begin
   src/transport/        # ws / poll 门铃与对账定时（webhook 通知由飞书自动化发出）
   src/direct-ledger.mjs # direct 命令的在途执行账本（崩溃后续接，不二次执行）
   src/why.mjs           # lah task why：只读时间线

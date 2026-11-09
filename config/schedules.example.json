@@ -1,0 +1,12 @@
+{
+  "schedules": [
+    {
+      "id": "SCHED-EXAMPLE",
+      "enabled": true,
+      "cron": "50 8 * * *",
+      "cap": "agent",
+      "text": "每日定时任务指令占位说明",
+      "approval_class": "auto"
+    }
+  ]
+}

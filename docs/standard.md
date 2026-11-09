@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，v3.1 形态 B）
 
-> 现行标准，版本 v3.4.1。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.6。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -152,16 +152,32 @@
 
 沿用 v1：Rule_ID、Match_Type、Skill_ID、Target_Node、Worker_Hint、Approval_Class、Priority、Enabled、Note。路由按 Skill_ID＋tags 匹配能力行（v2 起 Skill_ID 视为技能 id，与 Nodes.Skill_ID 对齐）。规则变更只改表。
 
-**定时调度（v3.5.2 新增，v3.5.4 修订时区与基线）**：Rules 兼作全网唯一的计划表，时钟只在 hub（§10.1 第 7 条）。在上列字段之外加三列：`Schedule`（五段 cron 表达式，按 hub 配置时区解释）、`Text`（到点要建的任务指令正文）、`Last_Fired`（水位线：已触发或已锚定的最近一期期次键）。约定：
+**定时调度（v3.6 节点本地调度与 Rules 观察镜像）**：定时调度下沉至节点本地驱动（时钟不再由 hub 独占）；Rules 表中的调度列降级为各节点单向写入的只读观察镜像，供全网总览页查看。
 
-- **配置时区**：`node.json` 的 `tz`，IANA 时区名。hub 缺省 `Asia/Shanghai`。期次只按这个时区的墙钟计算，与宿主机时区、`TZ` 环境变量无关。`tz` 只影响调度，不改变其它时间字段的写法。非法 `tz`（运行时无法解析该 IANA 名）必须记日志并跳过本轮调度，守护进程不退出，不得静默改用宿主机时区或默认时区。
-- **计划行**＝`Enabled=Yes` 且 `Schedule` 非空的行。hub 在每轮扫表时顺带检查计划行；路由行（`Schedule` 为空）不参与调度。
-- **期次键**：不晚于当前时刻的最近一期（分钟粒度），用该时区在该时刻的偏移格式化。写法与 v3.5 起的时间文本相同：`YYYY-MM-DDThh:mm:ss±HHMM`（例如 `2026-11-08T08:50:00+0800`），偏移不带冒号。有夏令时的时区按每个候选时刻各自的偏移计算，不用一个固定偏移。期次搜索窗口 8 天，比周更稀疏的计划不支持。
-- **基线**：基线键＝`Rule_ID`＋`Schedule` 文本，记在 hub 配置目录的 `schedule_state.json`（不进仓库、不进总线，不新增 Rules 列）。`Last_Fired` 缺失，或该行 `Schedule` 与已登记基线不同，或基线文件缺失/损坏，则本次扫描只把 `Last_Fired` 回写成当前最近一期期次键并登记基线，不建单；从下一期起才触发。这覆盖新建计划、改表达式，以及升级后的首次启动。状态文件写失败只记日志、进程不退出，且该轮不建单（宁可漏触发，不可补发历史期次）。
-- **触发语义**（已有基线、`Schedule` 未变、且 `Last_Fired` 已有值）：期次键与 `Last_Fired` 不同才建单。错过的早期期次不补——只补最近一期（hub 停机跨过多个周期时只触发一次）。
-- **建单**：Source=`cron`、From_Node=`hub`，幂等键＝`sched:<Rule_ID>:<期次键>`。建单前先按幂等键查 Tasks，已有同键任务则只补写水位线、不重复建单（hub 重启或水位线写失败时靠这一条自愈）。建单成功后回写 `Last_Fired`。
-- **目标解析顺序**：计划行自身的 `Target_Node` → 路由行（同 Skill_ID、`Enabled=Yes`、Priority 最高的一行）的 `Target_Node` → AgentCards 按 Skill_ID 解析（`createTask` 现行语义：首张可派名片）。`Approval_Class` 同序取值（计划行 → 路由行）。解析不到可派目标时本期跳过并记日志，下一轮重试。
-- 调度产生的任务与手动建单完全同构：认领、心跳、回执呈递（Source=`cron` 归 hub 主节点汇报，§8.5）、陈旧告警都走现行链路，节点侧不需要任何改动。
+- **双时钟来源**：
+  1. 终端类节点（`kind: host` 与 hub 所在机）：由 `lah daemon` 内置的分钟定时器驱动，读取配置目录下的 `schedules.json`（权限 0600，不进仓库、不进总线）；
+  2. Agent 类节点（`kind: agent`，如 Muse、Grok 等自带 cron 定时器的独立 Agent）：由 Agent 自身时钟到点调用 `lah task begin` 触发。
+- **本地计划定义（`schedules.json`）**：结构为 `{"schedules": [{id, enabled, cron, cap, text, approval_class?}]}`。
+  - 文件缺失视为无计划；文件损坏则本地调度整体停用并记日志（§10.5），守护进程不退出；
+  - 单条计划缺少必填字段、cron 不可解析、或 `cap` 在本机 `commands.json` 中不存在时，仅停用该条并记日志；
+  - 计划定义中出现 `command` / `cwd` / `context` / `agent` / `mode` 等执行控制键时，整条拒收。
+- **时区与期次键**：按节点本地 `node.json` 的 `tz`（IANA 时区名，缺省 `Asia/Shanghai`）墙钟计算期次，与宿主机时区及系统 `TZ` 环境变量无关。非法 `tz` 记日志并停用本地调度，不回退宿主机时区。期次键格式沿用带时区偏移的分钟级文本：`YYYY-MM-DDThh:mm:ss±HHMM`（如 `2026-11-09T08:50:00+0800`，偏移不带冒号）。期次搜索窗口 8 天。
+- **状态与基线（`schedule_local_state.json`，权限 0600）**：记录每条计划的 `{cron, last_fired, last_task}` 及 `mirrored_ids`。**基线优先于补期**：新建计划、修改 `cron` 表达式、状态文件缺失或损坏时，首次扫描仅将水位线锚定在最近一期，不建单；从下一期起才触发。状态文件写失败本轮不建单。
+- **触发与补期语义**：已有基线且 `last_fired` 不等于最近一期期次键时触发；停机或错过多期时只补最近一期。节点关机或睡眠期间未执行的期次不做代偿。
+- **建单与认领流转（严禁直写 working）**：
+  - 到点建单走标准建单写序（首条 instruction 消息 → Parts → Tasks 行），`Status=submitted`，`Source=cron`，`From_Node`＝`Target_Node`＝本节点；
+  - `Approval_Class` 取计划配置与本机 `commands.json` 对应能力的 `approval_class` 下限中更严者（只收紧不放宽）；
+  - 建单成功后立即置本进程唤醒标志（`_wakeFlag = true`），由本节点现有认领链路接管并流转到 `working`（若生效审批级别为 `approve` 则认领前由节点置 `auth-required`）。严禁跳过 submitted 直写 `working`，以保证在途执行账本、心跳、单并发管控、重试退避与机主审批红线完整生效；
+  - 多节点配置相同 Schedule_ID 时，各自独立建单并独立执行一份；
+  - 已知限制：本地定时任务的发起方是本节点，执行中提问（`input-required`）的 `question` 原路回给本节点，须由本机 Agent 经 `lah task reply` 答复；§10.1 第 6 条的陈旧告警不覆盖 `input-required`，无人值守的计划应选择不会提问的能力。
+- **幂等与防重**：幂等键格式为 `sched:<Node_ID>:<Schedule_ID>:<期次键>`。触发建单前先按幂等键查验总线 Tasks 表，已有同键任务则只补写本地状态水位线、不重复建单（双保险防重）。
+- **Agent 类自带时钟与 `lah task begin`**：Agent 定时器到点调用 `lah task begin --schedule <id> [--period <期次键>] [--cap <cap>] --text <指令>`。默认 `--cap agent`、`--from`＝`--to`＝本节点、`Source=cron`，生成同格式幂等键建单为 `submitted`，由本节点守护进程认领进入收件箱（`agent_inbox.jsonl`），Agent 处理完后调用 `lah inbox done|ask|fail` 交付结果。同键重复调用输出已有 Task_ID，不重复建单。
+- **Rules 观察镜像**：Rules 表中的 `Schedule`、`Text`、`Last_Fired` 等列降级为「节点单向写入的只读观察镜像」，仅供全网总览页展示：
+  - 节点将本机每条计划镜像为 Rules 一行：`Rule_ID` 固定为 `<Node_ID>:<Schedule_ID>`；`Target_Node` 为本节点；`Skill_ID` 为 cap；`Schedule` 为 cron；`Text` 为指令；`Enabled`（Yes/No）反映本机计划启用状态；`Last_Fired` 记录最近期次键；`Note` 记录上次运行任务与状态及「同步于 <时间戳>」；
+  - 节点严格只写属于自己的镜像行（`Rule_ID` 以 `<本节点>:` 开头），不读也不改其他节点的镜像行；
+  - **任何节点不从 Rules 读计划来触发**；在飞书多维表格 Base 里手动修改 Rules 的任何字段，绝不影响各节点本地计划的实际执行；
+  - 独立 Agent 类节点可通过 `lah schedule register` 登记镜像行（仅写 Rules 镜像，不写入本机 schedules.json，不触发任务）；
+  - 同步时机：守护启动、计划变更、触发建单、上次任务收口终态，以及每 15 分钟对账周期刷新一次「同步于」。若 Base 缺少 `tables.rules` 映射，跳过镜像并记日志，不影响调度。
 
 ## 8. 通信协议（标准往返）
 
@@ -209,10 +225,20 @@
 - **结果呈递原路落盘唤醒 Agent，飞书端只发审批卡**：
   - 飞书端只由 `role=hub` 发送 `auth-required` 交互式审批卡（以及可选的 `stale` 告警），不再往飞书发送大段纯文本结果刷屏。
   - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。
-  - 特殊归属：`From_Node` 或 `Source` 为 `"hub"` 或 `"cron"`（定时任务）的任务，统一由 `role=hub` 的主节点收入其 `present_queue.jsonl`，交由主节点 Agent 汇报。
+  - 归属与过滤：节点发起的定时任务（`From_Node` 为本节点、`Source=cron`）由本节点收入其 `present_queue.jsonl` 原路呈递；`role=hub` 的主节点仅接收发起方为空、为 `"hub"`、或发起方字面为 `"cron"` 的任务结果，不再因 `Source=cron` 截留其他节点发起的任务。
 - **呈递去重**按「任务＋当前 Status_Msg」即 (Task_ID, Status_Msg) 计，终态再带上 Status。同一任务每出现一条新的 question / auth_request 都是新的呈递项，答复续跑或批准后到达的终态结果也要再呈递一次。已呈递的 Msg_ID 记在 Tasks.Metadata；Presented 列自 v3.5 起废弃（其信息与 presented_keys 重复），不再作为去重依据，代码切换后删列。对 Tasks.Metadata 的写入一律先读再合并（总线无 CAS，整段覆盖会互相吞键）。初次装机或初次启动时，若本地呈递状态不存在，自动以线上存量终态或已呈递任务建立装机水位线（Baseline），避免向本地队列倾倒全部历史已完成任务。
 
 ## 修订记录
+
+**v3.6（2026-11-09，节点本地调度、双时钟与 Rules 观察镜像）**：
+- 动机：v3.5.2 的 hub 集中调度存在延时链长（hub 扫表建单 → 节点长连接/轮询唤醒认领）与单点时钟错位风险；改为各节点本地调度（§7）。
+- 双时钟架构：终端类节点（`kind: host`）由 `lah daemon` 本地内置分钟级时钟读取 `schedules.json` 触发；独立 Agent 类节点（`kind: agent`，如 Muse / Grok）由 Agent 自身时钟到点调用 `lah task begin` 触发。
+- 状态机统一：本地调度触发的任务一律以 `Status=submitted` 建单入总线，`From_Node`＝`Target_Node`＝本节点，`Source=cron`，并立刻唤醒本进程走统一认领链路（在途账本、心跳、单并发、审批下限对齐）。严禁直接写 `working`。
+- 幂等键格式升级：升级为 `sched:<Node_ID>:<Schedule_ID>:<期次键>`，旧键 `sched:<Rule_ID>:<期次>` 废止。基线优先于补期，只补最近一期，节点关机睡眠不代偿。
+- Rules 角色降为观察镜像：节点将本机计划摘要单向同步至 Rules 表（`Rule_ID=<Node_ID>:<Schedule_ID>`），供全网总览页面查看；任何节点不读 Rules 触发任务，Base 中改动 Rules 不影响本地执行。Agent 类可用 `lah schedule register` 登记镜像。
+- 呈递归属变更（§8.5）：遵循「谁发起、回给谁」，节点发起的定时任务结果由节点自身收进 `present_queue.jsonl`；hub 仅接收发起方为空、为 `hub` 或发起方字面为 `cron` 的单。
+- 职责调整：hub（§10.1 第 7 条）不再按 Rules 扫表建单，仅保留事项级 `later` 预约复查建单。表结构完全不变（不加列）。
+- 部署与迁移顺序：必须**先升级 hub、再升级各执行节点**，防止旧 hub 扫描到新节点写入的 Rules 镜像行造成双跑误触发。
 
 **v3.5.7（2026-11-08，事项级 later 复查）**：§9 回执增加可选 `LATER` / `later`。只在完成回执上生效，写入 `Tasks.Metadata.later`，不加列。§10.1 第 7 条：到点由 hub 在同一 `Context_ID` 下新建复查任务；纯 node 没有时钟，不建复查任务。终态任务不重启。
 
@@ -298,12 +324,12 @@
 - 实现是 Node 版 `lah daemon --role node|hub`（命令 `hub-node` 兼容别名可用）。省略 `--role` 时读该进程配置目录里 `node.json` 的 `role`，缺省为 node。单进程、单配置目录即可同时承载干活与枢纽职责，无需再拆两个进程与配置目录。
 - hub 角色的职责：
   1. 节点能力与任务执行：像普通 node 一样读取 `commands.json`、自动登记 `AgentCards`、认领并执行 `Target_Node === 本节点` 的任务（含定时任务）；
-  2. 建单与路由：按 Rules 与 AgentCards 选目标（Rules 自动路由仍为计划）；建单严格按「instruction 消息 → Parts → Tasks 行」顺序写，Tasks 行最后写、即触发信号（入口为 `lah task create`，由调用方指定目标节点与技能，省略技能时由中台按目标节点在 AgentCards 登记的名片自动挑选首选技能，亦可通过 --cap 反查目标节点）。建单在写任何行之前先按 AgentCards 名册校验目标存在性（显式 `--to` 须在名册有名片，显式 `--cap` 须在目标节点名片中存在对应技能；只校验存在性与 Dispatchable=Yes，不校验 Availability，目标离线仍可建单入队），校验失败报错退出且不落表；自动挑选与显式指定 Cap_ID 或 Skill_ID 时，命中 `Dispatchable=No` 或没有可用能力时，必须在第一笔写之前拒绝，并给出明确错误；
+  2. 建单与路由：按 Rules 与 AgentCards 选目标（Rules 自动路由仍为计划）；建单严格按「instruction 消息 → Parts → Tasks 行」顺序写，Tasks 行最后写、即触发信号（入口为 `lah task create`，由调用方指定目标节点与技能，省略技能时由中台按目标节点在 AgentCards 登记的名片自动挑选首选技能，亦可通过 --cap 反查目标节点）。建单在写任何行之前先按 AgentCards 名册校验目标存在性（显式 `--to` 须在名册有名片，显式 `--cap` 须在目标节点名片中存在对应技能；只校验存在性与 Dispatchable=Yes，不校验 Availability，目标离线仍可建单入队），校验失败报错退出且不落表；自动挑选与显式指定 Cap_ID 或 Skill_ID 时，命中 `Dispatchable=No` 或没有可用能力时，必须在第一笔写之前拒绝，并给出明确错误；节点守护可按同一写序给自己建计划任务（From_Node=To_Node=本节点、Source=cron），仍不写 auth_decision 与 canceled；
   3. 审批中继：给机主发审批卡；处理卡片回调时校验操作者是机主本人；通过后写 auth_decision（From_Node=hub、Role=user、In_Reply_To=任务当前 Status_Msg），并按决定把任务置回 submitted 或置 canceled（§8.3）；
   4. 取消：审批驳回时写 canceled；hub 角色也可执行 `lah task cancel` 取消任意任务。发起方只能在本机显式执行 `lah task cancel` 取消自己发起的任务。这是 CLI 动作，不是守护进程扫表路径；
   5. 结果呈递：将本节点或主节点归属的任务结果（终态、input-required、rejected）落入本地 `present_queue.jsonl`，去重按 §8.5；飞书端只发审批卡，不发大段文本刷屏；
   6. 陈旧任务告警与回收：working 且心跳超时（20 分钟）的任务先告警机主；告警后宽限 30 分钟，心跳恢复则撤销告警、不留痕迹；宽限届满仍无心跳，由 hub 将任务置 `failed`、清空认领、关账未结束的 Run，并写一条 notice 说明回收原因（原节点事后恢复时，其迟到回执按终态守卫处理）。这是 hub 唯一可代写的任务终态——与 `canceled`（机主/发起方意愿）严格区分，语义为「执行方失联」。它也区别于节点对本机认领的超时回收（§4：回 submitted 重试并计 Retry_Count）——节点复活时自会处理本机认领；hub 回收针对的是执行节点整体失联（告警＋宽限共 50 分钟无任何心跳），此时回 submitted 只是把任务放回无人区，直接终局更诚实。submitted 无人认领的任务只告警、不回收。
-  7. 定时调度：全网唯一的时钟。按 Rules 计划行（§7）在配置时区（`node.json` 的 `tz`，IANA 名，hub 缺省 Asia/Shanghai，与宿主机时区无关）的期次到达时建单（Source=`cron`）。基线（Rule_ID＋Schedule 文本，本地 `schedule_state.json`）未建立、`Last_Fired` 缺失或 Schedule 文本变化时，只回写水位线、不建单；已建立后，水位线与幂等键保证不重复，停机只补最近一期，不补更早的历史期次。非法时区记日志并跳过本轮，进程不退出。时钟只做「到点建单」，分配与执行走现行路由与认领链路。同一只时钟也处理事项级复查（§9）：每轮扫表找出 `Status=completed`、`Metadata.later` 已到点、且还没有 `later_fired` 的任务，经现行建单在同一 `Context_ID` 下新建复查任务。`Target_Node` 与 `Skill_ID` 取前任任务行，首条 instruction 的 `Ref_Task_IDs` 指回前任，`Hop_Count` 为前任加一，`Approval_Class` 继承前任（只收紧不放宽），`Source=cron`，幂等键 `later:<前任 Task_ID>`，指令正文为「复查：<about>（承接任务 <前任 Task_ID>）」。`about` 只作为数据进入指令正文，不进入命令路径。建单前先按幂等键查重，已有则只补写 `later_fired`（新任务 ID 与触发时间）。目标名片暂缺时记日志，下一轮重试，不写标记。再加一跳会超过跳数上限时不建单，记日志并写 `later_fired`，避免每轮重试。逾期再久也只补这一次。纯 node 部署没有这只时钟，later 只留在 Metadata，直到有 hub 扫表；node 角色守护进程不建复查任务。
+  7. 账本派生职责（事项级 later 复查）：定时调度已下沉至各节点本地（§7），hub 不再从 Rules 扫表建计划任务。hub 的时钟保留处理事项级复查（§9）：每轮扫表找出 `Status=completed`、`Metadata.later` 已到点、且还没有 `later_fired` 的任务，经现行建单在同一 `Context_ID` 下新建复查任务。`Target_Node` 与 `Skill_ID` 取前任任务行，首条 instruction 的 `Ref_Task_IDs` 指回前任，`Hop_Count` 为前任加一，`Approval_Class` 继承前任（只收紧不放宽），`Source=cron`，幂等键 `later:<前任 Task_ID>`，指令正文为「复查：<about>（承接任务 <前任 Task_ID>）」。`about` 只作为数据进入指令正文，不进入命令路径。建单前先按幂等键查重，已有则只补写 `later_fired`（新任务 ID 与触发时间）。目标名片暂缺时记日志，下一轮重试，不写标记。再加一跳会超过跳数上限时不建单，记日志并写 `later_fired`，避免每轮重试。逾期再久也只补这一次。纯 node 部署不处理这只时钟，later 只留在 Metadata，直到有 hub 扫表；node 角色守护进程不建复查任务。
 - **角色边界**：auth_decision 消息只能由 hub 角色的代码路径写入；node 角色的守护进程与 inbox 回执从不写。canceled 同样不能由守护进程的 node 角色代码路径写入（`kernel` 认领/回执与 `inbox` 回执均不写）。唯一例外：发起方在本机显式执行 `lah task cancel`，且仅能取消自己发起的任务。发起方按首条 instruction 的 From_Node，否则 Tasks.Source，再否则 `hub`（与回执原路同一口径）；Tasks 表没有 From_Node 列。hub 角色可取消任意任务，审批驳回时写 canceled 仍只走 hub 守护进程。除此之外没有写 canceled 的入口，命令行 `--role` 不能把 node 提升成 hub。
 - From_Node=hub 是 hub 角色的逻辑名，与它跑在哪台机器无关；node 角色写出的消息，From_Node 仍是本节点名。
 - §8.3 的「有效决定」四条判定、回调鉴权与「终态不可变」等约束不因角色合并而放宽。
