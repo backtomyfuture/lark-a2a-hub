@@ -1,4 +1,15 @@
 {
+ "workers": {
+  "agy": {
+   "command": "agy --dangerously-skip-permissions --print {prompt}",
+   "desc": "Antigravity：通用 Agent，终端/SSH 工具面，按指令现场发挥。权限边界：无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前）。有副作用，approval_class 保持 approve；任务参数不得改写命令或权限。",
+   "mode": "agent",
+   "name": "Antigravity",
+   "side_effect": "write",
+   "approval_class": "approve",
+   "timeout_sec": 900
+  }
+ },
  "daily-briefing": {
   "command": "node scripts/briefing.js",
   "desc": "每日早报：天气、热点、本机状态汇总",
@@ -6,19 +17,18 @@
   "name": "每日早报",
   "side_effect": "read"
  },
- "ops-agent": {
-  "command": "agy --dangerously-skip-permissions --print {prompt}",
-  "desc": "通用运维 Agent：终端/SSH 工具面，按指令现场发挥。权限边界：无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前）。本能力有副作用，approval_class 保持 approve；任务参数不得改写命令或权限。",
-  "mode": "agent",
-  "name": "运维 Agent",
-  "side_effect": "write",
-  "approval_class": "approve",
-  "timeout_sec": 900
+ "ops-check": {
+  "workers": [
+   "agy"
+  ],
+  "desc": "运维巡检：只读检查磁盘、负载与服务状态，汇报异常项，不做任何修改。",
+  "name": "运维巡检",
+  "side_effect": "read"
  },
  "lan-exec": {
   "command": "agy --dangerously-skip-permissions --print {prompt}",
   "context": "carrier",
-  "desc": "局域网型 Agent：命令经 carrier 在用户终端语境里代跑（macOS 局域网权限场景，见 DESIGN §9）。权限边界与 ops-agent 相同：无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前），且保持 approval_class=approve。",
+  "desc": "局域网型 Agent：命令经 carrier 在用户终端语境里代跑（macOS 局域网权限场景，见 DESIGN §9）。无头模板显式带 --dangerously-skip-permissions（必须位于 --print 之前），且保持 approval_class=approve。",
   "mode": "agent",
   "name": "局域网 Agent",
   "side_effect": "write",

@@ -24,9 +24,11 @@
 
 节点身份（`node` / `zone`）、总线参数（`baseToken` / `tables`）、凭据来源（`appEnv` 指向本地 env 文件，或 `appId` / `appSecret` 直填）、轮询与对账周期。
 
+- `domain`：`feishu`（国内飞书，缺省）或 `lark`（国际版 Lark，`open.larksuite.com`）。读写表与长连接都走这个域名；写错直接报错，不回退。装机时用 `lah setup --domain lark`。两套域名是两套租户，应用与 Base 必须在同一侧。官方标准模板托管在飞书，Lark 租户需按 [Base 结构](base-schema.md) 自建七张表。
 - `role`：`node` 或 `hub`，缺省 `node`。`lah daemon`、`doctor`、`service` 省略 `--role` 时读它。
 - `events`：是否订阅云文档事件（长连接门铃，秒级唤醒）。`pollSec`（默认 45）是 poll 模式的扫表间隔；`sweepSec`（默认 900，即 15 分钟）是对账兜底。
 - `ownerOpenId`：机主 open_id，只有 hub 角色用，用来校验审批卡的操作者。
+- `hubPublicKey`：hub 的审批签名公钥（base64）。配了它，本节点只认 hub 私钥签过的审批决定，冒写的决定当作不存在；没配则只按行上自报字段校验，`lah doctor` 会提醒。公钥在 hub 上用 `lah doctor` 查看，在节点上用 `lah setup --hub-key <公钥>` 写入。hub 自己不用配：它的私钥在配置目录 `approval_key.pem`（600，首次启动自动生成，不要提交、不要外传），公钥由私钥推出。详见 [SECURITY.md](../SECURITY.md)。
 - `tz`：IANA 时区名，缺省 `Asia/Shanghai`。决定本地定时调度的 cron 墙钟与期次键偏移，与宿主机时区及系统 `TZ` 环境变量无关。
 - hub 角色强制 ws 长连接。唤醒只是门铃，内容一律回表拉取。
 
@@ -34,7 +36,7 @@
 
 `lah setup [--kind host|agent]` 的向导会问你。
 
-- **`kind: host`（电脑宿主，默认）**：自动发现 lark-cli 应用，识别本机已装的 Agent（Claude Code、Codex、agy、Paseo、Orca 等）并生成 `commands.json`；守护进程认领任务后拉起本机命令干活。
+- **`kind: host`（电脑宿主，默认）**：自动发现 lark-cli 应用，识别本机已装的 Agent（Claude Code、Codex、agy、Paseo、Orca 等），把它们登记为 `commands.json` 里的 Worker；守护进程认领任务后拉起本机命令干活。
 - **`kind: agent`（独立 Agent 本尊，如 Muse、常驻 Agent 容器）**：Agent 自己就是干活的人。setup 不扫描 PATH、不注册外部 CLI，只登记 `agent` 能力（`mode: inbox`）。守护进程认领任务后写入本地 `agent_inbox.jsonl` 并刷新心跳，由本尊自己接单、办完回执。
 
 > [!IMPORTANT]
@@ -42,10 +44,21 @@
 
 ## 4. commands.json：能力表
 
-键是 Skill_ID（能力 ID），值是命令模板。**加能力、改能力、删能力，只改这个文件，不改内核。**
+中台按三层寻址（标准 §0 第 8 条）：**Node** 是这台机器，**Worker** 是机器上的一个 Agent，**Skill** 是这个 Worker 能做的一类任务。`commands.json` 写的就是后两层。**加能力、改能力、删能力，只改这个文件，不改内核。**
 
 ```jsonc
 {
+  // 保留键 workers：本机的 Worker，值是这个 Agent CLI 的无头启动模板
+  "workers": {
+    "agy": {
+      "command": "agy --dangerously-skip-permissions --print {prompt}",
+      "name": "Antigravity",
+      "desc": "通用 Agent：终端/SSH 工具面",
+      "approval_class": "approve",
+      "timeout_sec": 900
+    }
+  },
+  // 其余键都是 Skill。自带 command 的由节点本尊直接执行，不经过任何 Worker
   "daily-briefing": {
     "command": "node scripts/briefing.js",
     "mode": "json",
@@ -53,16 +66,35 @@
     "desc": "天气、热点、本机状态汇总",
     "side_effect": "read"
   },
-  "ops-agent": {
-    "command": "agy --dangerously-skip-permissions --print {prompt}",
-    "mode": "agent",
-    "name": "运维 Agent",
-    "side_effect": "write",
-    "approval_class": "approve",
-    "timeout_sec": 900
+  // 写 workers 数组的是这些 Worker 的专长技能：怎么启动取自 Worker，这里只写技能属性
+  "ops-check": {
+    "workers": ["agy"],
+    "name": "运维巡检",
+    "desc": "只读检查磁盘、负载与服务状态，汇报异常项",
+    "side_effect": "read"
   }
 }
 ```
+
+这份配置登记三张名片：
+
+| Cap_ID | Worker | Skill_ID | 说明 |
+|---|---|---|---|
+| `CAP-<前缀>-agy-agent` | `agy` | `agent` | 每个 Worker 自带的通用技能，按自然语言指令现场发挥 |
+| `CAP-<前缀>-agy-ops-check` | `agy` | `ops-check` | 专长技能 |
+| `CAP-<前缀>-daily-briefing` | （空） | `daily-briefing` | 节点本尊直接执行的脚本 |
+
+规则：
+
+- **每个 Worker 自带通用技能 `agent`**，不用另写条目。独立 Agent 节点的 `agent`（`mode: inbox`）与它同名同义，只是 Worker 为空。
+- **专长技能**执行时，Agent 收到的受信提示里会多一行「本次任务使用技能：<Skill_ID>（<name>）。<desc>」，所以 `name` 和 `desc` 要写成 Agent 看得懂的指引。
+- **派单时指定 Worker 是硬约束**：`lah task create --to <节点> --worker agy --cap ops-check`。目标节点没有这项 Worker × Skill 就拒收，不换别的 Worker 代跑。
+- **不指定 Worker 时由节点取默认**：该技能有节点本尊的条目就用它，否则取第一个登记了该技能的 Worker（专长技能按 `workers` 数组顺序，`agent` 按 `workers` 对象的书写顺序）。认领时把选中的 Worker 回填到任务行，重试和问答续跑都钉在它上面。
+- **本机审批下限取 Worker 与 Skill 中更严者**。上例 `agy` 是 `approve`，所以 `ops-check` 即使不写也要走审批。
+- 同一条目不能同时写 `command` 和 `workers`；`workers` 里引用了没定义的 Worker、Worker 缺 `command`、Cap_ID 重复时，那一项能力不登记并记日志，`lah doctor` 也会报。
+- 没有 `workers` 键的旧配置含义不变：每个条目都是节点本尊的能力，Cap_ID 不变。重跑 `lah setup` 会把本机 Agent 改写成 Worker，旧的 `<x>-agent` 条目被 Worker `<x>` 取代，Cap_ID 仍是 `CAP-<前缀>-<x>-agent`。
+
+Worker 条目与节点本尊的技能条目可用的字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -74,9 +106,10 @@
 | `side_effect` | 副作用等级，写进名片，如 `read` / `write` |
 | `approval_class` | 本机审批下限，只收紧不放宽。设为 `approve` 的能力执行前必走机主审批 |
 | `resume_command` | 可选，含 `{session}` 与 `{prompt}`。仅 direct 问答续跑且本机已有 session 时替换 `command` |
-| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；计划里的 `cap` 按这个口径匹配 |
+| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 只对节点本尊的条目有效，可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`。计划里的 `cap` 按这个口径匹配 |
+| `workers` | 仅专长技能条目：能跑这项技能的 Worker 名数组。写了它就不能写 `command` / `mode` / `context` / `cwd` / `resume_command`，这些取自 Worker |
 
-命令、目录、语境只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` 等执行控制键，会被直接拒收，不会被当作指令。
+命令、目录、语境只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
 
 热更新与降级：
 
@@ -84,7 +117,7 @@
 - 首次同步与 carrier 在线状态变化时也强制校准名片；写表全部成功后才更新本地缓存，写一半失败就保持上一版，下一轮补写。
 - `commands.json` 解析失败时，保留上一版有效能力表并**暂停接新单**（任务留在 `submitted`，不会因能力表被清空而被拒成 `rejected`）。修好文件后下一轮自动恢复。`lah doctor` 会检查两份配置是否合法。
 
-能力分三层：确定性脚本；指定本地 Agent 执行指定 Skill；通用能力（Agent＋工具面）。都只是命令模板，守护进程是薄壳，不内嵌任何执行器。
+守护进程是薄壳，不内嵌任何执行器：确定性脚本、Worker 的专长技能、Worker 的通用技能，都只是这个文件里的模板。
 
 ### 回执约定（摘要）
 
@@ -200,7 +233,7 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 | `lah host` | carrier 进程，只能由用户在终端里启动 |
 | `lah reconcile` | 单次回表认领与对账后退出 |
 | `lah inventory` | 只读盘点本节点名片与任务 |
-| `lah task create --to <node> --cap <cap_id> [--text …] [--params <json 或 @文件>] [--idempotency-key <键>] [--from <node>]` | 派单。写表前按 AgentCards 名册校验 `--to` 与 `--cap` |
+| `lah task create --to <node> [--worker <worker>] [--cap <cap_id 或技能名>] [--text …] [--params <json 或 @文件>] [--idempotency-key <键>] [--from <node>]` | 派单。写表前按 AgentCards 名册校验 `--to` 与 `--cap` |
 | `lah task reply --task <id> --text …` | 答复 `input-required` 的追问，原任务续跑 |
 | `lah task show <id>` | 看状态与产物 |
 | `lah task why <id> [--json]` | 只读时间线：任务行、消息、Runs、Artifacts、本机待补交状态、调度幂等来源 |

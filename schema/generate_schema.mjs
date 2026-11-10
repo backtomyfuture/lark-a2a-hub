@@ -14,7 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const API = "https://open.feishu.cn/open-apis";
+// 国际版 Lark 的 Base 加 HUB_DOMAIN=lark。
+const API = process.env.HUB_DOMAIN === "lark" ? "https://open.larksuite.com/open-apis" : "https://open.feishu.cn/open-apis";
 const BASE = process.env.HUB_BASE_TOKEN;
 const TABLES = [
   ["Tasks", "Task：一件工作的信封与状态机，一行一任务"],
@@ -35,6 +36,7 @@ const NOTES = {
     Status_Msg: "（扩展）指向当前提问/待批消息的 Msg_ID",
     Metadata: "A2A 原生自由字段（JSON）；非核心本地信息放这里，不新增列",
     Target_Node: "（扩展）目标节点名，与 AgentCards.Node 对应",
+    Worker_Hint: "（扩展）指定目标节点上的 Worker；写了是硬约束，留空由节点取默认并在认领时回填（标准 §2）",
     Skill_ID: "（扩展）要调用的技能 id，与 AgentCards.Skill_ID 对应",
     Approval_Class: "（扩展）auto / notify / approve，approve 类须走审批流（标准 §8.3）",
     Hop_Count: "（扩展）派生层数，>8 熔断",
@@ -63,6 +65,7 @@ const NOTES = {
   },
   Runs: {
     Run_ID: "形如 <Task_ID>-R<序号>",
+    Worker: "本次执行实际使用的 Worker；节点本尊直接执行记 daemon",
     Outcome: "succeeded / failed / paused（paused＝等补信息暂停，不计失败）",
     Error_Log: "失败信息；沟通内容不写这里，去 Messages",
   },
@@ -72,7 +75,8 @@ const NOTES = {
     Is_Final: "（扩展）是否终稿（Yes/No）",
   },
   AgentCards: {
-    Cap_ID: "（扩展）行主键：CAP-<节点前缀>-<技能>",
+    Cap_ID: "（扩展）行主键：CAP-<节点前缀>-<技能>；Worker 的能力为 CAP-<节点前缀>-<Worker>-<技能>",
+    Worker: "（扩展）该能力由哪个 Worker 执行，留空＝节点本尊（标准 §6）",
     Node: "节点名（AgentCard name 的节点部分）",
     Skill_ID: "技能 id（skill.id）",
     Description: "技能说明（skill.description）",

@@ -300,6 +300,7 @@ if (cmd === "setup") {
         source: args.source || args.from || cfg.node,
         to: args.to,
         cap: args.cap,
+        worker: args.worker,
         text: args.text,
         params: args.paramsRaw,
         context: args.context,

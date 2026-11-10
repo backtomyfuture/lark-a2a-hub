@@ -507,7 +507,8 @@ export function formatWhyText(data) {
   lines.push(`幂等键: ${task.idempotency_key || "(无)"}`);
   const schedNote = schedKeyNote(task.idempotency_key);
   if (schedNote) lines.push(schedNote);
-  lines.push(`技能/能力: ${task.skill_id || task.worker_hint || "(默认)"}`);
+  lines.push(`技能: ${task.skill_id || "(默认)"}`);
+  lines.push(`Worker: ${task.worker_hint || "(未指定，节点本尊或认领时取默认)"}`);
   lines.push(`会话编号: ${task.context_id || "(无)"}`);
   if (task.approval_class) lines.push(`审批等级: ${task.approval_class}`);
   if (task.heartbeat_at) lines.push(`心跳时间: ${task.heartbeat_at}`);

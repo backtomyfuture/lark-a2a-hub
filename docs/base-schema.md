@@ -14,8 +14,8 @@ Task：一件工作的信封与状态机，一行一任务
 | Title | Text | 主字段 |
 | Task_ID | Text | 业务编号，唯一、人可读，发起方生成后不变 |
 | Source | SingleSelect | （扩展）任务来源：hub / cron / manual / agent-derived 等（选项：muse / cron / manual / agent-derived / hub） |
-| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：mac-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev） |
-| Worker_Hint | SingleSelect | 选项：amp / agy / droid / grok-cli / hermes / local-skill / other |
+| Target_Node | SingleSelect | （扩展）目标节点名，与 AgentCards.Node 对应（选项：mac-mini / ipad / nas / grokbot / work-mba / node-dev / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev / no-such-node） |
+| Worker_Hint | Text | （扩展）指定目标节点上的 Worker；写了是硬约束，留空由节点取默认并在认领时回填（标准 §2） |
 | Skill_ID | Text | （扩展）要调用的技能 id，与 AgentCards.Skill_ID 对应 |
 | Status | SingleSelect | A2A 八态状态机，见标准 §2；终态不可变（选项：submitted / working / input-required / auth-required / completed / failed / canceled / rejected） |
 | Approval_Class | SingleSelect | （扩展）auto / notify / approve，approve 类须走审批流（标准 §8.3）（选项：auto / notify / approve） |
@@ -74,7 +74,7 @@ Part：消息与产物的内容块，一行一块，text/file/data 三型
 | Run_ID | Text | 主字段。形如 <Task_ID>-R<序号> |
 | Task_Ref | Text |  |
 | Node | Text |  |
-| Worker | Text |  |
+| Worker | Text | 本次执行实际使用的 Worker；节点本尊直接执行记 daemon |
 | Error_Log | Text | 失败信息；沟通内容不写这里，去 Messages |
 | Started_At | Text |  |
 | Finished_At | Text |  |
@@ -102,7 +102,7 @@ AgentCard 规范化展开：一行一项能力
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| Cap_ID | Text | 主字段。（扩展）行主键：CAP-<节点前缀>-<技能> |
+| Cap_ID | Text | 主字段。（扩展）行主键：CAP-<节点前缀>-<技能>；Worker 的能力为 CAP-<节点前缀>-<Worker>-<技能> |
 | Node | SingleSelect | 节点名（AgentCard name 的节点部分）（选项：mac-mini / ipad / nas / work-mba / work-5070ti / grokbot / node-dev / m3test / setuptest / Workbuddy-cloud / workbuddy / jarod-macbook-air / mba / hub / hub-dev / hub-test） |
 | Zone | SingleSelect | 选项：personal / unit / home / test / work |
 | Description | Text | 技能说明（skill.description） |
@@ -122,6 +122,7 @@ AgentCard 规范化展开：一行一项能力
 | Cap_Push | SingleSelect | 选项：Yes / No |
 | Cap_State_History | SingleSelect | 选项：Yes / No |
 | Metadata | Text | A2A 原生自由字段（JSON）；内核登记写入 {kind, mode}，可为空 |
+| Worker | Text | （扩展）该能力由哪个 Worker 执行，留空＝节点本尊（标准 §6） |
 
 ## Rules_路由规则
 

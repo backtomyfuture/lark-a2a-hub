@@ -50,23 +50,15 @@
       "jarod-macbook-air",
       "mba",
       "hub",
-      "hub-dev"
+      "hub-dev",
+      "no-such-node"
      ]
     },
     {
      "name": "Worker_Hint",
-     "ui_type": "SingleSelect",
-     "type": 3,
-     "primary": false,
-     "options": [
-      "amp",
-      "agy",
-      "droid",
-      "grok-cli",
-      "hermes",
-      "local-skill",
-      "other"
-     ]
+     "ui_type": "Text",
+     "type": 1,
+     "primary": false
     },
     {
      "name": "Skill_ID",
@@ -631,6 +623,12 @@
     },
     {
      "name": "Metadata",
+     "ui_type": "Text",
+     "type": 1,
+     "primary": false
+    },
+    {
+     "name": "Worker",
      "ui_type": "Text",
      "type": 1,
      "primary": false

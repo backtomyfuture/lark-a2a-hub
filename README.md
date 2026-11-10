@@ -7,7 +7,7 @@
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
 [![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.6-blue.svg)](docs/standard.md)
+[![Standard](https://img.shields.io/badge/standard-v3.7-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -32,7 +32,7 @@ lark-a2a-hub 的做法是：**不搭服务端，用你已有的飞书多维表�
 |---|---|
 | **不想运维服务器** | 总线就是飞书多维表格，没有数据库、消息队列、公网入口要管 |
 | **任何机器都能入列** | 一行命令安装，向导自动识别本机的 Claude Code、Codex、agy、Paseo、Orca 等，生成能力表 |
-| **加能力不改代码** | 能力 = `commands.json` 里一条命令模板，内核不含任何具体 Agent 的代码 |
+| **加能力不改代码** | 三层寻址：节点 → Worker（节点上的 Agent）→ 技能，全写在本机 `commands.json`，内核不含任何具体 Agent 的代码 |
 | **危险动作要人点头** | 对外发消息、删改数据、花钱、改权限，走审批卡，只认机主本人 |
 | **出了事查得清** | 状态、消息、执行记录、产物全在表里，`lah task why` 一条命令还原时间线 |
 | **进程崩了也不乱** | 在途账本保证重启后不二次执行；失败有退避重试、有上限，有熔断 |
@@ -102,7 +102,7 @@ stateDiagram-v2
 
 ## 30 秒上手
 
-前置：Node.js >= 20，一个飞书多维表格（向中台管理员要，或自建，见下）。
+前置：Node.js >= 24，一个飞书多维表格（向中台管理员要，或自建，见下）。
 
 **1. 安装**
 
@@ -140,7 +140,7 @@ lah daemon      # 前台试跑；setup 里选了自启则已常驻
 派一个任务，再看回执：
 
 ```bash
-lah task create --to <节点> --cap <能力ID> --text "帮我汇总今天的待办"
+lah task create --to <节点> --worker <Agent> --text "帮我汇总今天的待办"
 lah present --pop               # 取回执，飞书里不刷屏
 lah task reply --task TASK-XXXX --text "答复内容"   # 任务向你提问时，原任务续跑
 lah task why TASK-XXXX          # 出问题时看时间线
@@ -155,16 +155,17 @@ lah task why TASK-XXXX          # 出问题时看时间线
 ## 能力一览
 
 - **角色合一**：hub 是 node 的单进程超集，`lah daemon --role node|hub`，单进程单目录。
+- **节点 / Worker / 技能三层**：一台机器是节点，机器上的每个 Agent 是 Worker，Worker 能做的事是技能。派单可以点名「哪台机器的哪个 Agent 用哪项技能」，也可以只点技能让节点自己挑 Worker；点了名就不会被悄悄换人。
 - **能力即配置**：`commands.json` 一条模板接入脚本（`json` 模式）、Agent（`agent` 模式）或常驻 Agent 本尊（`inbox` 模式）。改文件即热更新名片，配置写坏时保留旧表并暂停接新单，修好自动恢复。
 - **提问与续跑**：Agent 可以中途向发起方提问（`input-required`），答复后在原任务续跑，不另开新任务；有 session 时可经 `resume_command` 续接同一会话。
-- **机主审批**：行级或本机声明为 `approve` 的任务进入 `auth-required`，由 hub 提前发卡，只认机主点击；伪造的决定行不生效。
+- **机主审批**：行级或本机声明为 `approve` 的任务进入 `auth-required`，由 hub 提前发卡，只认机主点击；hub 给每条决定签名，节点配了 hub 公钥后验签，冒写的决定行不生效。
 - **在途账本**：`direct` 命令的进程信息先落账本再 spawn。守护重启后进程还在就续心跳、不二次执行；身份对不上不发信号，免得误杀。
 - **失败有章法**：重试上限 2 次，60 秒起翻倍退避、封顶 10 分钟；跳数超过 8 熔断；回执无效或提交失败不重跑，避免副作用重复。
 - **可观测**：`lah task why` 汇总任务、消息、执行、产物与本机待补交状态；回执可带 `USAGE:` 用量，累计到任务元数据。
 - **取消与复查**：`lah task cancel` 撤单；完成回执可带 `LATER:` 预约复查，hub 到点在同一上下文新建复查任务。
 - **定时调度**：各节点本地持有独立时钟（`schedules.json` 与 Agent `lah task begin`），到点自动建单并经认领执行；Rules 表单向镜像总览，幂等防重。
 - **局域网语境**：macOS 守护进程碰不到局域网，用 `carrier` 在你的终端里代跑；carrier 离线时明确拒收，不静默降级。
-- **测试与 CI**：`npm test`（Node 内置 `node:test` 与内存总线，不连真实 Base）覆盖核心路径；GitHub Actions 在 ubuntu / macOS × Node 20 / 22 上跑。
+- **测试与 CI**：`npm test`（Node 内置 `node:test` 与内存总线，不连真实 Base）覆盖核心路径；GitHub Actions 在 ubuntu / macOS × Node 24 上跑。
 
 ## 安全模型
 
@@ -172,7 +173,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 
 - **只出不进**：不开监听端口（carrier 的本地 unix socket 除外），不做端口映射或隧道，不实现入站 webhook。卡片回调也走长连接。
 - **指令与数据分离**：执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。任务正文与参数只作为数据写进一份受限权限的 `input.json`，不拼进指令；参数里夹带执行控制键的任务直接拒收，防提示注入夺权。
-- **机主审批**：发消息、删改数据、花钱、提交表单、改权限，一律走审批。审批只认 hub 写入、机主操作的结构化决定，不认文字、不认任务行上的标记。本机可以把审批级别调严，不能放松。
+- **机主审批**：发消息、删改数据、花钱、提交表单、改权限，一律走审批。审批只认 hub 写入并签名、机主操作的结构化决定，不认文字、不认任务行上的标记。本机可以把审批级别调严，不能放松。
 - **凭据不入总线**：密钥只在本机 600 权限的文件里；总线只放任务与文件指针；日志不打印凭据。
 - **消息只追加**：Messages、Parts 永不修改或删除，终态任务不可重启，留痕不可篡改。
 - **失败要响**：达不到执行条件就明说、标离线、拒收，绝不静默换路径硬跑。
@@ -201,6 +202,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 | [docs/hub-integration.md](docs/hub-integration.md) | hub 职责、建单纪律、呈递与审批回路 |
 | [docs/agent-templates.md](docs/agent-templates.md) | 各家无头 CLI 的定版命令、权限语义与已知坑 |
 | [docs/protocol-node-runbook.md](docs/protocol-node-runbook.md) | 无守护进程的 Agent 如何按协议盯表接入 |
+| [SECURITY.md](SECURITY.md) | 信任模型：防什么、不防什么，部署建议与漏洞报告 |
 | [DESIGN.md](DESIGN.md) | 节点适配器设计与 macOS 局域网实测 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更 |
 

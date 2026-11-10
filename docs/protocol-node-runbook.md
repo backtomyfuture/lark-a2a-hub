@@ -61,7 +61,7 @@ webhook 通知可能因网络抖动、自动化重试超时等出现丢失，因
 | Tasks | **新增（信号行）** | Title 以「答复信号」开头 | 行内注明的原 Task_ID 与 Msg_ID | 按 Msg_ID 去 Messages 读 answer（正文在其 Parts），回原任务续跑；信号行本身不执行、不回执 |
 | Tasks | **变更（状态取消）** | Status 变为 `canceled` | Status、Status_Msg | `canceled` 只能由 hub 角色或发起方写入。节点一旦看到任务置为 `canceled`，**立即终止本地执行并释放资源**，不再写回执 |
 | Messages | **新增**（自动化就绪后） | To_Node=本节点名 | Kind、Task_ID、In_Reply_To、Artifact_Ref；正文读其 Parts | answer→续跑；auth_decision→进行四项判定核验，合格后读 DataPart 的 decision 执行/关单；instruction→并入原任务执行；notice→知悉 |
-| AgentCards | 读（认领前） | — | 本节点行：Skill_ID、Dispatchable、Availability | 确认能力在册且可派发；能力增减/上下线时自己增改行 |
+| AgentCards | 读（认领前） | — | 本节点行：Worker（协议节点留空＝节点本尊）、Skill_ID、Dispatchable、Availability | 确认能力在册且可派发；能力增减/上下线时自己增改行 |
 | Artifacts | 写为主 | 交付时 | — | 先登记行＋FilePart，再在 result 消息里引用 |
 | Rules | 只读参考 | — | Skill_ID→Target_Node 映射 | 知悉路由口径即可，不据此改行为 |
 | Runs | 只写 | 每个执行段 | — | 开行/关行写 Outcome，不读不改他人行 |

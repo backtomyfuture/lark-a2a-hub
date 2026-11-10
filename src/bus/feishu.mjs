@@ -4,10 +4,20 @@ import { randomUUID } from "node:crypto";
 // 只做三件事：拿 tenant token、读写记录、扛住同表并发写冲突（1254291）与限流重试。
 // 零依赖：用 Node >= 24 的全局 fetch。
 
-const API = "https://open.feishu.cn/open-apis";
+// 国内飞书与国际版 Lark 是两套域名、两套租户，接口路径相同。node.json 的 domain 选其一，缺省 feishu。
+const OPEN_HOSTS = { feishu: "open.feishu.cn", lark: "open.larksuite.com" };
+
+// 取值写错就直接报错，不悄悄回退到飞书：凭据发错域名只会得到一串看不懂的鉴权失败。
+export function openHost(domain) {
+  const key = String(domain ?? "").trim() || "feishu";
+  if (!Object.hasOwn(OPEN_HOSTS, key)) throw new Error(`domain 只能是 feishu 或 lark，收到 ${JSON.stringify(domain)}`);
+  return OPEN_HOSTS[key];
+}
 
 export class FeishuBus {
-  constructor({ appId, appSecret, baseToken, tables }) {
+  constructor({ appId, appSecret, baseToken, tables, domain }) {
+    this.domain = String(domain ?? "").trim() || "feishu";
+    this.apiBase = `https://${openHost(this.domain)}/open-apis`;
     this.appId = appId;
     this.appSecret = appSecret;
     this.baseToken = baseToken;
@@ -18,7 +28,7 @@ export class FeishuBus {
 
   async tenantToken() {
     if (this._token && Date.now() < this._tokenExp - 120_000) return this._token;
-    const r = await fetch(`${API}/auth/v3/tenant_access_token/internal`, {
+    const r = await fetch(`${this.apiBase}/auth/v3/tenant_access_token/internal`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
@@ -36,7 +46,7 @@ export class FeishuBus {
     for (const delay of [0, 2000, 5000, 15000]) {
       if (delay) await new Promise((res) => setTimeout(res, delay));
       try {
-        const r = await fetch(API + path, {
+        const r = await fetch(this.apiBase + path, {
           method,
           headers: {
             Authorization: "Bearer " + (await this.tenantToken()),
@@ -67,7 +77,8 @@ export class FeishuBus {
     const items = [];
     let page = null;
     for (;;) {
-      let path = `/bitable/v1/apps/${this.baseToken}/tables/${table}/records?page_size=100`;
+      // 列表接口单页上限 500。整表扫描的请求数随行数线性涨，页开满能少发五分之四。
+      let path = `/bitable/v1/apps/${this.baseToken}/tables/${table}/records?page_size=500`;
       if (page) path += "&page_token=" + page;
       const d = await this.api("GET", path);
       items.push(...(d.items ?? []));

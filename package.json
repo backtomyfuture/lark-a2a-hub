@@ -1,7 +1,7 @@
 {
   "name": "lark-a2a-hub",
   "version": "0.7.0",
-  "description": "通用节点适配器：把任何一台终端变成多 Agent 中台的一个执行节点（认领 → 拉起 Agent → 收回执 → 落日志）",
+  "description": "把飞书多维表格变成多 Agent 的调度总线：零服务器、零入站端口、每一步留痕可查",
   "bin": {
     "lah": "bin/lah.mjs",
     "hub-node": "bin/hub-node.mjs"

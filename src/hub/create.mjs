@@ -61,7 +61,7 @@ export function parseParams(raw) {
 
 export function parseCreateArgv(argv) {
   const out = {
-    configDir: "", from: "", source: "", to: "", cap: "", text: "", paramsRaw: undefined, context: "", ref: "", approval: "", idempotencyKey: "",
+    configDir: "", from: "", source: "", to: "", cap: "", worker: "", text: "", paramsRaw: undefined, context: "", ref: "", approval: "", idempotencyKey: "",
   };
   const take = (i, flag) => {
     const value = argv[i + 1];
@@ -75,6 +75,7 @@ export function parseCreateArgv(argv) {
     else if (flag === "--source") out.source = take(i, flag);
     else if (flag === "--to") out.to = take(i, flag);
     else if (flag === "--cap" || flag === "--skill") out.cap = take(i, flag);
+    else if (flag === "--worker") out.worker = take(i, flag);
     else if (flag === "--text") out.text = take(i, flag);
     else if (flag === "--params") out.paramsRaw = take(i, flag);
     else if (flag === "--context") out.context = take(i, flag);
@@ -148,15 +149,18 @@ function freshTaskId(taken, now) {
 }
 
 export async function createTask({
-  bus, from = "", source = "", to, cap, text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(), validateTarget = true,
+  bus, from = "", source = "", to, cap, worker = "", text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(), validateTarget = true,
 }) {
   if (!bus?.tables?.messages || !bus.tables.parts || !bus.tables.tasks) {
     throw new Error("总线缺少 messages / parts / tasks 表");
   }
   const rawTo = String(to ?? "").trim();
   const rawCap = String(cap ?? "").trim();
+  // 指定了 Worker 就是硬约束（标准 §2）：下面所有按名册的挑选都只在这个 Worker 的名片里做。
+  const rawWorker = String(worker ?? "").trim();
   let node = rawTo;
   let skill = rawCap;
+  let workerHint = rawWorker;
 
   // 若总线提供了 AgentCards 表，尝试自动解析能力与节点并按名册校验
   if (bus.tables.agentCards) {
@@ -165,6 +169,16 @@ export async function createTask({
       cards = await bus.listRecords(bus.tables.agentCards);
     } catch (e) {
       throw new Error(`读取 AgentCards 名册失败：${e?.message ?? e}`);
+    }
+
+    if (rawWorker) {
+      const scope = cards.filter((card) => (rawTo ? cardText(card, "Node") === rawTo : true));
+      cards = scope.filter((card) => cardText(card, "Worker") === rawWorker);
+      if (validateTarget && !cards.length) {
+        const known = [...new Set(scope.map((c) => cardText(c, "Worker")).filter(Boolean))];
+        const where = rawTo ? `目标节点 "${rawTo}"` : "名册";
+        throw new Error(`拒绝建单：${where} 未登记 Worker "${rawWorker}"。${known.length ? `已登记 Worker：${known.join(", ")}` : "（没有登记任何 Worker）"}`);
+      }
     }
 
     // F1 校验：显式 --to 须在 AgentCards 有名片；显式 --cap 须在目标节点已登记该技能。
@@ -240,6 +254,8 @@ export async function createTask({
         }
         skill = cardText(matchCap, "Skill_ID") || requested;
         if (!node) node = cardText(matchCap, "Node");
+        // 按 Cap_ID 点名的是一张具体名片，Worker 跟着名片走。
+        workerHint = cardText(matchCap, "Worker");
       } else {
         const matches = skillMatches(requested);
         if (matches.length) {
@@ -261,6 +277,9 @@ export async function createTask({
         }
       }
     }
+
+    // 只点了 Worker 没点技能：取该 Worker 的通用技能 agent。
+    if (!skill && rawWorker) skill = "agent";
 
     // 2. 若未提供 cap 但提供了 to（目标节点）：自动挑选该节点的首选技能。
     // 先滤掉不可派的名片再打分，否则停派的 agent 会以 200 分压过可用技能。
@@ -398,6 +417,8 @@ export async function createTask({
     Retry_Count: 0,
   };
   if (approvalClass) taskFields.Approval_Class = approvalClass;
+  // 留空由目标节点取默认 Worker，并在认领时回填。
+  if (workerHint) taskFields.Worker_Hint = workerHint;
   // 最后写任务行。前面的消息和 Parts 已经落表，节点被这条记录叫醒时读得到参数。
   await bus.createRecord(bus.tables.tasks, taskFields);
   return taskId;

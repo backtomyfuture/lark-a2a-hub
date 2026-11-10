@@ -139,6 +139,7 @@ export class ScheduleService {
           source: "cron",
           to: text(task, "Target_Node"),
           cap: text(task, "Skill_ID"),
+          worker: text(task, "Worker_Hint"),
           text: `复查：${about}（承接任务 ${taskId}）`,
           context: text(task, "Context_ID"),
           ref: taskId,
