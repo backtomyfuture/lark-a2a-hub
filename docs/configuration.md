@@ -29,6 +29,7 @@
 - `events`：是否订阅云文档事件（长连接门铃，秒级唤醒）。`pollSec`（默认 45）是 poll 模式的扫表间隔；`sweepSec`（默认 900，即 15 分钟）是对账兜底。
 - `ownerOpenId`：机主 open_id，只有 hub 角色用，用来校验审批卡的操作者。
 - `hubPublicKey`：hub 的审批签名公钥（base64）。配了它，本节点只认 hub 私钥签过的审批决定，冒写的决定当作不存在；没配则只按行上自报字段校验，`lah doctor` 会提醒。公钥在 hub 上用 `lah doctor` 查看，在节点上用 `lah setup --hub-key <公钥>` 写入。hub 自己不用配：它的私钥在配置目录 `approval_key.pem`（600，首次启动自动生成，不要提交、不要外传），公钥由私钥推出。详见 [SECURITY.md](../SECURITY.md)。
+- `workerName`：仅 `kind: agent` 节点用。本尊的名字，登记名片时写进 Worker 列（独立 Agent 的本尊即 Worker，见标准 §6）。未配留空，行为不变。
 - `tz`：IANA 时区名，缺省 `Asia/Shanghai`。决定本地定时调度的 cron 墙钟与期次键偏移，与宿主机时区及系统 `TZ` 环境变量无关。
 - hub 角色强制 ws 长连接。唤醒只是门铃，内容一律回表拉取。
 
@@ -76,17 +77,18 @@
 }
 ```
 
-这份配置登记三张名片：
+这份配置登记两张名片：
 
 | Cap_ID | Worker | Skill_ID | 说明 |
 |---|---|---|---|
-| `CAP-<前缀>-agy-agent` | `agy` | `agent` | 每个 Worker 自带的通用技能，按自然语言指令现场发挥 |
 | `CAP-<前缀>-agy-ops-check` | `agy` | `ops-check` | 专长技能 |
 | `CAP-<前缀>-daily-briefing` | （空） | `daily-briefing` | 节点本尊直接执行的脚本 |
 
+另有一项**可寻址但不登记名片**的通用能力：`CAP-<前缀>-agy-agent`（Worker `agy` 按自然语言指令现场发挥）。派它用 `lah task create --to <节点> --worker agy`（不给 `--cap`），或在本地计划里把 `cap` 写成这个 Cap_ID。
+
 规则：
 
-- **每个 Worker 自带通用技能 `agent`**，不用另写条目。独立 Agent 节点的 `agent`（`mode: inbox`）与它同名同义，只是 Worker 为空。
+- **每个 Worker 固有通用能力 `agent`**（标准 v3.8）：不用另写条目，也不占名片行。独立 Agent 节点的 `agent`（`mode: inbox`）与它不同——那是本尊的接入通道，照常登记名片，Worker 列写 `node.json` 的 `workerName`。
 - **专长技能**执行时，Agent 收到的受信提示里会多一行「本次任务使用技能：<Skill_ID>（<name>）。<desc>」，所以 `name` 和 `desc` 要写成 Agent 看得懂的指引。
 - **派单时指定 Worker 是硬约束**：`lah task create --to <节点> --worker agy --cap ops-check`。目标节点没有这项 Worker × Skill 就拒收，不换别的 Worker 代跑。
 - **不指定 Worker 时由节点取默认**：该技能有节点本尊的条目就用它，否则取第一个登记了该技能的 Worker（专长技能按 `workers` 数组顺序，`agent` 按 `workers` 对象的书写顺序）。认领时把选中的 Worker 回填到任务行，重试和问答续跑都钉在它上面。

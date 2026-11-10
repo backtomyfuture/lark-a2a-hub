@@ -156,7 +156,9 @@ export async function createTask({
   }
   const rawTo = String(to ?? "").trim();
   const rawCap = String(cap ?? "").trim();
-  // 指定了 Worker 就是硬约束（标准 §2）：下面所有按名册的挑选都只在这个 Worker 的名片里做。
+  // 指定了 Worker 就是硬约束（标准 §2），但名册看不全 Worker：通用能力不在名册里
+  // （标准 v3.8），某个 Worker 可能一张名片都没有。所以建单侧不按 Worker 过滤名片，
+  // 只在名册能证明 Worker × Skill 组合不存在时拒绝，其余交目标节点认领时校验。
   const rawWorker = String(worker ?? "").trim();
   let node = rawTo;
   let skill = rawCap;
@@ -169,16 +171,6 @@ export async function createTask({
       cards = await bus.listRecords(bus.tables.agentCards);
     } catch (e) {
       throw new Error(`读取 AgentCards 名册失败：${e?.message ?? e}`);
-    }
-
-    if (rawWorker) {
-      const scope = cards.filter((card) => (rawTo ? cardText(card, "Node") === rawTo : true));
-      cards = scope.filter((card) => cardText(card, "Worker") === rawWorker);
-      if (validateTarget && !cards.length) {
-        const known = [...new Set(scope.map((c) => cardText(c, "Worker")).filter(Boolean))];
-        const where = rawTo ? `目标节点 "${rawTo}"` : "名册";
-        throw new Error(`拒绝建单：${where} 未登记 Worker "${rawWorker}"。${known.length ? `已登记 Worker：${known.join(", ")}` : "（没有登记任何 Worker）"}`);
-      }
     }
 
     // F1 校验：显式 --to 须在 AgentCards 有名片；显式 --cap 须在目标节点已登记该技能。
@@ -259,7 +251,20 @@ export async function createTask({
       } else {
         const matches = skillMatches(requested);
         if (matches.length) {
-          adoptSkill(matches, "指定的能力不可派");
+          if (rawWorker) {
+            const own = matches.filter((card) => cardText(card, "Worker") === rawWorker);
+            if (own.length) {
+              adoptSkill(own, "指定的能力不可派");
+            } else if (validateTarget) {
+              // 名册能证明这个组合不存在（该 Skill 有名片、但无一属于这个 Worker）：
+              // 写表前拒绝。证明不了的情形（如只点 Worker）不在这里拦，交节点硬约束。
+              throw new Error(`拒绝建单：目标节点 "${node}" 的 Worker "${rawWorker}" 未登记能力 "${requested}"。该节点这项能力的 Worker：${[...new Set(matches.map((c) => cardText(c, "Worker") || "（节点本尊）"))].join(", ")}`);
+            } else {
+              adoptSkill(matches, "指定的能力不可派");
+            }
+          } else {
+            adoptSkill(matches, "指定的能力不可派");
+          }
         } else if (requested.startsWith("CAP-")) {
           // 形如 CAP-<prefix>-<skill>，表里没有这张 Cap_ID 时仍把后缀当 Skill_ID。
           // 不在这里改挑节点：后缀只用来发现「已经命中、且全部不可派」的名片并拒绝。
@@ -278,7 +283,8 @@ export async function createTask({
       }
     }
 
-    // 只点了 Worker 没点技能：取该 Worker 的通用技能 agent。
+    // 只点了 Worker 没点技能：取该 Worker 的通用能力 agent（不在名册里，
+    // Worker 是否存在由目标节点认领时按硬约束校验，见标准 v3.8 §10.1）。
     if (!skill && rawWorker) skill = "agent";
 
     // 2. 若未提供 cap 但提供了 to（目标节点）：自动挑选该节点的首选技能。

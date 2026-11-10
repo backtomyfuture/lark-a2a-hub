@@ -119,12 +119,21 @@ export function normalizeCommands(raw, onProblem = () => {}) {
       out[capKey(name, key)] = workerSkillEntry(workers[name], entry, name, key);
     }
   }
-  // 每个 Worker 自带通用技能 agent。条目里显式列过的不重复生成，顺序以显式的为先。
+  // 每个 Worker 固有通用能力 agent（标准 v3.8：是属性不是技能）。
+  // 它只在本机归一表里 materialize，供认领解析与执行使用；名片登记会跳过它
+  // （见 isGenericCap），名册里不再为每个 Worker 堆一行同名卡。
+  // 条目里显式列过的不重复生成，顺序以显式的为先。
   for (const [name, w] of Object.entries(workers)) {
     const key = capKey(name, "agent");
     if (!out[key]) out[key] = workerSkillEntry(w, null, name, "agent");
   }
   return out;
+}
+
+// Worker 的通用能力（标准 v3.8）：带 Worker 的 agent 条目都是它——自动生成的，
+// 或显式写了 agent 条目给它取名/写说明的。它可寻址、可执行，但不登记名片。
+export function isGenericCap(entry) {
+  return !!(entry && typeof entry === "object" && entry.worker && entry.skill === "agent");
 }
 
 // 任务行的 Worker × Skill 在归一后的能力表里对应哪一项；空串表示本机没有这项能力。
@@ -207,6 +216,8 @@ export function loadConfig(configDir) {
     doorbellFile: cfg.doorbellFile ? cfg.doorbellFile.replace(/^~/, os.homedir()) : null,
     carrierSocket: cfg.carrierSocket ? cfg.carrierSocket.replace(/^~/, os.homedir()) : path.join(configDir, "carrier.sock"),
     capPrefix: cfg.capPrefix ?? cfg.node,
+    // 仅 kind=agent 节点用：本尊的名字，登记名片时写进 Worker 列（标准 v3.8 §6）。
+    workerName: cfg.workerName ?? "",
     // hub 的审批签名公钥（base64）。配了就只认签名对得上的 auth_decision（标准 §8.3 第 5 条）。
     hubPublicKey: cfg.hubPublicKey,
     // 只给节点本地定时调度读。缺省由 resolveScheduleTz 解释成 Asia/Shanghai，这里不套宿主机时区。

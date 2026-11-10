@@ -8,7 +8,7 @@ import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
-import { capIdOf, capIdsOf, normalizeCommands } from "./config.mjs";
+import { capIdOf, capIdsOf, isGenericCap, normalizeCommands } from "./config.mjs";
 import { openHost } from "./bus/feishu.mjs";
 import { isHubPublicKey, readHubPublicKey } from "./approval-sign.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
@@ -629,8 +629,12 @@ export async function doctor(configDir, appDir, opts = {}) {
       const names = Object.keys(flat);
       const workerNames = cmds.workers && typeof cmds.workers === "object" && !Array.isArray(cmds.workers) ? Object.keys(cmds.workers) : [];
       if (workerNames.length) info(`Worker：${workerNames.join(", ")}`);
-      if (names.length) ok(`commands.json：${names.length} 项能力（${names.join(", ")}）`);
-      else info("commands.json 为空：本节点不登记任何能力，不会认领任务");
+      // 通用能力不登记名片（标准 v3.8），单列出来，不混进能力计数。
+      const cardNames = names.filter((k) => !isGenericCap(flat[k]));
+      const genericWorkers = [...new Set(names.filter((k) => isGenericCap(flat[k])).map((k) => flat[k].worker))];
+      if (cardNames.length) ok(`commands.json：${cardNames.length} 项能力（${cardNames.join(", ")}）`);
+      else if (!names.length) info("commands.json 为空：本节点不登记任何能力，不会认领任务");
+      if (genericWorkers.length) info(`Worker 通用能力（不登记名片，以 Skill_ID=agent＋Worker_Hint 寻址）：${genericWorkers.join(", ")}`);
       const capPrefix = raw?.capPrefix ?? raw?.node ?? "";
       const shapeProblems = layerProblems + auditCommandsShape(flat, capPrefix);
       if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec 取值合法，cap_id 无重复）");

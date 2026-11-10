@@ -32,7 +32,7 @@ import {
   saveRetryWatermark,
 } from "./retry-state.mjs";
 import { clearSessionId, readSessionId, writeSessionId } from "./session-store.mjs";
-import { capIdOf, capIdsOf, capKey, clampTimeoutSec, controlKeysIn, loadConfig, normalizeCommands, receiveModeOf, resolveCapKey } from "./config.mjs";
+import { capIdOf, capIdsOf, capKey, clampTimeoutSec, controlKeysIn, isGenericCap, loadConfig, normalizeCommands, receiveModeOf, resolveCapKey } from "./config.mjs";
 import { LocalScheduleService } from "./local-schedule.mjs";
 
 export {
@@ -642,8 +642,9 @@ export class Kernel {
       Skill_Name: entry?.name ?? (entry?.skill || skill),
       Description: desc,
       Skill_ID: entry?.skill || skill,
-      // 留空＝节点本尊直接执行（标准 §6）。
-      Worker: entry?.worker || "",
+      // 留空＝节点本尊直接执行（标准 §6）。独立 Agent 节点（kind=agent）的本尊即
+      // Worker，配了 workerName 就把本尊的名字写明（标准 v3.8 §6）。
+      Worker: entry?.worker || (this.cfg.kind === "agent" ? (this.cfg.workerName || "") : ""),
       Side_Effect: entry?.side_effect ?? "write",
       // carrier 离线只改名片，不把任务悄悄改成直跑。
       Availability: entry?.context === "carrier" && !carrierUp ? "offline" : "online",
@@ -679,6 +680,9 @@ export class Kernel {
     const wanted = new Map();
     for (const [skill, entry] of Object.entries(this.commands)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      // 通用能力不登记名片（标准 v3.8 §6）：它只在本机能力表里供认领解析。
+      // 旧版本登记过的通用卡不在 wanted 里，下面的对账会把它们置 Dispatchable=No。
+      if (isGenericCap(entry)) continue;
       const fields = this.desiredCard(skill, entry, carrierUp);
       if (wanted.has(fields.Cap_ID)) {
         log(`Cap_ID 重复，能力 ${skill} 不登记（${fields.Cap_ID} 已被占用）`);
@@ -735,6 +739,11 @@ export class Kernel {
         const s = f1(r, "Skill_ID");
         if (s) skills.add(capKey(String(f1(r, "Worker") ?? "").trim(), s));
       }
+    }
+    // 通用能力不登记名片（标准 v3.8 §6），名片里查不到；它是本机 Worker 的固有
+    // 能力，认领集合直接从本机能力表补齐，否则点名 Worker 的通用任务会被误拒。
+    for (const [key, entry] of Object.entries(this.commands ?? {})) {
+      if (isGenericCap(entry)) skills.add(key);
     }
     return skills;
   }

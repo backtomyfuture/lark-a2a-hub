@@ -115,18 +115,53 @@ test("任务参数里的 worker 是执行控制键", () => {
 });
 
 // 红线：名片一行是 Node × Worker × Skill，Worker 留空＝节点本尊。
+// v3.8：通用能力不登记名片，名册只有真实 Skill。
 test("名片登记带 Worker 列，Skill_ID 是技能名而不是能力键", async () => {
   await withTemp(async (dir) => {
     const { mock, kernel } = setup(dir, layered());
     await kernel.run({ once: true });
     const cards = await mock.listRecords(TABLES.agentCards);
     const row = (capId) => cards.find((c) => f1(c, "Cap_ID") === capId);
-    assert.equal(cards.length, 5);
+    assert.equal(cards.length, 3);
     assert.equal(f1(row("CAP-test-alpha-review"), "Worker"), "alpha");
     assert.equal(f1(row("CAP-test-alpha-review"), "Skill_ID"), "review");
-    assert.equal(f1(row("CAP-test-beta-agent"), "Skill_ID"), "agent");
-    assert.equal(f1(row("CAP-test-beta-agent"), "Skill_Name"), "Beta");
+    assert.equal(f1(row("CAP-test-beta-review"), "Worker"), "beta");
+    assert.equal(row("CAP-test-alpha-agent"), undefined);
+    assert.equal(row("CAP-test-beta-agent"), undefined);
     assert.equal(f1(row("CAP-test-local"), "Worker"), "");
+  });
+});
+
+// v3.8 迁移：v3.7 登记过的通用卡，升级后由名片对账自动停派（行保留，不删）。
+// 注：run({ once: true }) 是一次性对账模式、按设计跳过停派段，这里直接调常驻对账路径。
+test("旧通用卡被对账置 Dispatchable=No", async () => {
+  await withTemp(async (dir) => {
+    const { mock, kernel } = setup(dir, layered());
+    await mock.createRecord(TABLES.agentCards, {
+      Cap_ID: "CAP-test-alpha-agent", Node: "node-a", Skill_ID: "agent", Worker: "alpha", Dispatchable: "Yes",
+    });
+    await kernel.reconcileCards(false);
+    const cards = await mock.listRecords(TABLES.agentCards);
+    const old = cards.find((c) => f1(c, "Cap_ID") === "CAP-test-alpha-agent");
+    assert.equal(f1(old, "Dispatchable"), "No");
+  });
+});
+
+// v3.8：独立 Agent 节点的本尊即 Worker，配了 workerName 就写进名片 Worker 列。
+test("kind=agent 的名片 Worker 列写 workerName", async () => {
+  await withTemp(async (dir) => {
+    const mock = new MockFeishuBus({ tables: TABLES });
+    const kernel = new Kernel({
+      node: "hub", role: "hub", kind: "agent", zone: "test", capPrefix: "hub",
+      events: false, configDir: dir, carrierSocket: path.join(dir, "missing.sock"), bus: mock,
+      workerName: "muse",
+    });
+    fs.writeFileSync(path.join(dir, "commands.json"), JSON.stringify({ agent: { mode: "inbox" } }), { mode: 0o600 });
+    await kernel.run({ once: true });
+    const cards = await mock.listRecords(TABLES.agentCards);
+    assert.equal(cards.length, 1);
+    assert.equal(f1(cards[0], "Cap_ID"), "CAP-hub-agent");
+    assert.equal(f1(cards[0], "Worker"), "muse");
   });
 });
 
@@ -245,12 +280,39 @@ test("task create：--worker 的三种写法", async () => {
   assert.equal(f1(bySkill, "Worker_Hint"), "");
 });
 
-test("task create：名册里没有的 Worker 或 Worker × Skill 在写表前拒绝", async () => {
+// v3.8：只点 Worker 时名册证明不了它不存在（通用能力不在名册），照常建单，
+// 存在性交目标节点认领时按硬约束校验；但 Worker × Skill 组合能被名册证伪时写表前拒绝。
+test("task create：只点 Worker 照常建单，能证伪的组合在写表前拒绝", async () => {
   const mock = await roster();
+  const ghost = await created(mock, await createTask({ bus: mock, to: "node-a", worker: "ghost", text: "x" }));
+  assert.equal(f1(ghost, "Skill_ID"), "agent");
+  assert.equal(f1(ghost, "Worker_Hint"), "ghost");
   mock.journal.length = 0;
-  await assert.rejects(() => createTask({ bus: mock, to: "node-a", worker: "ghost", text: "x" }), /未登记 Worker "ghost"/);
-  await assert.rejects(() => createTask({ bus: mock, to: "node-a", worker: "alpha", cap: "review", text: "x" }), /未登记能力 "review"/);
+  await assert.rejects(() => createTask({ bus: mock, to: "node-a", worker: "alpha", cap: "review", text: "x" }), /Worker "alpha" 未登记能力 "review"/);
+  await assert.rejects(() => createTask({ bus: mock, to: "node-a", worker: "ghost", cap: "review", text: "x" }), /Worker "ghost" 未登记能力 "review"/);
   assert.deepEqual(mock.journal.filter((item) => item.op === "create"), []);
+});
+
+// v3.8：名册里完全没有通用卡时，只点 Worker 也能建单（v3.8 名册的常态）。
+test("task create：名册无通用卡时只点 Worker 建单", async () => {
+  const mock = new MockFeishuBus({ tables: TABLES });
+  await card(mock, { Cap_ID: "CAP-a-beta-review", Worker: "beta", Skill_ID: "review" });
+  const t = await created(mock, await createTask({ bus: mock, to: "node-a", worker: "beta", text: "x" }));
+  assert.equal(f1(t, "Skill_ID"), "agent");
+  assert.equal(f1(t, "Worker_Hint"), "beta");
+});
+
+// v3.8：通用能力不在名册里，但点名 Worker 的通用任务照常执行，Runs.Worker 记它。
+test("点名 Worker 的通用任务由该 Worker 执行", async () => {
+  await withTemp(async (dir) => {
+    const { mock, kernel } = setup(dir, layered());
+    await seedTask(mock, { Task_ID: "TASK-W-7", Skill_ID: "agent", Worker_Hint: "alpha" });
+    await kernel.run({ once: true });
+    const task = await taskOf(mock, "TASK-W-7");
+    assert.equal(f1(task, "Status"), "completed");
+    const run = (await mock.listRecords(TABLES.runs)).find((r) => f1(r, "Task_Ref") === "TASK-W-7");
+    assert.equal(f1(run, "Worker"), "alpha");
+  });
 });
 
 // 红线：装机把本机 Agent 登记成 Worker。旧的 <x>-agent 扁平条目被同名 Worker 取代，Cap_ID 不变。

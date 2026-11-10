@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，形态 B）
 
-> 现行标准，版本 v3.7。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.8。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -14,7 +14,7 @@
 6. **hub 是 node 的单进程超集**：枢纽（hub）是一组逻辑职责，也是普通执行节点（node）的超集——单进程、单配置目录即可同时承载，无需再拆两个进程。由 `lah daemon --role node|hub`（兼容 `hub-node`）承载；省略 `--role` 时读该配置目录 `node.json` 的 `role`，缺省 node。`role=hub` 既像普通节点一样读取 `commands.json`、登记 `AgentCards`、认领并执行指派给自己的任务（含定时任务），又强制开启长连接（`ws`）并额外承担全网 `auth-required` 审批发卡与 `card.action.trigger` 回调处理、结果呈递、以及 `stale` 超时告警。凡本标准归给枢纽的约束，由承担 hub 角色的一方遵守（§10.1）。
 7. **发起方身份与回执原路返回**：任何节点或 Agent 都可以作为任务入口。`lah task create` 默认以发起节点作为首条 `instruction` 消息的 `From_Node` 与 `Tasks.Source`。执行节点写回执消息（`result`、`question`、`notice` 等）时，`To_Node` 原路指向该任务首条 `instruction` 消息的 `From_Node`（回退 `Source` || `"hub"`）；唯独 `auth_request` 的 `To_Node` 固定为 `"hub"`（统一由主节点发飞书审批卡）。结果呈递按「谁发起、回给谁」原则落入发起节点的本地 `present_queue.jsonl`，飞书端只发审批卡，不再刷屏纯文本（§8.5）。
 
-8. **三层寻址：Node / Worker / Skill**（v3.7）：Node 是工作节点（一台机器上的一个守护进程，管网络位置、凭据、认领租约与心跳）；Worker 是节点上的执行者（一个 Agent CLI，管启动模板、续接命令、执行语境与无头权限）；Skill 是这个 Worker 能做的一类任务（管名称、说明、副作用等级与审批下限）。任务行用 `Target_Node` / `Worker_Hint` / `Skill_ID` 三列寻址，名片一行是 Node × Worker × Skill。Worker 留空表示由节点本尊直接执行：脚本类能力由守护进程直接拉起，独立 Agent 节点（§10.4）的本尊即 Worker。三层的名字都只是本机 `commands.json` 白名单里的选择键，不携带命令内容（§9）。
+8. **三层寻址：Node / Worker / Skill**（v3.7）：Node 是工作节点（一台机器上的一个守护进程，管网络位置、凭据、认领租约与心跳）；Worker 是节点上的执行者（一个 Agent CLI，管启动模板、续接命令、执行语境与无头权限）；Skill 是这个 Worker 能做的一类任务（管名称、说明、副作用等级与审批下限）。任务行用 `Target_Node` / `Worker_Hint` / `Skill_ID` 三列寻址，名片一行是 Node × Worker × Skill。Worker 留空表示由节点本尊直接执行：脚本类能力由守护进程直接拉起，独立 Agent 节点（§10.4）的本尊即 Worker。三层的名字都只是本机 `commands.json` 白名单里的选择键，不携带命令内容（§9）。Worker 的通用能力（按自然语言指令现场发挥）是每个 Worker 的固有属性，不是 Skill、不登记名片（v3.8，见 §9）；名片只登记真实 Skill。
 
 ## 1. 对象总览（七表，形态 B：A2A 主干＋本地扩展列）
 
@@ -41,7 +41,7 @@
 - ★ Metadata：A2A 原生自由字段（JSON）；非核心本地信息放这里，不再新增列。
 - **任务参数不在 Tasks 上**（v3 删除 Payload）：初始指令与参数写首条 instruction 消息，其 DataPart（Kind=data）承载参数 JSON（A2A 原生形态）。
 - （扩展）Target_Node / Worker_Hint / Skill_ID / Title / Source / Approval_Class / Hop_Count / Idempotency_Key / Claimed_By / Heartbeat_At / Retry_Count / Latest_Run / Presented：总线运营字段，定义沿用 v1/v2（守护进程与呈递管线维护其中一部分）。Worktree 已于 v3.5 删除（执行环境私事不入总线）；Presented 为过渡遗留，代码切换为只读 Tasks.Metadata 的呈递键后删除（见 §10.2）。
-- ★ Worker_Hint（扩展，v3.7 定义语义，文本）：指定由目标节点上的哪个 Worker 执行。**写了就是硬约束**：目标节点没有登记「该 Worker × 该 Skill」这项能力时，任务置 rejected＋notice，不换别的 Worker 代跑（失败要响）。留空表示由节点取默认：该 Skill 有节点本尊直接执行的条目时用它，否则取本机 `commands.json` 里第一个登记了该 Skill 的 Worker。节点认领时把实际选中的 Worker 回填到本列，此后的失败重试、心跳回收重跑与问答续跑都钉在同一个 Worker 上；节点本尊直接执行时保持留空。列名沿用 Worker_Hint，语义以本条为准。
+- ★ Worker_Hint（扩展，v3.7 定义语义，文本）：指定由目标节点上的哪个 Worker 执行。**写了就是硬约束**：目标节点没有登记「该 Worker × 该 Skill」这项能力时，任务置 rejected＋notice，不换别的 Worker 代跑（失败要响）。留空表示由节点取默认：该 Skill 有节点本尊直接执行的条目时用它，否则取本机 `commands.json` 里第一个登记了该 Skill 的 Worker。`Skill_ID=agent` 且 `Worker_Hint=<Worker>` 的组合指该 Worker 的通用执行（v3.8）：通用能力不在名片里，这个组合不需要名片存在，节点按本机 `commands.json` 的 Worker 定义解析；`Worker_Hint` 留空且本机没有节点本尊的 `agent` 条目时，取第一个 Worker 的通用执行。节点认领时把实际选中的 Worker 回填到本列，此后的失败重试、心跳回收重跑与问答续跑都钉在同一个 Worker 上；节点本尊直接执行时保持留空。列名沿用 Worker_Hint，语义以本条为准。
 - 任务派生关联写 Messages.Ref_Task_IDs（v3 起 Tasks 侧删除该列，见 §3）。
 
 ### 状态机（A2A 八态）
@@ -152,6 +152,8 @@
 
 Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目显式 `cap_id`，否则 `CAP-<capPrefix>-<Skill_ID>`；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`，不接受显式 `cap_id`。同一节点内 Cap_ID 不得重复，重复时后一项不登记并记日志，`lah doctor` 同时报出。
 
+**通用能力不登记名片（v3.8）**：Worker 的通用能力（Skill_ID=`agent`）只是地址空间里的一个有效地址——其 Cap_ID `CAP-<capPrefix>-<Worker>-agent` 仍可被本地计划引用、仍在 `capIdsOf` 的推导集合里——但守护进程不为它写名片行，名片只登记真实 Skill（节点本尊条目与 Worker 的专长技能）。v3.7 及更早登记过的通用能力名片行，在节点升级后由名片对账自动置 `Dispatchable=No` 停派（行保留作历史，删除归迁移批次）。独立 Agent 节点（§10.4）的 `agent`（inbox）是本尊通道、不是 Worker 的通用能力，照常登记名片；其 Worker 列写 `node.json` 的 `workerName`（本尊的名字，未配则留空）——§0 已定本尊即 Worker，列里写明只是把这件事显形。
+
 路由规则不变：只接自己登记且 Dispatchable=Yes 的能力（v3.7 起按 Worker × Skill 匹配）；表外任务置 rejected＋notice 说明缺口。
 
 ## 7. Rules 规范
@@ -239,6 +241,12 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 ## 修订记录
 
+**v3.8（2026-11-11，通用能力降为 Worker 属性、Agent 节点本尊显名）**：
+- 动机：v3.7 给每个 Worker 自动登记一张通用技能 `agent` 的名片，名册里因此堆起一排同名同说明的行——对全网观看者是纯冗余；且 hub、grokbot 这类独立 Agent 节点的名片 Worker 列留空，与 §0「本尊即 Worker」对不上，节点将来在本机再装一个 Agent CLI 当第二个 Worker 时无从表达。
+- §9：通用能力 `agent` 改为 Worker 的固有属性——不写条目、不登记名片；寻址与执行不变，任务仍以 `Skill_ID=agent`＋`Worker_Hint` 指向它，节点在本机归一能力表中解析执行。§6：名片只登记真实 Skill；通用能力的 Cap_ID 仍是有效地址（本地计划引用与 `capIdsOf` 口径不变），已登记的旧通用卡由名片对账自动置 `Dispatchable=No`。
+- §10.1：`--worker` 只点 Worker 时建单侧不再要求名册里有该 Worker 的行（通用能力不在名册），只校验节点存在；Worker 存在性由节点认领时按硬约束校验。`--worker` 与 `--cap` 并给且名册能证明组合不存在时，仍在写表前拒绝。
+- 独立 Agent 节点：`agent`（inbox）是本尊通道、照常登记名片；Worker 列写 `node.json` 新增的可选字段 `workerName`（本尊的名字），未配留空。表结构不变。
+
 **v3.7 同版：审批决定签名**：§8.3 有效决定增加第 5 条。hub 用本机 ed25519 私钥给 auth_decision 签名，节点配了 `hubPublicKey` 时验签，签名对不上的决定当作不存在。此前四条判定全是行上自报字段，任何总线写入方都能冒写批准。表结构不变（签名放在既有 DataPart 里）。
 
 **v3.7（2026-11-10，恢复 Worker 层级：Node / Worker / Skill 三层寻址）**：
@@ -321,7 +329,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - **能力模型（v3.7：Node / Worker / Skill）**：守护进程为薄壳，不内嵌任何执行器；能力全部来自节点本地 `commands.json`，守护进程按配置自动登记 AgentCards，新增能力不改守护进程代码。定版命令见 [能力模板库](agent-templates.md)。
   - **Worker** 写在根上的保留键 `workers` 里：`{"workers": {"<worker>": {command, resume_command?, mode?, context?, cwd?, timeout_sec?, approval_class?, name?, desc?}}}`。`command` 是这个 Agent CLI 的无头启动模板（如 `agy --dangerously-skip-permissions --print {prompt}`）。Worker 名只含字母、数字、`.`、`_`、`-`。Worker 的 `mode` 只取 `agent` 或 `json`。
   - **Skill** 是根上的其余键。两种写法：自带 `command`（或 `mode: inbox`）的条目由节点本尊直接执行，Worker 为空（确定性脚本、独立 Agent 的收件箱）；写 `workers: ["<worker>", …]` 的条目是这些 Worker 的专长技能，启动方式取自 Worker，条目只提供 `name` / `desc` / `side_effect` / `approval_class` / `timeout_sec` 等技能属性。同一条目不得同时写 `command` 与 `workers`。
-  - **通用技能 `agent`**：每个 Worker 自带一项 Skill_ID 为 `agent` 的通用能力（按自然语言指令现场发挥），名称与说明取 Worker 条目的 `name` / `desc`，无须另写条目。独立 Agent 节点的 `agent`（inbox）与它同名同义，只是 Worker 为空。
+  - **通用能力 `agent`（v3.8：是属性，不是技能）**：每个 Worker 固有地能按自然语言指令现场发挥，这项通用能力不写条目、不登记名片（见 §6）。任务以 `Skill_ID=agent`＋`Worker_Hint=<Worker>` 寻址到它，节点认领时在本机归一能力表中把该组合解析为这个 Worker 的启动模板执行（审批下限、超时等仍取 Worker 条目）；执行时的受信提示不带「本次任务使用技能」行。独立 Agent 节点的 `agent`（inbox）不是这项通用能力，而是本尊的接入通道：照常登记名片，其 Worker 列写 `node.json` 的 `workerName`（未配留空）。
   - **默认 Worker**：任务未指定 Worker 时的取法见 §2 Worker_Hint。专长技能按其 `workers` 数组的顺序，通用技能 `agent` 按 `workers` 对象里的书写顺序。
   - 条目引用了未定义的 Worker、Worker 缺 `command`、同时写了 `command` 与 `workers`、或 Cap_ID 重复时，该项能力不登记并记日志，其余能力照常；`lah doctor` 报出同样的问题。
   - agent 型 Worker 执行专长技能（Skill_ID 不是 `agent`）时，prompt 里的受信部分多一行「本次任务使用技能：<Skill_ID>（<name>）。<desc>」，三者都取自本机 `commands.json`，不取自任务。
@@ -347,7 +355,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - 实现是 Node 版 `lah daemon --role node|hub`（命令 `hub-node` 兼容别名可用）。省略 `--role` 时读该进程配置目录里 `node.json` 的 `role`，缺省为 node。单进程、单配置目录即可同时承载干活与枢纽职责，无需再拆两个进程与配置目录。
 - hub 角色的职责：
   1. 节点能力与任务执行：像普通 node 一样读取 `commands.json`、自动登记 `AgentCards`、认领并执行 `Target_Node === 本节点` 的任务（含定时任务）；
-  2. 建单与路由：按 Rules 与 AgentCards 选目标（Rules 自动路由仍为计划）；建单严格按「instruction 消息 → Parts → Tasks 行」顺序写，Tasks 行最后写、即触发信号（入口为 `lah task create`，由调用方指定目标节点与技能，可用 `--worker` 指定 Worker：只给 `--worker` 不给技能时取该 Worker 的通用技能 `agent`；按 Cap_ID 指定能力时 Worker 取自该名片；按 Skill_ID 指定且未给 `--worker` 时 Worker_Hint 留空，由目标节点取默认。省略技能时由中台按目标节点在 AgentCards 登记的名片自动挑选首选技能，亦可通过 --cap 反查目标节点）。建单在写任何行之前先按 AgentCards 名册校验目标存在性（显式 `--to` 须在名册有名片，显式 `--cap` 须在目标节点名片中存在对应技能；只校验存在性与 Dispatchable=Yes，不校验 Availability，目标离线仍可建单入队），校验失败报错退出且不落表；自动挑选与显式指定 Cap_ID 或 Skill_ID 时，命中 `Dispatchable=No` 或没有可用能力时，必须在第一笔写之前拒绝，并给出明确错误；节点守护可按同一写序给自己建计划任务（From_Node=To_Node=本节点、Source=cron），仍不写 auth_decision 与 canceled；
+  2. 建单与路由：按 Rules 与 AgentCards 选目标（Rules 自动路由仍为计划）；建单严格按「instruction 消息 → Parts → Tasks 行」顺序写，Tasks 行最后写、即触发信号（入口为 `lah task create`，由调用方指定目标节点与技能，可用 `--worker` 指定 Worker：只给 `--worker` 不给技能时取该 Worker 的通用能力 `agent`（v3.8：通用能力不在名册里，建单侧只校验目标节点存在，Worker 是否存在由目标节点认领时按硬约束校验、缺了就 rejected＋notice；但 `--worker` 与 `--cap` 同时给出、且名册能证明该 Skill 的名片无一属于这个 Worker 时，仍在写表前拒绝）；按 Cap_ID 指定能力时 Worker 取自该名片；按 Skill_ID 指定且未给 `--worker` 时 Worker_Hint 留空，由目标节点取默认。省略技能时由中台按目标节点在 AgentCards 登记的名片自动挑选首选技能，亦可通过 --cap 反查目标节点）。建单在写任何行之前先按 AgentCards 名册校验目标存在性（显式 `--to` 须在名册有名片，显式 `--cap` 须在目标节点名片中存在对应技能；只校验存在性与 Dispatchable=Yes，不校验 Availability，目标离线仍可建单入队），校验失败报错退出且不落表；自动挑选与显式指定 Cap_ID 或 Skill_ID 时，命中 `Dispatchable=No` 或没有可用能力时，必须在第一笔写之前拒绝，并给出明确错误；节点守护可按同一写序给自己建计划任务（From_Node=To_Node=本节点、Source=cron），仍不写 auth_decision 与 canceled；
   3. 审批中继：给机主发审批卡；处理卡片回调时校验操作者是机主本人；通过后写 auth_decision（From_Node=hub、Role=user、In_Reply_To=任务当前 Status_Msg），并按决定把任务置回 submitted 或置 canceled（§8.3）；
   4. 取消：审批驳回时写 canceled；hub 角色也可执行 `lah task cancel` 取消任意任务。发起方只能在本机显式执行 `lah task cancel` 取消自己发起的任务。这是 CLI 动作，不是守护进程扫表路径；
   5. 结果呈递：将本节点或主节点归属的任务结果（终态、input-required、rejected）落入本地 `present_queue.jsonl`，去重按 §8.5；飞书端只发审批卡，不发大段文本刷屏；

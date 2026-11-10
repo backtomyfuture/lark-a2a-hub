@@ -1,10 +1,11 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.7）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.8）。
 
 ## [未发布]
 
+- **通用能力降为 Worker 属性（标准 v3.8）**：v3.7 给每个 Worker 自动登记一张通用技能 `agent` 的名片，名册里堆起一排同名同说明的行，纯冗余。本次起守护进程不再为 Worker 的通用能力写名片行，名片只登记真实 Skill；寻址与执行不变——任务仍以 `Skill_ID=agent`＋`Worker_Hint` 指向通用能力，节点在本机归一能力表中解析为该 Worker 的启动模板。通用能力的 Cap_ID 仍是有效地址（`capIdsOf` 口径不变，本地计划照常引用）；v3.7 登记过的通用卡在节点升级后由名片对账自动置 `Dispatchable=No`。建单侧同步放宽：`lah task create --worker <W>` 只点 Worker 时不再要求名册里有该 Worker 的行，只校验节点存在，Worker 存在性由目标节点认领时按硬约束校验（缺了 rejected＋notice）；`--worker` 与 `--cap` 并给且名册能证明组合不存在时仍在写表前拒绝。独立 Agent 节点（kind=agent）的 `agent`（inbox）是本尊通道、照常登记名片，新增 `node.json` 可选字段 `workerName`：配了就写进名片的 Worker 列（本尊即 Worker，把名字显形），未配留空、行为不变。
 - **读表分页 100 → 500**：整表扫描的请求数少五分之四。实测（2026-11-10，各表一两百行）带过滤条件的列表读取比整表读取慢（1.0–1.5 秒对 0.6 秒），因此没有改成服务端过滤；归档工具仍未实现，`docs/architecture.md` 改为如实说明。
 - **审批决定签名（标准 v3.7 §8.3 第 5 条）**：此前节点只校验决定行上自报的 `From_Node=hub`、`Role=user`，任何能写总线的身份都能冒写批准。现在 hub 用本机 ed25519 私钥（配置目录 `approval_key.pem`，600，首次启动自动生成）给每条 `auth_decision` 签名，签名绑定 Task_ID、审批请求的 Msg_ID 与决定值；节点在 `node.json` 配了 `hubPublicKey` 后验签，签名缺失或无效的决定当作不存在，也不参与「最新一条」的比较。hub 自己认领任务时同样验签。`lah setup --role hub` 打印公钥，`lah setup --hub-key <公钥>` 写入节点，`lah doctor` 对未配置公钥的节点给出告警。没配公钥的节点行为不变。新增 `SECURITY.md` 写明信任模型与签名管不到的地方（hub 同机 Agent 读得到私钥、任务行 `Approval_Class` 可被改松）。
 - **国际版 Lark 支持**：`node.json` 新增 `domain`（`feishu` 缺省 / `lark`），读写表、令牌、长连接网关与自检里的开放平台链接都按它取域名；此前 `open.feishu.cn` 写死，Lark 租户无法使用。`lah setup --domain lark` 写入该字段，重跑向导沿用已有值；`schema/generate_schema.mjs` 认 `HUB_DOMAIN=lark`。取值非法直接报错，不回退到飞书。未在真实 Lark 租户上实测，只有域名选择的单元测试。
@@ -25,6 +26,7 @@
 - **先改表再升级**：自建 Base 先加 `AgentCards.Worker`（文本）、把 `Tasks.Worker_Hint` 改成文本，再升级守护进程；否则新版登记名片会因缺列失败。
 - **审批签名先 hub 后节点**：先升级 hub（它开始签名，旧节点会忽略多出来的字段），再给各节点配 `hubPublicKey`。顺序反了，节点会把旧 hub 写的无签名决定全部当作无效。
 - **Worker 改写可选**：旧的扁平 `commands.json` 不改也能跑。重跑 `lah setup` 才会把本机 Agent 改写成 Worker；改写后按技能名 `--cap <x>-agent` 派单要换成 `--worker <x>`，按 Cap_ID 派单与本地计划不受影响。
+- **v3.8 无表结构变更，升级无顺序要求**：守护进程先升后升都可以；节点升到 v3.8 后旧通用卡自动停派（`Dispatchable=No`），行本身留作历史，删除归迁移批次。Agent 类节点想在名片上显名，只需在 `node.json` 加 `workerName` 后重启守护。
 
 ## [0.7.0] - 2026-11-09（中台标准 v3.6：节点本地定时调度、双时钟与 Rules 观察镜像）
 
