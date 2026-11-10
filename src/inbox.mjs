@@ -212,6 +212,40 @@ function assertOwner(task, node) {
   if (claimedBy !== node) throw new Error(`任务当前认领者是 ${claimedBy}，不是当前节点 ${node}`);
 }
 
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 关单时任务可能还没被守护认领落定：VM 被平台替换、飞书接口抖动都会让认领迟到数分钟
+// （2026-11-10 实测三单各迟到约 9 分钟），调用方此时关单会被上面的归属断言拒掉，
+// 单子随后被认领却无人再关，挂在 working 靠心跳保活、stale 回收永远轮不到。
+// 这里只对「目标是本节点、尚未被任何人认领」的任务有界等待认领落定，等到再走原流程；
+// 目标不对、已被他人认领或状态已离开待认领区间的，立刻交回主流程按原有错误处理，
+// 归属校验一点不放宽。等待上限可用环境变量 LAH_INBOX_CLAIM_WAIT_MS 覆盖（毫秒）。
+const CLAIM_WAIT_MS = 10 * 60 * 1000;
+const CLAIM_POLL_MS = 10 * 1000;
+
+async function waitForClaim(bus, taskId, node, claimWait = {}) {
+  const envRaw = process.env.LAH_INBOX_CLAIM_WAIT_MS;
+  const envWait = envRaw === undefined ? NaN : Number(envRaw);
+  const waitMs = claimWait.waitMs ?? (Number.isFinite(envWait) ? envWait : CLAIM_WAIT_MS);
+  const pollMs = claimWait.pollMs ?? CLAIM_POLL_MS;
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    const task = await loadTask(bus, taskId);
+    const target = f1(task, "Target_Node");
+    const claimedBy = f1(task, "Claimed_By");
+    const st = f1(task, "Status");
+    if (claimedBy === node && st === "working") return task;
+    const stillWaiting =
+      target === node &&
+      !claimedBy &&
+      (st === "submitted" || st === "working");
+    if (!stillWaiting) return task;
+    const remain = deadline - Date.now();
+    if (remain <= 0) return task;
+    await sleepMs(Math.min(pollMs, remain));
+  }
+}
+
 async function loadTask(bus, taskId) {
   const tasks = await bus.listRecords(bus.tables.tasks);
   const task = tasks.find((t) => f1(t, "Task_ID") === taskId);
@@ -438,7 +472,7 @@ function receiptOf(plan) {
 }
 
 // 顺序对齐内核：Artifacts → Runs → Messages/Parts → Tasks。任一步失败都留着计划，下次只补缺。
-async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op }) {
+async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op, claimWait }) {
   const existing = readInboxOutbox(configDir, taskId);
   if (existing && existing.op !== op) {
     throw new Error(`任务 ${taskId} 有未完成的 inbox ${existing.op} 提交，请重试同一命令补齐`);
@@ -447,7 +481,9 @@ async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact
     throw new Error(`任务 ${taskId} 的 inbox 提交属于节点 ${existing.node}`);
   }
 
-  const task = await loadTask(bus, taskId);
+  // 已有未完成提交计划说明这单早被本节点认领过（上次提交中途失败、这次来补齐），不必等认领；
+  // 全新回执才先等守护把认领写稳，免得认领迟到把正当关单拒掉。
+  const task = existing ? await loadTask(bus, taskId) : await waitForClaim(bus, taskId, node, claimWait);
   assertOwner(task, node);
   const st = f1(task, "Status");
   if (existing && TERMINAL_STATUSES.has(st) && st !== existing.taskStatus) {
@@ -475,15 +511,15 @@ async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact
   return receiptOf(plan);
 }
 
-export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact }) {
-  return commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op: "done" });
+export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact, claimWait }) {
+  return commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op: "done", claimWait });
 }
 
-export async function handleInboxAsk({ bus, configDir, node, taskId, text }) {
-  return commitInboxReceipt({ bus, configDir, node, taskId, text, op: "ask" });
+export async function handleInboxAsk({ bus, configDir, node, taskId, text, claimWait }) {
+  return commitInboxReceipt({ bus, configDir, node, taskId, text, op: "ask", claimWait });
 }
 
-export async function handleInboxFail({ bus, configDir, node, taskId, text }) {
+export async function handleInboxFail({ bus, configDir, node, taskId, text, claimWait }) {
   // inbox fail 是本尊宣告终止，直接进 failed，不按 Retry_Count 退回 submitted。
-  return commitInboxReceipt({ bus, configDir, node, taskId, text, op: "fail" });
+  return commitInboxReceipt({ bus, configDir, node, taskId, text, op: "fail", claimWait });
 }

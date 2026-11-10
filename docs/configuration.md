@@ -179,6 +179,8 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 3. **认领接单**：本节点 `lah daemon` 认领该任务写入 `agent_inbox.jsonl`
 4. **处理并交付**：Agent 读取收件箱，完成后调用 `lah inbox done --task <Task_ID> --text "已完成同步"`
 
+> 认领可能迟到：VM 被平台替换、飞书接口抖动时，守护认领会晚数分钟。`lah inbox done|ask|fail` 对「目标是本节点、尚未被认领」的任务会先等认领落定（默认最长 10 分钟，每 10 秒查一次；可用环境变量 `LAH_INBOX_CLAIM_WAIT_MS` 覆盖毫秒数），等到再关单；目标不对或已被他人认领时不等待、立即按原错误拒绝。
+
 ### 6.6 Rules 观察镜像与自检
 
 - **单向观察镜像**：节点将本机每条计划镜像为 Rules 一行（`Rule_ID=<Node_ID>:<Schedule_ID>`）。任何节点**绝不从 Rules 读计划触发任务**，在飞书 Base 中手动修改 Rules **不影响本地实际执行**。
