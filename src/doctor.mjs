@@ -8,7 +8,9 @@ import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
-import { capIdsOf } from "./config.mjs";
+import { capIdOf, capIdsOf, normalizeCommands } from "./config.mjs";
+import { openHost } from "./bus/feishu.mjs";
+import { isHubPublicKey, readHubPublicKey } from "./approval-sign.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
 import { LocalScheduleService } from "./local-schedule.mjs";
 import { f1 } from "./bus/feishu.mjs";
@@ -164,7 +166,8 @@ const COMMAND_CONTEXTS = new Set(["direct", "carrier"]);
 // commands.json 条目的字段校验。内核对这几类错误都不报错：未知 mode 按 agent 跑、
 // 未知 context 按 direct 直跑（拼错 carrier 就绕过了离线纪律）、非法 timeout_sec 回退 600、
 // 重复 Cap_ID 后一条覆盖前一条名片——运行期全是静默降级，只能在自检里拦下（失败要响）。
-// Cap_ID 推导与内核 capIdFor 同口径：cap_id 优先，否则 CAP-<capPrefix>-<能力名>。
+// Cap_ID 推导与内核 capIdFor 同口径（config.mjs 的 capIdOf）。
+// 传进来的是归一后的平表：Worker 的能力键形如 <worker>/<skill>。
 function auditCommandsShape(cmds, capPrefix) {
   let problems = 0;
   const capOwner = new Map();
@@ -206,9 +209,9 @@ function auditCommandsShape(cmds, capPrefix) {
       problems++;
       continue;
     }
-    const capId = entry.cap_id || `CAP-${capPrefix}-${name}`;
+    const capId = capIdOf(name, entry, capPrefix);
     if (capOwner.has(capId)) {
-      bad(`能力 ${name} 与 ${capOwner.get(capId)} 的 Cap_ID 重复（${capId}）：总线上只会留一张名片，后者覆盖前者`);
+      bad(`能力 ${name} 与 ${capOwner.get(capId)} 的 Cap_ID 重复（${capId}）：总线上只会留一张名片，后一项不登记`);
       problems++;
     } else {
       capOwner.set(capId, name);
@@ -602,20 +605,41 @@ export async function doctor(configDir, appDir, opts = {}) {
   }
   if (schedulesPresent) reportLocalSchedules(configDir, raw);
 
+  // 审批决定签名（标准 §8.3 第 5 条）。公钥不是秘密，可以打印；私钥只报在不在。
+  if (role === "hub") {
+    const pub = readHubPublicKey(configDir);
+    if (pub) info(`hub 审批公钥（各节点 node.json 的 hubPublicKey 填它）：${pub}`);
+    else info("审批签名密钥尚未生成：hub 守护进程首次启动或重跑 lah setup --role hub 时生成");
+  } else if (raw?.hubPublicKey) {
+    if (isHubPublicKey(raw.hubPublicKey)) ok("已配置 hub 审批公钥：只认签名对得上的 auth_decision");
+    else { bad("node.json 的 hubPublicKey 不是有效的 ed25519 公钥：所有审批决定都会被当作无效"); problems++; }
+  } else {
+    info("告警：未配置 hubPublicKey。审批决定只按行上自报字段校验，任何能写总线的身份都能冒写批准；向 hub 要公钥后 lah setup --hub-key <公钥>");
+  }
+
   try {
     const cmdsPath = path.join(configDir, "commands.json");
     if (fs.existsSync(cmdsPath)) {
       const cmds = JSON.parse(fs.readFileSync(cmdsPath, "utf8"));
       // 与内核 loadCommands 同口径：根不是对象，守护进程会当作解析失败处理。
       if (!cmds || typeof cmds !== "object" || Array.isArray(cmds)) throw new Error("根必须是对象（能力名 -> 模板）");
-      const names = Object.keys(cmds);
+      // 与内核同一份归一：workers 定义 Worker，其余键是 Skill（标准 §9）。
+      let layerProblems = 0;
+      const flat = normalizeCommands(cmds, (msg) => { bad(msg); layerProblems++; });
+      const names = Object.keys(flat);
+      const workerNames = cmds.workers && typeof cmds.workers === "object" && !Array.isArray(cmds.workers) ? Object.keys(cmds.workers) : [];
+      if (workerNames.length) info(`Worker：${workerNames.join(", ")}`);
       if (names.length) ok(`commands.json：${names.length} 项能力（${names.join(", ")}）`);
       else info("commands.json 为空：本节点不登记任何能力，不会认领任务");
       const capPrefix = raw?.capPrefix ?? raw?.node ?? "";
-      const shapeProblems = auditCommandsShape(cmds, capPrefix);
-      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（mode / context / timeout_sec 取值合法，cap_id 无重复）");
+      const shapeProblems = layerProblems + auditCommandsShape(flat, capPrefix);
+      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec 取值合法，cap_id 无重复）");
       problems += shapeProblems;
-      problems += await auditAgentTemplates(cmds);
+      // 模板只查一遍：节点本尊的条目加上每个 Worker 自己的启动模板。
+      const templates = {};
+      for (const [key, entry] of Object.entries(flat)) if (!entry?.worker) templates[key] = entry;
+      for (const name of workerNames) templates[`worker:${name}`] = cmds.workers[name];
+      problems += await auditAgentTemplates(templates);
     } else if (role === "hub") {
       info("未配置 commands.json（hub 仍可承担审批/呈递，但不会认领干活任务）");
     } else {
@@ -706,7 +730,7 @@ export async function doctor(configDir, appDir, opts = {}) {
         info(`跳过应用静态事件列表核对（${appEvCheck.reason || "未开应用信息权限"}），以实际长连接状态为准`);
       } else {
         bad(`应用线上已发布版本未订阅事件 drive.file.bitable_record_changed_v1（${appEvCheck.reason || "未包含该事件"}）`);
-        info(`请打开 https://open.feishu.cn/app/${cfg.bus.appId}/event 添加「多维表格记录变更」并发布版本，或降级为 45s 轮询模式。`);
+        info(`请打开 https://${openHost(cfg.bus.domain)}/app/${cfg.bus.appId}/event 添加「多维表格记录变更」并发布版本，或降级为 45s 轮询模式。`);
         problems++;
       }
 
@@ -789,8 +813,8 @@ export async function doctor(configDir, appDir, opts = {}) {
     // socket 探活成功只说明本机 carrier 在听，不宣称局域网可达。
     if (role !== "hub") {
       try {
-        const cmds = JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8"));
-        const carrierCaps = Object.entries(cmds).filter(([, e]) => e.context === "carrier").map(([k]) => k);
+        const cmds = normalizeCommands(JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8")));
+        const carrierCaps = Object.entries(cmds).filter(([, e]) => e?.context === "carrier").map(([k]) => k);
         if (carrierCaps.length || probe) {
           const online = await pingCarrier(cfg.carrierSocket);
           if (!online) {

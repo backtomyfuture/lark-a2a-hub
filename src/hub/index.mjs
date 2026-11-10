@@ -13,6 +13,7 @@ import { PresentService } from "./present.mjs";
 import { StaleService } from "./stale.mjs";
 import { ScheduleService } from "./schedule.mjs";
 import { readOwnerFromConfigDir } from "./owner.mjs";
+import { loadOrCreateHubKey } from "../approval-sign.mjs";
 
 function logLine(msg) {
   console.log(new Date().toISOString().slice(0, 19), msg);
@@ -138,11 +139,21 @@ export async function runHub(cfg, log = logLine, hooks = {}) {
   if (cfg.events === false) {
     log("hub 角色忽略 events=false：审批卡回调只能经长连接送达，禁止退化为纯轮询。");
   }
+  // 审批签名密钥：没有就生成。hub 自己认领任务时也按这把公钥验签，不认没签名的决定。
+  let signKey = null;
+  try {
+    const key = loadOrCreateHubKey(cfg.configDir);
+    signKey = key.privateKey;
+    cfg.hubPublicKey = key.publicKey;
+  } catch (e) {
+    log("审批签名密钥不可用，决定将不带签名（配了 hubPublicKey 的节点不会认）：" + (e?.message ?? e));
+  }
   const approval = new ApprovalService({
     bus: cfg.bus,
     ownerOpenId,
     statePath: path.join(cfg.configDir, "approval_state.json"),
     log,
+    signKey,
   });
   const present = new PresentService({
     bus: cfg.bus,

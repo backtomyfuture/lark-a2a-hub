@@ -55,12 +55,12 @@
 
 - 总线是可插拔后端接口；**飞书多维表格为一号后端**：零服务器、表即总线，读者不需要自建数据库与消息队列。
 - 数据模型沿用中台现行标准（A2A 形状）：任务八态（submitted / working / input-required / auth-required / completed / failed / canceled / rejected）、沟通与状态分离（消息只追加）、产物独立登记、能力以 AgentCard 形式自注册。
-- 唤醒（标准 v3.1 §10.3）只有三种方式，都只是门铃，内容一律回表拉取：
+- 唤醒（标准 §10.3）只有三种方式，都只是门铃，内容一律回表拉取：
   - `ws`：飞书 SDK 长连接事件订阅（出站连接，现有实现，事件不解析内容）；
   - `poll`：定时扫表（现有实现，默认 45 秒），用于无法订阅事件时；
   - `webhook`：专指飞书多维表格自动化在 Tasks 行写入后向协议接入型节点的端点 POST，只带 ID 不带正文；发起 POST 的是飞书自动化，本项目进程绝不开监听端口、也不主动推送，守护进程自身只用 ws 或 poll。
 - 三种方式都保留低频对账扫表兜底（默认 15 分钟）。
-- 角色（标准 v3.1 §10.1）：hub 是逻辑角色，且为 node 的单进程超集。以 `lah daemon --role node|hub`（CLI 简称 `lah`，向下兼容 `hub-node` 别名；省略 `--role` 时读 `node.json` 的 `role`，缺省 node）承载。单进程、单配置目录即可同时承载干活（读取 `commands.json` 登记能力并认领执行任务）与枢纽职责（全网审批发卡、结果呈递、陈旧告警），无需拆两个进程与配置目录。node 角色从不写 auth_decision 与 canceled，hub 角色是唯一写方。
+- 角色（标准 §10.1）：hub 是逻辑角色，且为 node 的单进程超集。以 `lah daemon --role node|hub`（CLI 简称 `lah`，向下兼容 `hub-node` 别名；省略 `--role` 时读 `node.json` 的 `role`，缺省 node）承载。单进程、单配置目录即可同时承载干活（读取 `commands.json` 登记能力并认领执行任务）与枢纽职责（全网审批发卡、结果呈递、陈旧告警），无需拆两个进程与配置目录。node 角色从不写 auth_decision 与 canceled，hub 角色是唯一写方。
 
 ## 7. 能力模型与回执约定
 
@@ -106,7 +106,7 @@
 
 ```
 lark-a2a-hub/
-  bin/hub-node.mjs      # CLI：setup / daemon / doctor / service / host / task
+  bin/lah.mjs           # CLI 主入口（bin/hub-node.mjs 为兼容别名）：setup / daemon / doctor / service / host / task
                         #   支持 --role node|hub；task create 建单
                         #   省略 --role 时读 node.json 的 role，缺省 node
   src/kernel.mjs          # 状态机骨架（认领/心跳/熔断/对账主循环）
@@ -176,7 +176,7 @@ lark-a2a-hub/
 
 ## 13. 已定事项
 
-- 项目名 lark-a2a-hub；License MIT；Node 版本下限 20（跟随 LTS）。
+- 项目名 lark-a2a-hub；License MIT；Node 版本下限 24（跟随 LTS）。
 - 开源范围（2026-11-05 扩大，2026-11-06 起仓库只保留 Node）：节点适配器＋
   中台标准与全部设计文档＋ hub 角色（`src/hub/`），一并公开。
 

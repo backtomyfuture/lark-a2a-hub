@@ -1,11 +1,30 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.6）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.7）。
 
 ## [未发布]
 
+- **读表分页 100 → 500**：整表扫描的请求数少五分之四。实测（2026-11-10，各表一两百行）带过滤条件的列表读取比整表读取慢（1.0–1.5 秒对 0.6 秒），因此没有改成服务端过滤；归档工具仍未实现，`docs/architecture.md` 改为如实说明。
+- **审批决定签名（标准 v3.7 §8.3 第 5 条）**：此前节点只校验决定行上自报的 `From_Node=hub`、`Role=user`，任何能写总线的身份都能冒写批准。现在 hub 用本机 ed25519 私钥（配置目录 `approval_key.pem`，600，首次启动自动生成）给每条 `auth_decision` 签名，签名绑定 Task_ID、审批请求的 Msg_ID 与决定值；节点在 `node.json` 配了 `hubPublicKey` 后验签，签名缺失或无效的决定当作不存在，也不参与「最新一条」的比较。hub 自己认领任务时同样验签。`lah setup --role hub` 打印公钥，`lah setup --hub-key <公钥>` 写入节点，`lah doctor` 对未配置公钥的节点给出告警。没配公钥的节点行为不变。新增 `SECURITY.md` 写明信任模型与签名管不到的地方（hub 同机 Agent 读得到私钥、任务行 `Approval_Class` 可被改松）。
+- **国际版 Lark 支持**：`node.json` 新增 `domain`（`feishu` 缺省 / `lark`），读写表、令牌、长连接网关与自检里的开放平台链接都按它取域名；此前 `open.feishu.cn` 写死，Lark 租户无法使用。`lah setup --domain lark` 写入该字段，重跑向导沿用已有值；`schema/generate_schema.mjs` 认 `HUB_DOMAIN=lark`。取值非法直接报错，不回退到飞书。未在真实 Lark 租户上实测，只有域名选择的单元测试。
+- **文档对齐**：README 的 Node 版本与 CI 矩阵改为实际的 Node >= 24；标准标题不再带过期的 v3.1；`package.json` 的描述与 README 定位一致。
+- **恢复 Worker 层级：Node / Worker / Skill 三层寻址（标准 v3.7）**：最初的设计是 Node＝工作节点、Worker＝节点上的 Agent、Skill＝该 Worker 能做的事，实现中 Worker 一层丢了——装机向导把 Agent 登记成名叫 `<x>-agent` 的「技能」，`Tasks.Worker_Hint` 无人写入，`Runs.Worker` 恒为 `daemon`。本次补回：
+  - `commands.json` 根上的保留键 `workers` 定义 Worker（启动模板）；技能条目写 `workers: [...]` 绑定为专长技能；每个 Worker 自带通用技能 `agent`。`src/config.mjs` 新增 `normalizeCommands` / `resolveCapKey`，内核、doctor、本地调度共用同一份归一结果。
+  - 任务行 `Worker_Hint`：写了是硬约束，本机没有这项 Worker × Skill 就 `rejected`＋notice，不换别的 Worker 代跑；留空由节点取默认，认领时回填，重试与问答续跑钉在同一个 Worker 上。`Runs.Worker` 因此记的是实际执行者。
+  - 名片一行改为 Node × Worker × Skill，登记 `Worker` 列；Worker 的能力 Cap_ID 为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`，重复的 Cap_ID 后一项不登记。
+  - 本机审批下限取 Worker 条目与 Skill 条目中更严者。任务参数的执行控制键增加 `worker`。专长技能执行时受信提示多一行技能名与说明（取自本机配置）。
+  - `lah task create` 增加 `--worker`；later 复查继承前任的 Worker；审批卡、`lah task why`、`lah inventory` 显示 Worker。`lah setup` 把检测到的本机 Agent 登记为 Worker，`lah doctor` 校验 Worker 定义与引用。
+  - **表结构变更**（已在线上 Base 落地并重新生成 schema）：`AgentCards` 新增文本列 `Worker`；`Tasks.Worker_Hint` 由单选改为文本。自建 Base 需手工做这两处改动，否则名片登记会因缺列失败，`lah doctor` 的契约检查会报出。
+  - 兼容：没有 `workers` 键的旧 `commands.json` 含义与 Cap_ID 都不变。重跑 `lah setup` 后旧条目 `<x>-agent` 被 Worker `<x>` 取代，Cap_ID 仍是 `CAP-<capPrefix>-<x>-agent`，引用它的本地计划不用改；但按技能名 `--cap <x>-agent` 派单的写法要改成 `--worker <x>`。
+
 - **修复：老格式 `commands.json` 无法添加本地计划**：`lah schedule add`、本地调度服务与 `lah doctor` 的 cap 校验只认条目里的 `cap_id` 字段，而存量配置没有这个字段（名片 Cap_ID 一直由内核按 `CAP-<capPrefix>-<技能名>` 兜底登记），导致能力集合为空、任何计划都被拒收。现改为内核登记与三处校验共用 `config.mjs` 的 `capIdOf` / `capIdsOf`：`cap_id` 优先，缺省按 `CAP-<capPrefix>-<技能名>` 兜底（`capPrefix` 缺省取 `node`）。无需改 `commands.json`，也不改变已登记的名片。
+
+### 未发布部分的迁移提示
+
+- **先改表再升级**：自建 Base 先加 `AgentCards.Worker`（文本）、把 `Tasks.Worker_Hint` 改成文本，再升级守护进程；否则新版登记名片会因缺列失败。
+- **审批签名先 hub 后节点**：先升级 hub（它开始签名，旧节点会忽略多出来的字段），再给各节点配 `hubPublicKey`。顺序反了，节点会把旧 hub 写的无签名决定全部当作无效。
+- **Worker 改写可选**：旧的扁平 `commands.json` 不改也能跑。重跑 `lah setup` 才会把本机 Agent 改写成 Worker；改写后按技能名 `--cap <x>-agent` 派单要换成 `--worker <x>`，按 Cap_ID 派单与本地计划不受影响。
 
 ## [0.7.0] - 2026-11-09（中台标准 v3.6：节点本地定时调度、双时钟与 Rules 观察镜像）
 

@@ -184,6 +184,7 @@ export function buildCard(task, messages, parts) {
             field("编号", taskId),
             field("目标节点", f1(task, "Target_Node")),
             field("技能", f1(task, "Skill_ID") || "-"),
+            field("执行者", f1(task, "Worker_Hint") || "节点默认"),
             field("上下文", f1(task, "Context_ID") || "-"),
           ].join("\n"),
         },

@@ -4,6 +4,7 @@
 // 通过后按「消息 → Parts → 任务行」写 auth_decision，批准回 submitted，驳回置 canceled 并写 notice。
 // 写操作经调用方逐条 await；本模块用一条队列串行回调，避免两张卡同时改同一张表。
 
+import { signDecision } from "../approval-sign.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "../bus/feishu.mjs";
@@ -114,7 +115,9 @@ function bumpMsgId(msgId) {
 }
 
 export class ApprovalService {
-  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000, kernel = null }) {
+  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000, kernel = null, signKey = null }) {
+    // hub 的签名私钥（KeyObject）。有它就给每条决定签名，节点按固定公钥验签（标准 §8.3 第 5 条）。
+    this.signKey = signKey;
     this.bus = bus;
     this.ownerOpenId = String(ownerOpenId ?? "").trim();
     this.statePath = statePath;
@@ -390,7 +393,13 @@ export class ApprovalService {
       Parent_Type: "message",
       Seq: 2,
       Kind: "data",
-      Data: JSON.stringify({ decision }),
+      Data: JSON.stringify(this.signKey
+        ? {
+          decision,
+          alg: "ed25519",
+          sig: signDecision(this.signKey, { taskId: f1(task, "Task_ID"), requestId: statusMsg, decision }),
+        }
+        : { decision }),
     });
   }
 

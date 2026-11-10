@@ -24,7 +24,7 @@ export async function inventory(configDir) {
     const avail = f1(row, "Availability") || "(空)";
     const dispatch = f1(row, "Dispatchable") || "(空)";
     const desc = f1(row, "Node_Desc") || "";
-    info(`名片 ${capId}  Skill=${f1(row, "Skill_ID") || ""}  Receive_Mode=${mode}  Availability=${avail}  Dispatchable=${dispatch}`);
+    info(`名片 ${capId}  Worker=${f1(row, "Worker") || "(节点本尊)"}  Skill=${f1(row, "Skill_ID") || ""}  Receive_Mode=${mode}  Availability=${avail}  Dispatchable=${dispatch}`);
     if (mode !== expectedMode) {
       warn(`${capId} Receive_Mode=${mode}，与本地配置期望 ${expectedMode} 不一致`);
       drifts++;

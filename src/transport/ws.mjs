@@ -45,7 +45,8 @@ export function normalizeBusEvent(msg) {
 }
 
 export class FeishuEventReceiver {
-  constructor({ appId, appSecret, baseToken, doorbellFile, onEvent, onStatus, log, extraHandlers }) {
+  constructor({ appId, appSecret, baseToken, domain, doorbellFile, onEvent, onStatus, log, extraHandlers }) {
+    this.domain = domain;
     this.baseToken = baseToken;
     this.doorbellFile = doorbellFile;
     this.onEvent = onEvent;
@@ -313,6 +314,8 @@ export class FeishuEventReceiver {
     this.ws = new Lark.WSClient({
       appId: this.appId,
       appSecret: this.appSecret,
+      // 国际版 Lark 的长连接网关在另一套域名上，必须和读写表的域名一致。
+      domain: this.domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
       loggerLevel: Lark.LoggerLevel.WARN,
       onReady: () => {
         this.log("event receiver: ws connected");
@@ -400,6 +403,7 @@ class WsWaker {
       appId: this.cfg.appId ?? bus.appId,
       appSecret: this.cfg.appSecret ?? bus.appSecret,
       baseToken: this.cfg.baseToken ?? bus.baseToken,
+      domain: this.cfg.domain ?? bus.domain,
       doorbellFile: this.cfg.doorbellFile,
       extraHandlers: this.extraHandlers,
       onEvent: () => {

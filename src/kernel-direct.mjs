@@ -536,7 +536,7 @@ export const directMethods = {
 
   async launchDirect(task, extraAnswers, started, startedMs, runId, resume = false) {
     const taskId = f1(task, "Task_ID");
-    const skill = f1(task, "Skill_ID");
+    const skill = this.capKeyOf(task);
     if (this._directFlight) throw new Error("direct slot busy");
     const params = await this.getParams(task);
     if (extraAnswers) params._answers = extraAnswers;

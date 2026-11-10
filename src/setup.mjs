@@ -12,7 +12,9 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { execFile, execFileSync, execSync } from "node:child_process";
-import { FeishuBus } from "./bus/feishu.mjs";
+import { FeishuBus, openHost } from "./bus/feishu.mjs";
+import { normalizeCommands } from "./config.mjs";
+import { isHubPublicKey, loadOrCreateHubKey } from "./approval-sign.mjs";
 import { doctor, checkAppEventSubscribed } from "./doctor.mjs";
 import { service } from "./service.mjs";
 
@@ -47,6 +49,10 @@ export function parseFlags(argv) {
     else if (a.startsWith("--owner=")) f.ownerOpenId = a.slice("--owner=".length);
     else if (a.startsWith("--owner-open-id=")) f.ownerOpenId = a.slice("--owner-open-id=".length);
     else if (a === "--base") f.base = argv[++i];
+    else if (a === "--domain") f.domain = argv[++i];
+    else if (a === "--hub-key") f.hubKey = argv[++i];
+    else if (a.startsWith("--hub-key=")) f.hubKey = a.slice("--hub-key=".length);
+    else if (a.startsWith("--domain=")) f.domain = a.slice("--domain=".length);
     else if (a === "--node") f.node = argv[++i];
     else if (a === "--zone") f.zone = argv[++i];
     else if (a === "--prefix") f.prefix = argv[++i];
@@ -681,6 +687,8 @@ export function discoverLocalAgents() {
     if (fullPath) {
       discovered.push({
         ...item,
+        // Worker 名取旧能力名去掉 -agent 后缀，这样通用技能的 Cap_ID 仍是 CAP-<前缀>-<x>-agent。
+        worker: item.skill.replace(/-agent$/, ""),
         path: fullPath,
         entry: {
           command: item.cmdTemplate(fullPath),
@@ -697,11 +705,17 @@ export function discoverLocalAgents() {
   return discovered;
 }
 
-function buildAgentCommands(selectedAgents, existingCommands = {}) {
+// 本机 Agent 登记为 Worker（标准 §9）。每个 Worker 自带通用技能 agent，不用另写技能条目。
+// 旧版把它们写成名叫 <x>-agent 的扁平条目：同名 Worker 取代它，否则两者的 Cap_ID 会撞。
+export function buildAgentCommands(selectedAgents, existingCommands = {}) {
   const result = { ...existingCommands };
+  const old = result.workers;
+  const workers = old && typeof old === "object" && !Array.isArray(old) ? { ...old } : {};
   for (const a of selectedAgents) {
-    result[a.skill] = a.entry;
+    workers[a.worker] = a.entry;
+    delete result[a.skill];
   }
+  if (Object.keys(workers).length) result.workers = workers;
   return result;
 }
 
@@ -726,8 +740,8 @@ async function applyPaseoInteractive(selectedAgents, ask) {
       out.push(agent);
       continue;
     }
-    const provider = await ask("paseo-agent 默认 provider", "antigravity");
-    const model = await ask("paseo-agent 默认 model（可留空）", "");
+    const provider = await ask("Worker paseo 默认 provider", "antigravity");
+    const model = await ask("Worker paseo 默认 model（可留空）", "");
     out.push({
       ...agent,
       entry: {
@@ -809,6 +823,7 @@ export function setupHelpText() {
             [--wake poll|event|sweep] [--skip-skill] [--force]
             [--node <名>] [--zone <区>] [--prefix <前缀>] [--desc <描述>]
             [--base <token>] [--app-id <id>] [--owner <open_id>]
+            [--domain feishu|lark] [--hub-key <hub 审批公钥>]
 
   --wake    非交互时选择唤醒方式：event/ws、poll、sweep
             sweep 登记 poll，轮询间隔不超过对账周期 900 秒。
@@ -885,6 +900,27 @@ export async function runSetup(configDir, argv, appDir) {
     console.log(`lah setup —— 一键配置${role === "hub" ? "主枢纽（hub，干活＋审批呈递）" : "节点（node）"}`);
     console.log(`role: ${role}`);
     console.log(`config dir: ${configDir}`);
+
+    // 国内飞书还是国际版 Lark。没给 --domain 时沿用已有 node.json 的值，重跑向导不把 lark 冲回飞书。
+    let domain = String(flags.domain ?? "").trim();
+    if (!domain) {
+      try { domain = String(JSON.parse(fs.readFileSync(path.join(configDir, "node.json"), "utf8")).domain ?? "").trim(); }
+      catch { /* 还没有 node.json */ }
+    }
+    domain = domain || "feishu";
+    openHost(domain);
+    // hub 的审批签名公钥：节点靠它验 auth_decision。同样沿用已有值，带外拿到的公钥才可信，不从总线读。
+    let hubPublicKey = String(flags.hubKey ?? "").trim();
+    if (!hubPublicKey) {
+      try { hubPublicKey = String(JSON.parse(fs.readFileSync(path.join(configDir, "node.json"), "utf8")).hubPublicKey ?? "").trim(); }
+      catch { /* 还没有 node.json */ }
+    }
+    if (hubPublicKey && !isHubPublicKey(hubPublicKey)) {
+      throw new Error("--hub-key 不是有效的 hub 审批公钥（应为 hub 上 lah doctor 打印的那串 base64）");
+    }
+    if (domain === "lark") {
+      console.log("  · 国际版 Lark（open.larksuite.com）。官方标准模板托管在飞书，Lark 租户不能直接克隆：请按 docs/base-schema.md 建好七张表后用 --base 指定。");
+    }
 
     // 1. 优先检测本机是否安装了 lark-cli：若已安装则复用已配置的飞书应用；
     //    未安装且无环境变量/app.env 凭据时，引导安装 lark-cli。
@@ -980,7 +1016,7 @@ export async function runSetup(configDir, argv, appDir) {
     // 3. Base 与表发现
     let defaultBase = null;
     let defaultBaseLabel = "";
-    const tempBus = new FeishuBus({ appId, appSecret: secret, baseToken: "", tables: {} });
+    const tempBus = new FeishuBus({ appId, appSecret: secret, baseToken: "", tables: {}, domain });
     if (!flags.base) {
       const candidates = await discoverCandidateBases(tempBus, appId);
       if (candidates.length === 1) {
@@ -1048,7 +1084,7 @@ export async function runSetup(configDir, argv, appDir) {
       }
     }
     if (!baseToken) { console.error("  ✗ 没能从输入里解析出 Base token。"); return 2; }
-    const bus = new FeishuBus({ appId, appSecret: secret, baseToken, tables: {} });
+    const bus = new FeishuBus({ appId, appSecret: secret, baseToken, tables: {}, domain });
     let tableItems;
     try {
       const items = [];
@@ -1163,7 +1199,7 @@ export async function runSetup(configDir, argv, appDir) {
       console.log(`  · 跳过应用静态事件列表核对（${appEvRes.reason || "未开应用信息权限"}），以实际长连接状态为准`);
     } else {
       console.log(`  · 应用线上版本未订阅 drive.file.bitable_record_changed_v1 事件（${appEvRes.reason || "未包含该事件"}）`);
-      console.log(`    若需开启，请在飞书开放平台「事件与回调」添加「多维表格记录变更」并发布版本：https://open.feishu.cn/app/${appId}/event`);
+      console.log(`    若需开启，请在飞书开放平台「事件与回调」添加「多维表格记录变更」并发布版本：https://${openHost(domain)}/app/${appId}/event`);
     }
 
     const subRes = tryRegisterDriveSubscription(baseToken, appId);
@@ -1259,8 +1295,18 @@ export async function runSetup(configDir, argv, appDir) {
       doorbellFile: null,
       capPrefix: prefix,
       tables,
+      // 只在国际版 Lark 时写出，飞书是缺省值。
+      ...(domain === "lark" ? { domain } : {}),
+      // hub 自己用本机私钥推出公钥，不必写；节点写带外拿到的那一把。
+      ...(role !== "hub" && hubPublicKey ? { hubPublicKey } : {}),
     };
     fs.writeFileSync(nodeJsonPath, JSON.stringify(nodeJson, null, 1) + "\n");
+    if (role === "hub") {
+      const key = loadOrCreateHubKey(configDir);
+      console.log(`  ✓ 审批签名密钥就绪（approval_key.pem，600）。把下面这串公钥带到各节点：lah setup --hub-key <公钥>，或写进其 node.json 的 hubPublicKey\n    ${key.publicKey}`);
+    } else if (!hubPublicKey) {
+      console.log("  · 未配置 hub 审批公钥：本节点暂时只按行上自报字段校验审批决定。拿到 hub 的公钥后重跑 lah setup --hub-key <公钥>。");
+    }
 
     const cmdPath = path.join(configDir, "commands.json");
     const cmdExisted = fs.existsSync(cmdPath);
@@ -1292,12 +1338,12 @@ export async function runSetup(configDir, argv, appDir) {
       if (discoveredAgents.length > 0) {
         console.log(`\n  · 扫描到本机已安装 ${discoveredAgents.length} 个终端 Agent：`);
         discoveredAgents.forEach((a, idx) => {
-          console.log(`    ${idx + 1}. [${a.skill}] ${a.name} (${a.path})`);
+          console.log(`    ${idx + 1}. [${a.worker}] ${a.name} (${a.path})`);
         });
 
         let pick = "all";
         if (interactive) {
-          pick = await ask("选择要添加到 commands.json 的本地 Agent（all=全部添加，none=都不添加，或填序号如 1,2,3）", "all");
+          pick = await ask("选择要登记为 Worker 的本地 Agent（all=全部添加，none=都不添加，或填序号如 1,2,3）", "all");
         }
         const p = String(pick).trim().toLowerCase();
         if (p === "none" || p === "0") {
@@ -1318,7 +1364,7 @@ export async function runSetup(configDir, argv, appDir) {
     }
 
     fs.writeFileSync(cmdPath, JSON.stringify(finalCmds, null, 1) + "\n");
-    const names = Object.keys(finalCmds);
+    const names = Object.keys(normalizeCommands(finalCmds));
     console.log(`  ✓ 已写入 app.env（600）、node.json、commands.json（共 ${names.length} 项能力：${names.join(", ")}）`);
 
     // 建立存量任务结果呈递水位线（baseline）：

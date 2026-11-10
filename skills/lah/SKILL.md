@@ -27,10 +27,13 @@ description: 操作与调度 lark-a2a-hub (lah) 多 Agent 协作中台：查询�
 ### 1. 派发跨节点任务 (`lah task create`)
 向指定节点的指定能力派发异步任务：
 ```bash
-lah task create --to <Target_Node> [--cap/--skill <Skill_ID>] --text "<指令说明>" [--params '<JSON字符串或@文件>']
+lah task create --to <Target_Node> [--worker <Worker>] [--cap/--skill <Skill_ID>] --text "<指令说明>" [--params '<JSON字符串或@文件>']
 ```
 - 默认以本机节点名作为 `From_Node` 与 `Source`；
-- `--cap`（或 `--skill`）可省略：系统会自动从目标节点的 `AgentCards` 中挑选首选通用能力（独立 Agent 节点的 `agent`，或 host 节点上的 `*-agent` 类 CLI Agent）；
+- 寻址是三层：节点（`--to`）、Worker（`--worker`，节点上的某个 Agent）、技能（`--cap`）。名片一行就是「节点 × Worker × 技能」，Worker 为空表示节点本尊直接执行；
+- `--worker` 是硬约束：目标节点没有这个 Worker 或它不会这项技能，建单直接报错。只给 `--worker` 不给 `--cap` 时用该 Worker 的通用技能 `agent`；
+- `--worker` 可省略：按技能名派单时由目标节点取默认 Worker；
+- `--cap`（或 `--skill`）可省略：系统会自动从目标节点的 `AgentCards` 中挑选首选通用能力（技能 `agent`）；
 - 若直接指定已知的 `CAP-...`，甚至可省略 `--to`（自动反查归属节点）；
 - 命令成功后输出生成的 `Task_ID`（如 `TASK-20261107-a1b2c3`）。
 
@@ -39,8 +42,11 @@ lah task create --to <Target_Node> [--cap/--skill <Skill_ID>] --text "<指令说
 # 让工作机 mba 执行任务（自动挑选 mba 的首选 Agent）
 lah task create --to mba --text "检查生产数据库磁盘剩余空间与连接数"
 
-# 显式指定能力（Skill_ID 取自 AgentCards，如 agy-agent）
-lah task create --to mba --cap agy-agent --text "检查磁盘剩余空间" --params '{"path":"/"}'
+# 指定由 mba 上的 agy 这个 Worker 来做（用它的通用技能 agent）
+lah task create --to mba --worker agy --text "检查磁盘剩余空间" --params '{"path":"/"}'
+
+# 指定 Worker 与专长技能（Worker、Skill_ID 都取自 AgentCards）
+lah task create --to mba --worker agy --cap ops-check --text "巡检一遍"'
 ```
 
 ### 2. 消费原路返回的结果队列 (`lah present --pop`)

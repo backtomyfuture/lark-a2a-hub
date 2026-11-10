@@ -2,12 +2,14 @@
 
 lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度多 Agent 的中台。
 本仓库只有 Node 实现：`lah`（主入口）与 `hub-node`（兼容别名）同时承载 node 与 hub 两个逻辑角色，另有中台标准文档。
-方向（标准 v3.1 §10）：hub 角色是 node 角色的单进程超集；由 `lah daemon --role node|hub` 承载。省略 `--role` 时读该配置目录 `node.json` 的 `role`，缺省 node。`role=hub` 既像普通节点一样读取 `commands.json` 登记能力接单干活，又负责全网审批发卡、结果呈递与告警，单进程单配置目录即可搞定，无需拆两个进程。下文标「计划」的项尚未实现（目前只剩 Rules 自动路由）。
+方向（标准 §10）：hub 角色是 node 角色的单进程超集；由 `lah daemon --role node|hub` 承载。省略 `--role` 时读该配置目录 `node.json` 的 `role`，缺省 node。`role=hub` 既像普通节点一样读取 `commands.json` 登记能力接单干活，又负责全网审批发卡、结果呈递与告警，单进程单配置目录即可搞定，无需拆两个进程。下文标「计划」的项尚未实现（目前只剩 Rules 自动路由）。
 
 ## 目录与职责
 
 - `bin/lah.mjs` / `bin/hub-node.mjs`：CLI 分发 `setup | daemon | doctor | service | host | task (create|reply|show|why|cancel|begin) | schedule (ls|add|rm|enable|disable|register) | present | inbox | update`（支持 `--role node|hub`；省略时 daemon / doctor / service 读 `node.json` 的 role，缺省 node）；配置目录取 `--config <dir>` > `HUB_NODE_HOME` > `~/.hub-node`（内含 `node.json` 与 `commands.json`）。
 - `src/kernel.mjs`：状态机骨架（构造、`sweepOnce`/`run` 主循环与状态迁移），唯一写任务状态的节点代码。辅助拆在 `receipt.mjs`（回执与命令模板）、`retry-state.mjs`（退避水位）、`session-store.mjs`（session.json）、`config.mjs`（配置与控制键）、`kernel-util.mjs`（日志与小工具），以及原型混入的 `kernel-direct.mjs`、`kernel-approval.mjs`、`kernel-outbox.mjs`、`kernel-metadata.mjs`。常量 `DAEMON_VERSION`、`HOP_LIMIT=8`、`MAX_RETRIES=2`、`STALE_MIN=20`（无心跳 20 分钟回收）留在本文件。写回执（result/question/notice）时 `To_Node` 原路指向发起方 `From_Node`（auth_request 除外，指向 hub）。node 与 hub 角色在扫表与事件唤醒时均通过 `PresentService` 将属于本节点发起的任务回执落入本地 `present_queue.jsonl` 原路唤醒 Agent。`context=direct` 的 json/agent 命令在 spawn 前把在途账本写到配置目录 `runs/<Task_ID>/entry.json`（不进总线）；扫表认领并 spawn 后立即返回，同一时刻只保留一条 direct 命令，结果在下一轮收口时串行写回。carrier 与 inbox 仍走同步路径。
+- `src/config.mjs`：除节点配置外，承载能力表归一（`normalizeCommands` / `resolveCapKey` / `capIdOf`，Node / Worker / Skill 三层的唯一口径）。
+- `src/approval-sign.mjs`：审批决定的 ed25519 签名与验签；hub 私钥在其配置目录 `approval_key.pem`，节点按 `node.json` 的 `hubPublicKey` 验。
 - `src/schedule-cron.mjs`：五段 cron 解析、时区墙钟转换与期次键计算纯函数（共享模块）。
 - `src/local-schedule.mjs`：节点本地定时调度服务（`LocalScheduleService`），从配置目录 `schedules.json` 读取计划，经内置分钟定时器与扫表触发，基线优先于补期，只补最近一期，建单 `submitted` 并置唤醒标志由本进程认领。
 - `src/schedule-mirror.mjs`：计划在 Rules 表的单向观察镜像（`ScheduleMirror`），只写本机行 `Rule_ID=<Node_ID>:<计划id>`，不读 Rules 触发，供全网总览页查看。
@@ -37,7 +39,7 @@ node bin/lah.mjs daemon  --config <dir> [--role node|hub]
 node bin/lah.mjs host    --config <dir>   # carrier，只能由用户在终端里启动
 node bin/lah.mjs setup   --config <dir> [--role node|hub] [--yes --base … --node … --zone … --prefix … --owner …]
 node bin/lah.mjs service --config <dir> [--role node|hub] [--remove]
-node bin/lah.mjs task create --config <dir> --to <node> --cap <cap_id> [--text <指令>] [--from <node>]
+node bin/lah.mjs task create --config <dir> --to <node> [--worker <worker>] [--cap <cap_id>] [--text <指令>] [--from <node>]
 node bin/lah.mjs task reply --config <dir> --task <Task_ID> --text <答复内容>
 node bin/lah.mjs task show <Task_ID> [--config <dir>]
 node bin/lah.mjs task why <Task_ID> [--config <dir>] [--json]
@@ -61,6 +63,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 ## 代码约定
 
 - Node >= 24，ESM `.mjs`，HTTP 只用全局 `fetch`。新增运行时依赖须有充分理由。
+- 三层寻址（标准 v3.7 §0 第 8 条、§9）：Node＝机器，Worker＝机器上的 Agent，Skill＝该 Worker 能做的一类任务。`commands.json` 根上的保留键 `workers` 定义 Worker（启动模板），其余键是 Skill：自带 `command` 的由节点本尊执行（Worker 为空），写 `workers: [...]` 的是专长技能，每个 Worker 自带通用技能 `agent`。`src/config.mjs` 的 `normalizeCommands` 把它归一成平表（能力键：节点本尊＝技能名，Worker 的能力＝`<worker>/<skill>`），内核、doctor、本地调度共用这一份；按任务取条目一律用 `kernel.capKeyOf(task)`，不要直接拿 `Skill_ID` 查 `this.commands`。任务行 `Worker_Hint` 写了是硬约束，留空由节点取默认并在认领时回填。
 - 内核是薄壳：新能力 = `commands.json` 一条模板（`command`、`mode: agent|json|inbox`（默认 agent）、`context: direct|carrier`、`timeout_sec`（默认 600）、`cwd`（默认配置目录）、`side_effect`、`cap_id`、`name`、`desc`、可选 `resume_command`（含 `{session}` 与 `{prompt}`，仅 direct 问答续跑且本机已有 session 时替换 `command`）），启动时自动登记 AgentCards。`context`、`mode` 取值非法时认领预检直接 `rejected`，不静默降级。不往内核里塞执行器或某个 Agent 的专用代码。host 节点能力来自 commands.json 的本机命令模板；agent 节点能力只有 `agent`（inbox 模式），执行主体是节点本尊，守护进程不替它拉起任何外部 Agent。
 - 读写总线一律经 `FeishuBus`，读字段用 `f1()`；写操作逐条 `await`，不对同表并发写（不用 `Promise.all` 批量写）。
 - 常驻韧性：启动期任何失败都只记日志、进主循环重试，进程不退出；能力登记成功前不处理任务。
@@ -78,7 +81,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 - 终态不可变、不可重启：终态任务不得改回非终态。后续工作在同一 `Context_ID` 下新建任务，新任务首条 instruction 消息的 `Ref_Task_IDs` 指回前任。
 - 中断态在原任务续跑：`question` 之后出现 `answer` 就在同一任务继续（`resumeCheck`），禁止为答问题新开任务。
 - 状态与消息配套：`input-required` ↔ `question`，`auth-required` ↔ `auth_request`（`Status_Msg` 指向该 Msg_ID），`completed` ↔ `result`（有产物先登记 Artifacts），`failed` / `rejected` ↔ `notice` 说明原因。
-- 审批只认 `auth_decision` 消息的 DataPart（`{"decision":"approve"}`），且须 `From_Node=hub`、`Role=user`、`In_Reply_To` 等于任务当前 `Status_Msg`，同一请求多条决定以最新一条为准；不认 TextPart 文字和任务行上的标记（标准 §8.3）。
+- 审批只认 `auth_decision` 消息的 DataPart（`{"decision":"approve"}`），且须 `From_Node=hub`、`Role=user`、`In_Reply_To` 等于任务当前 `Status_Msg`，同一请求多条决定以最新一条为准；节点配了 `hubPublicKey` 时还须带对得上的 ed25519 签名（`src/approval-sign.mjs`，hub 私钥在其配置目录 `approval_key.pem`），签名缺失或无效的决定当作不存在。取决定值一律走 `kernel.decisionForRequest`，不要另写不验签的读取路径；不认 TextPart 文字和任务行上的标记（标准 §8.3）。
 - Messages、Parts 只追加，永不修改或删除。消息正文全在 Parts（`text` / `file` / `data` 三型，按 `Seq` 拼接）；任务参数在首条 instruction 消息的 DataPart，Tasks 表不存参数。
 - ID 形态：`MSG-<任务号>-NN`、`<父ID>-P<序号>`、`<任务ID>-A<序号>`、`<任务ID>-R<序号>`。`Role` 只有 `user` / `agent`。
 - 产物修订 = 同 `Name` 的新 `Artifact_ID`；内容是 FilePart 指针，大文件本体不入表。
@@ -88,17 +91,17 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 - 跳数熔断：`Hop_Count > 8` 时只写 Runs(failed) + notice 并置 `failed`，不执行。派生子任务 `Hop_Count = 父 + 1`，累加不清零（问人也不清）。
 - 结构化回执，不猜自然语言：agent 模式只认输出中最后一个完整的 ```` ```agent-ask ```` 围栏（→ input-required），以及围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:`；json 模式只认 stdout 最后一行 JSON（`summary`、`artifact`、`artifact_name`、`need_input`，可选 `usage`、`session`、`later`），未知顶层键忽略并记日志。围栏内伪造的行不生效。`usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线，仅供同一任务问答续跑时配合本机 `resume_command` 使用；`later`（只在 completed 时生效）写入 `Tasks.Metadata.later`，由 hub 当时钟到期后在同一 `Context_ID` 新建复查任务（`Hop_Count+1`）。扩展回执语法须同时改 `buildPrompt`、`parseAgentReceipt` / `parseJsonReceipt` 与标准 §9。
-- 指令与数据分离：要执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。不得新增从任务参数或消息正文读取 command / cwd / context / Agent / 权限的路径；现存唯一例外是 `params.timeout_sec`，不要扩大。标准 §9 的 agent 输入约定已实现：`kernel.mjs` 把指令文本、参数、问答与 FilePart 写进本次执行的 `input.json`（600 权限），`buildPrompt` 只拼受信模板与该文件路径；参数带执行控制键（command / cwd / context / agent 等）由 `controlKeysIn` 检出后直接拒收。不得回退：不要再把指令文本、参数 JSON 或答复拼进 prompt，也不要放宽控制键拒收。
+- 指令与数据分离：要执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。任务行的 `Worker_Hint` 与 `Skill_ID` 只是在本机 `commands.json` 已登记能力里按名字选一项，不携带命令内容，选不中就拒收。不得新增从任务参数或消息正文读取 command / cwd / context / Agent / 权限的路径；现存唯一例外是 `params.timeout_sec`，不要扩大。标准 §9 的 agent 输入约定已实现：`kernel.mjs` 把指令文本、参数、问答与 FilePart 写进本次执行的 `input.json`（600 权限），`buildPrompt` 只拼受信模板与该文件路径；参数带执行控制键（command / cwd / context / agent 等）由 `controlKeysIn` 检出后直接拒收。不得回退：不要再把指令文本、参数 JSON 或答复拼进 prompt，也不要放宽控制键拒收。
 - 失败要响：carrier 离线时对应能力标 `Availability=offline`、任务置 `rejected` + notice，绝不静默改走直跑；守护进程只连接 carrier，从不拉起它。
 - 只出不进：不开监听端口（carrier 的 unix socket 除外）、不做端口映射或隧道。这条对 node、hub 一律适用；webhook 只指飞书自动化出站 POST（本项目不主动推送），卡片回调同样走长连接，任何角色都不提供入站端点。
 - 凭据不入仓库、不入总线、不进日志：示例只用占位符；真实值在 600 权限的 env 文件里；setup 与 doctor 不打印凭据明文。
 - 角色边界：`auth_decision` 只由 hub 角色的代码路径写。`canceled`：守护进程的 node 角色代码路径从不写；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。hub 角色可撤任意单，审批驳回仍由 hub 守护进程写 `canceled`。`kernel.mjs` 与 `inbox.mjs` 不写 `canceled`。
 - 建单顺序（hub 角色）：先写 instruction 消息与 Parts，最后写 Tasks 行；Tasks 行是触发信号。
-- 机主审批红线：对外发消息、删改数据、花钱、提交表单、改权限的动作走 `Approval_Class=approve` 与 auth-required 流程；生效级别取任务行 `Approval_Class` 与本机 `commands.json` 的 `approval_class` 下限中更严者，本地下限只收紧不放宽。hub 角色的审批回调必须校验操作者是机主。
+- 机主审批红线：对外发消息、删改数据、花钱、提交表单、改权限的动作走 `Approval_Class=approve` 与 auth-required 流程；生效级别取任务行 `Approval_Class` 与本机 `commands.json` 的 `approval_class` 下限（Worker 条目与 Skill 条目取严）中更严者，本地下限只收紧不放宽。hub 角色的审批回调必须校验操作者是机主。
 
 ## 禁止事项
 
-- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`、`schedule_state.json`、`schedule_local_state.json`、`schedules.json`、`retry_state.json`、`runs/`（在途账本、输入与命令输出），以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
+- 不要提交 `app.env`、`.hub-node/`，也不要提交配置目录里的 `approval_state.json`、`present_state.json`、`stale_state.json`、`schedule_state.json`、`schedule_local_state.json`、`schedules.json`、`retry_state.json`、`approval_key.pem`（hub 的审批签名私钥）、`runs/`（在途账本、输入与命令输出），以及真实 Base token、table_id、open_id。配置目录默认是 `~/.hub-node`，也可以是 `--config` 指向的目录。
 - 不要修改或删除 Messages / Parts 行，不要重开终态任务，不要给 Tasks 加参数列。
 - 不要让守护进程因启动期或单轮错误退出，不要吞掉错误后假装成功。
 - 不要手改 `schema/base-schema.json`、`docs/base-schema.md`。
