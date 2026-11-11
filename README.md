@@ -6,8 +6,8 @@
 零服务器、零入站端口、每一步都留痕可查。
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.7-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.8.0-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.8-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -65,6 +65,12 @@ flowchart LR
 </details>
 
 所有参与者（节点、hub、云端 bot）只做两件事：**读表、写表**。事件推送只是叫醒门铃，内容一律回表拉取，所以断线、重启都不丢活。
+
+谁来接活：
+
+![派单寻址的四级拓扑：Hub → 节点 → Worker（机器上的 Agent）→ 技能](docs/images/topology.svg)
+
+每个 Worker 是机器上的一个 Agent，也是接单的主体；技能挂在 Worker 下面。独立 Agent 节点本尊就是 Worker，确定性脚本由节点本尊直接执行。hub 也是一个节点：图中把它画成独立 Agent 节点，它同样可以是带多个 Worker 的主机节点。
 
 一个任务的生命周期：
 
@@ -155,7 +161,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 ## 能力一览
 
 - **角色合一**：hub 是 node 的单进程超集，`lah daemon --role node|hub`，单进程单目录。
-- **节点 / Worker / 技能三层**：一台机器是节点，机器上的每个 Agent 是 Worker，Worker 能做的事是技能。派单可以点名「哪台机器的哪个 Agent 用哪项技能」，也可以只点技能让节点自己挑 Worker；点了名就不会被悄悄换人。
+- **节点 / Worker / 技能三层**：一台机器是节点，机器上的每个 Agent 是 Worker，Worker 能做的事是技能。派单可以点名「哪台机器的哪个 Agent 用哪项技能」，也可以只点技能让节点自己挑 Worker；点了名就不会被悄悄换人。名册里每个 Worker 一张名片，技能挂在 Worker 下。
 - **能力即配置**：`commands.json` 一条模板接入脚本（`json` 模式）、Agent（`agent` 模式）或常驻 Agent 本尊（`inbox` 模式）。改文件即热更新名片，配置写坏时保留旧表并暂停接新单，修好自动恢复。
 - **提问与续跑**：Agent 可以中途向发起方提问（`input-required`），答复后在原任务续跑，不另开新任务；有 session 时可经 `resume_command` 续接同一会话。
 - **机主审批**：行级或本机声明为 `approve` 的任务进入 `auth-required`，由 hub 提前发卡，只认机主点击；hub 给每条决定签名，节点配了 hub 公钥后验签，冒写的决定行不生效。

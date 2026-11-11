@@ -1,6 +1,6 @@
 # 能力模板库
 
-`lah setup` 扫到本机 CLI 后，按这里的定版命令把它登记为该节点 `commands.json` 里 `workers` 下的一个 Worker（Worker 名即下面的小节名，如 `claude`、`agy`；每个 Worker 自带通用技能 `agent`，见[配置参考](configuration.md#4-commandsjson能力表)）。命令里的可执行文件会落成绝对路径，下面为了可读只写命令名。
+`lah setup` 扫到本机 CLI 后，按这里的定版命令把它登记为该节点 `commands.json` 里 `workers` 下的一个 Worker（Worker 名即下面的小节名，如 `claude`、`agy`；每个 Worker 在名册里有一张 Worker 名片（`Skill_ID=agent`，代表它的通用执行），见[配置参考](configuration.md#4-commandsjson能力表)）。命令里的可执行文件会落成绝对路径，下面为了可读只写命令名。
 
 规范性要求在 [标准 §9](standard.md)：编排型 CLI 必须显式带默认执行主体；agent 型无头 CLI 必须显式处理权限。模型 slug 只钉在节点本地，不进总线。
 

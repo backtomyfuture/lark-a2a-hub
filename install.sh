@@ -3,9 +3,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/backtomyfuture/lark-a2a-hub/main/install.sh | sh
 # 布局：~/.hub-node/ 是配置目录，~/.hub-node/app/ 是程序本体，
 #       ~/.local/bin/lah 是主命令入口（hub-node 别名向下兼容）。
-# 不在这里种 node.json / commands.json：example 里的占位符和 lan-exec
-# 会让随后的 lah setup --yes 拒绝覆盖，或让 doctor 因 carrier 离线失败。
-# 正式配置（含绝对路径 echo 种子与本地 Agent 自动扫描）由 lah setup 生成。
+# 不在这里种 node.json / commands.json：配置由 lah setup 现场生成
+# （host 把扫到的本机 Agent 登记为 Worker，kind=agent 写 inbox 模板），
+# 仓库里的 example 不拷进配置目录。
 # 重跑本脚本 = 更新程序（git pull 或重新下载），已有配置不覆盖。
 # 之后的日常更新不必重跑本脚本：lah update（或 lah update --check 先看一眼）做同样的事。
 set -eu

@@ -51,7 +51,7 @@ export {
 export { readSessionId } from "./session-store.mjs";
 export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 
-export const DAEMON_VERSION = "node-0.7.0";
+export const DAEMON_VERSION = "node-0.8.0";
 const HOP_LIMIT = 8;
 
 // 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。
@@ -635,11 +635,12 @@ export class Kernel {
     const receiveMode = receiveModeOf(this.cfg);
     const isInbox = entry?.mode === "inbox";
     const desc = isInbox ? (entry?.desc || `${this.cfg.node} 独立 Agent 本尊`) : (entry?.desc ?? "");
+    const skillName = entry?.name ?? (entry?.worker && entry?.skill === "agent" ? entry.worker : (entry?.skill || skill));
     return {
       Cap_ID: this.capIdFor(skill, entry),
       Node: this.cfg.node,
       Zone: this.cfg.zone ?? "",
-      Skill_Name: entry?.name ?? (entry?.skill || skill),
+      Skill_Name: skillName,
       Description: desc,
       Skill_ID: entry?.skill || skill,
       // 留空＝节点本尊直接执行（标准 §6）。
@@ -660,7 +661,7 @@ export class Kernel {
         kind: this.cfg.kind || "host",
         mode: entry?.mode || "agent",
         a2a: {
-          skill_name: entry?.name ?? (entry?.skill || skill),
+          skill_name: skillName,
           zone: this.cfg.zone ?? "",
           input_modes: entry?.input_modes ?? [],
           output_modes: entry?.output_modes ?? [],

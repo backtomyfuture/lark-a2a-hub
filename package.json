@@ -1,6 +1,6 @@
 {
   "name": "lark-a2a-hub",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "把飞书多维表格变成多 Agent 的调度总线：零服务器、零入站端口、每一步留痕可查",
   "bin": {
     "lah": "bin/lah.mjs",

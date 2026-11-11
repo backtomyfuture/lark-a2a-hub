@@ -37,7 +37,7 @@
 `lah setup [--kind host|agent]` 的向导会问你。
 
 - **`kind: host`（电脑宿主，默认）**：自动发现 lark-cli 应用，识别本机已装的 Agent（Claude Code、Codex、agy、Paseo、Orca 等），把它们登记为 `commands.json` 里的 Worker；守护进程认领任务后拉起本机命令干活。
-- **`kind: agent`（独立 Agent 本尊，如 Muse、常驻 Agent 容器）**：Agent 自己就是干活的人。setup 不扫描 PATH、不注册外部 CLI，只登记 `agent` 能力（`mode: inbox`）。守护进程认领任务后写入本地 `agent_inbox.jsonl` 并刷新心跳，由本尊自己接单、办完回执。
+- **`kind: agent`（独立 Agent 本尊，如 Muse、常驻 Agent 容器）**：Agent 自己就是干活的人。setup 不扫描 PATH、不注册外部 CLI，只登记一张本尊 Worker 名片 `agent`（`mode: inbox`）。要展示名就给该条目写 `name`，不要往名片 Worker 列或 `node.json` 里写名字。守护进程认领任务后写入本地 `agent_inbox.jsonl` 并刷新心跳，由本尊自己接单、办完回执。
 
 > [!IMPORTANT]
 > `kind=agent` + inbox 只适合有常驻进程、能在主循环里定期调用 `lah inbox` 的 Agent。没有常驻进程的云端外部 Agent（如 Grok Bot）不要选它，应走「协议接入型节点（`Receive_Mode=automation`）＋飞书自动化 webhook」，见 [协议节点运行手册](protocol-node-runbook.md)。飞书自动化是向外部 HTTP 端点 POST，不会读取本机收件箱，收件箱也绝不会被平台 webhook 唤醒。
@@ -80,19 +80,19 @@
 
 | Cap_ID | Worker | Skill_ID | 说明 |
 |---|---|---|---|
-| `CAP-<前缀>-agy-agent` | `agy` | `agent` | 每个 Worker 自带的通用技能，按自然语言指令现场发挥 |
+| `CAP-<前缀>-agy-agent` | `agy` | `agent` | Worker 名片：代表 Worker agy 在册及其通用执行（不是一项技能） |
 | `CAP-<前缀>-agy-ops-check` | `agy` | `ops-check` | 专长技能 |
 | `CAP-<前缀>-daily-briefing` | （空） | `daily-briefing` | 节点本尊直接执行的脚本 |
 
 规则：
 
-- **每个 Worker 自带通用技能 `agent`**，不用另写条目。独立 Agent 节点的 `agent`（`mode: inbox`）与它同名同义，只是 Worker 为空。
+- **每个 Worker 在名册里自动有一张 Worker 名片（`Skill_ID=agent`）**，代表它在册及其通用执行，不用另写条目。独立 Agent 节点的 `agent`（`mode: inbox`）就是本尊的 Worker 名片，只是 Worker 为空。
 - **专长技能**执行时，Agent 收到的受信提示里会多一行「本次任务使用技能：<Skill_ID>（<name>）。<desc>」，所以 `name` 和 `desc` 要写成 Agent 看得懂的指引。
 - **派单时指定 Worker 是硬约束**：`lah task create --to <节点> --worker agy --cap ops-check`。目标节点没有这项 Worker × Skill 就拒收，不换别的 Worker 代跑。
 - **不指定 Worker 时由节点取默认**：该技能有节点本尊的条目就用它，否则取第一个登记了该技能的 Worker（专长技能按 `workers` 数组顺序，`agent` 按 `workers` 对象的书写顺序）。认领时把选中的 Worker 回填到任务行，重试和问答续跑都钉在它上面。
 - **本机审批下限取 Worker 与 Skill 中更严者**。上例 `agy` 是 `approve`，所以 `ops-check` 即使不写也要走审批。
 - 同一条目不能同时写 `command` 和 `workers`；`workers` 里引用了没定义的 Worker、Worker 缺 `command`、Cap_ID 重复时，那一项能力不登记并记日志，`lah doctor` 也会报。
-- 没有 `workers` 键的旧配置含义不变：每个条目都是节点本尊的能力，Cap_ID 不变。重跑 `lah setup` 会把本机 Agent 改写成 Worker，旧的 `<x>-agent` 条目被 Worker `<x>` 取代，Cap_ID 仍是 `CAP-<前缀>-<x>-agent`。
+- 没有 `workers` 键的旧配置含义不变：每个条目都是节点本尊的能力，Cap_ID 不变。迁到 `workers` 的步骤见下文 [旧平表迁到 workers](#旧平表迁到-workers)。不要用重跑 `lah setup` 代替：它用默认模板覆盖旧条目，自定义的 `command`、`cwd`、`timeout_sec` 会丢。
 
 Worker 条目与节点本尊的技能条目可用的字段：
 
@@ -106,7 +106,7 @@ Worker 条目与节点本尊的技能条目可用的字段：
 | `side_effect` | 副作用等级，写进名片，如 `read` / `write` |
 | `approval_class` | 本机审批下限，只收紧不放宽。设为 `approve` 的能力执行前必走机主审批 |
 | `resume_command` | 可选，含 `{session}` 与 `{prompt}`。仅 direct 问答续跑且本机已有 session 时替换 `command` |
-| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 只对节点本尊的条目有效，可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`。计划里的 `cap` 按这个口径匹配 |
+| `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 只对节点本尊的条目有效，可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`。计划里的 `cap` 按这个口径匹配。迁到 Worker 时删掉 `cap_id`，Worker 能力不接受显式 Cap_ID。 |
 | `workers` | 仅专长技能条目：能跑这项技能的 Worker 名数组。写了它就不能写 `command` / `mode` / `context` / `cwd` / `resume_command`，这些取自 Worker |
 
 命令、目录、语境只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
@@ -117,7 +117,7 @@ Worker 条目与节点本尊的技能条目可用的字段：
 - 首次同步与 carrier 在线状态变化时也强制校准名片；写表全部成功后才更新本地缓存，写一半失败就保持上一版，下一轮补写。
 - `commands.json` 解析失败时，保留上一版有效能力表并**暂停接新单**（任务留在 `submitted`，不会因能力表被清空而被拒成 `rejected`）。修好文件后下一轮自动恢复。`lah doctor` 会检查两份配置是否合法。
 
-守护进程是薄壳，不内嵌任何执行器：确定性脚本、Worker 的专长技能、Worker 的通用技能，都只是这个文件里的模板。
+守护进程是薄壳，不内嵌任何执行器：确定性脚本、Worker 的专长技能、Worker 的通用执行，都只是这个文件里的模板。
 
 ### 回执约定（摘要）
 
@@ -126,6 +126,71 @@ Worker 条目与节点本尊的技能条目可用的字段：
 - **agent 模式**：最后一个完整的 ```` ```agent-ask ```` 围栏表示提问（任务转 `input-required`）；围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` 分别表示产物、用量、会话、预约复查。围栏内伪造的行不生效。
 - **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`，可选 `usage`、`session`、`later`。未知顶层键忽略并记日志。
 - `usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线；`later` 在任务完成时生效，由 hub 到点在同一 `Context_ID` 新建复查任务。
+
+### 旧平表迁到 workers
+
+早期配置把 Agent 写成自带 `command` 的顶层条目（如 `agy-agent`）。这种条目按规则是节点本尊的技能，名片的 Worker 列为空，在名册上看不出它是一个 Worker。迁到 `workers` 后，它与独立 Agent 节点的名片口径一致。
+
+**适用对象**：`commands.json` 里没有 `workers` 键、Agent 直接写成自带 `command` 的顶层条目的节点。独立 Agent 节点（`kind: agent`）和手工登记名片的协议节点不用迁，它们本来就是「本尊即 Worker」。确定性脚本（`mode: json`）也不用动，它本来就是节点本尊技能。
+
+**升级顺序**：先升级 hub，再升级所有会发单的机器（包括装了 lah Skill 的 Agent 所在机器），最后才改节点的 `commands.json`。可以在名册的 `Daemon_Version` 列确认各节点是否都已是 `node-0.8.0` 或更高。只装了 lah CLI / Skill 用来发单的机器不在名册里，在那台机器上用 `lah -v` 自查。原因：
+
+- 旧版守护进程不认识 `workers`，会把它当成一项名叫 `workers` 的能力登记，并把原来的卡置为停派；
+- 旧版发单方用 `--cap CAP-<前缀>-<x>-agent` 时会丢掉 Worker，任务落到节点的默认 Worker（`workers` 里写在最前的那个）；
+- 旧版 hub 做 later 复查时同样不继承 Worker。
+
+**步骤**：
+
+1. **升级本机守护进程**：`lah update`，按平时的方式重启守护进程。跑 `lah doctor --config <dir>`，能看到「N 个 Worker、M 项技能」这样的分组输出和针对旧条目的迁移提示，说明已是新代码。更直接的判断是版本号：`lah -v` 应打印 `node-0.8.0` 或更高；守护进程重启后，名册（AgentCards）里本节点名片的 `Daemon_Version` 也会是这个值。
+2. **清空在途任务**：`lah inventory --config <dir>` 确认本节点没有 `submitted`、`working`、`input-required`、`auth-required` 的任务，有就等它们结束、答复或撤掉。不清空的后果：以旧 Skill_ID 寻址的任务迁移后会被拒收并带 notice（不会静默跑错），但会白丢一次执行或一轮问答。另外到 Base 的 Tasks 表看一下有没有目标是本节点、已 `completed`、`Metadata` 里有 `later` 但还没有 `later_fired` 的任务，有就等它触发后再迁，否则 hub 会因为找不到旧 Skill_ID 而一直建单失败。
+3. **备份**：`cp <dir>/commands.json <dir>/commands.json.bak`。
+4. **改写 `commands.json`**，改前改后如下（只用占位命令）。
+
+   改前：
+
+   ```json
+   {
+     "agy-agent":   { "command": "<agy 无头命令> {prompt}",   "mode": "agent", "cap_id": "CAP-<前缀>-agy-agent",
+                      "name": "<名称>", "desc": "<说明>", "approval_class": "approve", "timeout_sec": 900 },
+     "paseo-agent": { "command": "<paseo 无头命令> {prompt}", "mode": "agent", "cap_id": "CAP-<前缀>-paseo-agent",
+                      "name": "<名称>", "desc": "<说明>", "approval_class": "approve", "timeout_sec": 900 }
+   }
+   ```
+
+   改后：
+
+   ```json
+   {
+     "workers": {
+       "agy":   { "command": "<agy 无头命令> {prompt}",   "mode": "agent",
+                  "name": "<名称>", "desc": "<说明>", "approval_class": "approve", "timeout_sec": 900 },
+       "paseo": { "command": "<paseo 无头命令> {prompt}", "mode": "agent",
+                  "name": "<名称>", "desc": "<说明>", "approval_class": "approve", "timeout_sec": 900 }
+     }
+   }
+   ```
+
+   字段对照：`command`、`resume_command`、`mode`、`context`、`cwd`、`timeout_sec`、`approval_class`、`side_effect`、`name`、`desc` 原样搬进 Worker 条目；删掉 `cap_id`。旧条目必须删掉，不能和同名 Worker 并存（两者 Cap_ID 相同，Worker 名片会登记不上）。
+
+5. **自检**：`lah doctor --config <dir>` 不再有迁移提示，能看到 `Worker agy`、`Worker paseo` 两行，本地计划全部正常。
+6. **确认名片**：守护进程会热加载新配置，不用重启。`lah inventory --config <dir>` 应看到 `CAP-<前缀>-agy-agent` 这张卡变成 `Worker=agy`、`Skill=agent`、`Dispatchable=Yes`，没有新增的行，也没有被置停派的行。
+7. **冒烟**：从任意已升级的机器 `lah task create --to <节点> --worker agy --text "回一句 ok"`，再 `lah task why <ID>` 确认 `Worker_Hint=agy`。
+8. **改派单习惯**：`--cap agy-agent` 会在写表前报「未登记能力」，改用 `--worker agy`；`--cap CAP-<前缀>-agy-agent` 和只写 `--to <节点>` 的自动挑选照常可用。
+
+**迁移前后对照**：
+
+| | 迁移前 | 迁移后 |
+|---|---|---|
+| Skill_ID | `agy-agent` | `agent` |
+| Worker | 空 | `agy` |
+| 能力键 | `agy-agent` | `agy/agent` |
+| Cap_ID | `CAP-<前缀>-agy-agent` | `CAP-<前缀>-agy-agent`（旧键恰好是 `<W>-agent` 形式时不变） |
+
+**Cap_ID 规律**：旧键不是 `<x>-agent` 形式的（比如键叫 `claude`、`cap_id` 是 `CAP-<前缀>-claude`），迁移后 Cap_ID 变为 `CAP-<前缀>-claude-agent`；旧卡由对账自动置 `Dispatchable=No`，引用旧 Cap_ID 的 `schedules.json` 要同步改 `cap`。
+
+**用某个 Agent 跑的专门任务**（比如旧平表里一个用 agy 跑的 `ops` 条目）：迁成专长技能 `"ops": { "workers": ["agy"], "name": "<名称>", "desc": "<说明>" }`，Cap_ID 变为 `CAP-<前缀>-agy-ops`，`--cap ops` 照样能用。确定性脚本（`mode: json`）不用动，它本来就是节点本尊技能。
+
+**回滚**：把备份拷回去，守护进程热加载后名片原地改回。回滚前同样要先清空在途任务。
 
 ## 5. carrier：需要局域网的能力（macOS）
 

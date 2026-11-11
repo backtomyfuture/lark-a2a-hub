@@ -62,10 +62,12 @@ function stricterApproval(a, b) {
 
 function workerSkillEntry(workerEntry, skillEntry, worker, skill) {
   const merged = { ...workerEntry };
-  // 名称与说明是技能的属性。专长技能没写就留空，不借 Worker 的名字冒充。
+  // Worker 名片代表 Worker 本身，名称说明默认取 Worker；显式 agent 条目写了才覆盖；专长技能不借 Worker 的名字。
   if (skillEntry) {
-    delete merged.name;
-    delete merged.desc;
+    if (skill !== "agent") {
+      delete merged.name;
+      delete merged.desc;
+    }
     for (const [k, v] of Object.entries(skillEntry)) {
       if (!LAUNCH_KEYS.has(k) && k !== "approval_class") merged[k] = v;
     }
@@ -119,7 +121,7 @@ export function normalizeCommands(raw, onProblem = () => {}) {
       out[capKey(name, key)] = workerSkillEntry(workers[name], entry, name, key);
     }
   }
-  // 每个 Worker 自带通用技能 agent。条目里显式列过的不重复生成，顺序以显式的为先。
+  // 每个 Worker 自带一项通用执行 agent（名册里就是它的 Worker 名片，标准 v3.8 §6）。条目里显式列过的不重复生成，顺序以显式的为先。
   for (const [name, w] of Object.entries(workers)) {
     const key = capKey(name, "agent");
     if (!out[key]) out[key] = workerSkillEntry(w, null, name, "agent");

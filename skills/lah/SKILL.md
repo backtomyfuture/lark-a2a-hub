@@ -31,9 +31,10 @@ lah task create --to <Target_Node> [--worker <Worker>] [--cap/--skill <Skill_ID>
 ```
 - 默认以本机节点名作为 `From_Node` 与 `Source`；
 - 寻址是三层：节点（`--to`）、Worker（`--worker`，节点上的某个 Agent）、技能（`--cap`）。名片一行就是「节点 × Worker × 技能」，Worker 为空表示节点本尊直接执行；
-- `--worker` 是硬约束：目标节点没有这个 Worker 或它不会这项技能，建单直接报错。只给 `--worker` 不给 `--cap` 时用该 Worker 的通用技能 `agent`；
+- `--worker` 是硬约束：目标节点没有这个 Worker 或它不会这项技能，建单直接报错。只给 `--worker` 不给 `--cap` 时用该 Worker 名片（通用执行）；
 - `--worker` 可省略：按技能名派单时由目标节点取默认 Worker；
-- `--cap`（或 `--skill`）可省略：系统会自动从目标节点的 `AgentCards` 中挑选首选通用能力（技能 `agent`）；
+- `--cap`（或 `--skill`）可省略：系统会自动挑选首选 Worker 名片（`AgentCards` 中该节点 `Skill_ID=agent` 的行）；
+- 目标节点迁到 `workers` 后，旧写法 `--cap <x>-agent` 会被拒，改用 `--worker <x>`；`--cap CAP-<前缀>-<x>-agent` 仍有效；
 - 若直接指定已知的 `CAP-...`，甚至可省略 `--to`（自动反查归属节点）；
 - 命令成功后输出生成的 `Task_ID`（如 `TASK-20261107-a1b2c3`）。
 
@@ -42,7 +43,7 @@ lah task create --to <Target_Node> [--worker <Worker>] [--cap/--skill <Skill_ID>
 # 让工作机 mba 执行任务（自动挑选 mba 的首选 Agent）
 lah task create --to mba --text "检查生产数据库磁盘剩余空间与连接数"
 
-# 指定由 mba 上的 agy 这个 Worker 来做（用它的通用技能 agent）
+# 指定由 mba 上的 agy 这个 Worker 来做（走它的 Worker 名片：通用执行）
 lah task create --to mba --worker agy --text "检查磁盘剩余空间" --params '{"path":"/"}'
 
 # 指定 Worker 与专长技能（Worker、Skill_ID 都取自 AgentCards）

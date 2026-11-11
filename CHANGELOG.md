@@ -1,9 +1,19 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.7）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.8）。
 
 ## [未发布]
+
+## [0.8.0] - 2026-11-11（中台标准 v3.7 与 v3.8：三层寻址、审批决定签名、国际版 Lark 与 Worker 名片）
+
+中台标准现行 v3.8。`DAEMON_VERSION` 为 `node-0.8.0`。
+
+- **Worker 名片（标准 v3.8）**：名册里 `Skill_ID=agent` 的行是 Worker 名片，代表该 Worker 在册及其通用执行，不是一项技能；Worker 的专长技能各占一行，挂在它的名片下。判定规则只看 `Node`、`Worker`、`Skill_ID` 三列，不读 Metadata。表结构不变，登记哪些行、怎么寻址都不变；只有 Worker 名片的名称说明口径有调整（见下文），升级后对账会原地更新一次这些字段。
+  - `lah doctor` 按 Worker 分组展示本机能力；对旧平表里本尊执行的 Agent 条目（无 `workers` 键、自带 `command` 且 `mode=agent`）给出迁移提示，提示指向 `docs/configuration.md` 的「旧平表迁到 workers」。
+  - Worker 名片的名称说明默认取 Worker 条目的 `name` / `desc`，`Skill_Name` 缺省为 Worker 名。此前缺省是 `agent`，且显式写的 `agent` 条目会吞掉 Worker 的名称说明。
+  - 没有采用「通用能力不登记名片」的做法：名册一旦失去 Worker 这一事实，本地计划、later 复查、自动挑选和只有 Worker 的节点的 `--to` 校验都会断。
+  - 顺带更正标准 §10.5 中重复 Cap_ID 的表述，与 §6、§9 及实现一致：重复时后一项不登记并记日志。行为未变，只是改正了文字。
 
 - **读表分页 100 → 500**：整表扫描的请求数少五分之四。实测（2026-11-10，各表一两百行）带过滤条件的列表读取比整表读取慢（1.0–1.5 秒对 0.6 秒），因此没有改成服务端过滤；归档工具仍未实现，`docs/architecture.md` 改为如实说明。
 - **审批决定签名（标准 v3.7 §8.3 第 5 条）**：此前节点只校验决定行上自报的 `From_Node=hub`、`Role=user`，任何能写总线的身份都能冒写批准。现在 hub 用本机 ed25519 私钥（配置目录 `approval_key.pem`，600，首次启动自动生成）给每条 `auth_decision` 签名，签名绑定 Task_ID、审批请求的 Msg_ID 与决定值；节点在 `node.json` 配了 `hubPublicKey` 后验签，签名缺失或无效的决定当作不存在，也不参与「最新一条」的比较。hub 自己认领任务时同样验签。`lah setup --role hub` 打印公钥，`lah setup --hub-key <公钥>` 写入节点，`lah doctor` 对未配置公钥的节点给出告警。没配公钥的节点行为不变。新增 `SECURITY.md` 写明信任模型与签名管不到的地方（hub 同机 Agent 读得到私钥、任务行 `Approval_Class` 可被改松）。
@@ -20,11 +30,13 @@
 
 - **修复：老格式 `commands.json` 无法添加本地计划**：`lah schedule add`、本地调度服务与 `lah doctor` 的 cap 校验只认条目里的 `cap_id` 字段，而存量配置没有这个字段（名片 Cap_ID 一直由内核按 `CAP-<capPrefix>-<技能名>` 兜底登记），导致能力集合为空、任何计划都被拒收。现改为内核登记与三处校验共用 `config.mjs` 的 `capIdOf` / `capIdsOf`：`cap_id` 优先，缺省按 `CAP-<capPrefix>-<技能名>` 兜底（`capPrefix` 缺省取 `node`）。无需改 `commands.json`，也不改变已登记的名片。
 
-### 未发布部分的迁移提示
+### 迁移提示
 
 - **先改表再升级**：自建 Base 先加 `AgentCards.Worker`（文本）、把 `Tasks.Worker_Hint` 改成文本，再升级守护进程；否则新版登记名片会因缺列失败。
 - **审批签名先 hub 后节点**：先升级 hub（它开始签名，旧节点会忽略多出来的字段），再给各节点配 `hubPublicKey`。顺序反了，节点会把旧 hub 写的无签名决定全部当作无效。
 - **Worker 改写可选**：旧的扁平 `commands.json` 不改也能跑。重跑 `lah setup` 才会把本机 Agent 改写成 Worker；改写后按技能名 `--cap <x>-agent` 派单要换成 `--worker <x>`，按 Cap_ID 派单与本地计划不受影响。
+- **先升级守护进程再迁 `commands.json`**：旧版守护进程不认识 `workers` 键，会把它当成一项能力登记。
+- **先升级 hub 和会发单的机器，再迁节点配置**：旧版发单方与 hub 不继承 Worker，迁移前后的派单会落到错的 Worker。迁移步骤见 `docs/configuration.md` 的「旧平表迁到 workers」。
 
 ## [0.7.0] - 2026-11-09（中台标准 v3.6：节点本地定时调度、双时钟与 Rules 观察镜像）
 
