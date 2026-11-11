@@ -278,7 +278,7 @@ export async function createTask({
       }
     }
 
-    // 只点了 Worker 没点技能：取该 Worker 的通用技能 agent。
+    // 只点了 Worker 没点技能：取该 Worker 的名片（通用执行 agent）。
     if (!skill && rawWorker) skill = "agent";
 
     // 2. 若未提供 cap 但提供了 to（目标节点）：自动挑选该节点的首选技能。
