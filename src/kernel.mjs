@@ -12,7 +12,7 @@ import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
 import { createTask } from "./hub/create.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
-import { TERMINAL_STATUSES, annotateElapsed, approvalRank, log, nowStr } from "./kernel-util.mjs";
+import { TERMINAL_STATUSES, annotateElapsed, approvalRank, formatStats, log, nowStr } from "./kernel-util.mjs";
 import { approvalMethods } from "./kernel-approval.mjs";
 import { directMethods } from "./kernel-direct.mjs";
 import { metadataMethods } from "./kernel-metadata.mjs";
@@ -51,7 +51,7 @@ export {
 export { readSessionId } from "./session-store.mjs";
 export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 
-export const DAEMON_VERSION = "node-0.8.0";
+export const DAEMON_VERSION = "node-0.8.1";
 const HOP_LIMIT = 8;
 
 // 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。
@@ -63,7 +63,20 @@ function msUntilNextMinute(nowMs) {
   return rem === 0 ? 60_000 : 60_000 - rem;
 }
 const MAX_RETRIES = 2;
-const STALE_MIN = 20;
+// 节点本地回收与 hub 陈旧告警共用这一分钟数，必须与 src/hub/stale.mjs 的 STALE_MIN 相等
+// （相等，不是小于）。hub 真正收成 failed 还要再加宽限 STALE_GRACE_MIN。
+export const STALE_MIN = 20;
+// 扫表路径写 Heartbeat_At 的最小间隔。每次写 Tasks 都会触发记录变更事件，把全网叫醒再扫一轮；
+// inbox 保活和 direct 在途续心跳若每轮无条件写，就会变成「写 → 事件 → 扫表 → 再写」的自激。
+// 不等式：HEARTBEAT_MIN_SEC ＋ 对账周期 900 ＋ 扫表耗时，必须严格小于 20 分钟（1200 秒）。
+// 90 是本常量。900 是两次扫表的最长间隔：ws 的 waitWake 上限是 sweepSec，lah setup 固定写 900
+// （src/transport/ws.mjs、src/setup.mjs），poll 的 pollSec 同样被限制不超过 900，hub 固定用 sweepSec，
+// 外部 lah reconcile 也按 15 分钟。90＋900＝990，1200－990＝210 秒是留给扫表耗时的余量。
+// 扫表是串行的，中间可能夹着退避，耗时没有硬上界；210 秒只是余量，不是上界。
+// 一轮超过 210 秒时，最不利的时序仍可能让 hub 看到超过 20 分钟的心跳。
+// direct 与同步路径的定时心跳是 60 秒，必须 ≤ HEARTBEAT_MIN_SEC，否则命令还在跑时扫表路径也会写。
+// 若把 sweepSec 调到 900 以上，这条不等式不再成立。
+export const HEARTBEAT_MIN_SEC = 90;
 
 export class Kernel {
   constructor(cfg) {
@@ -825,6 +838,17 @@ export class Kernel {
     }
   }
 
+  // 用行上已有的 Heartbeat_At，不再为判断多读一次。解析不了、或时钟回拨成负年龄，都当成该写。
+  heartbeatDue(row) {
+    const raw = String(f1(row, "Heartbeat_At") ?? "").trim();
+    if (!raw) return true;
+    const ts = Date.parse(raw);
+    if (Number.isNaN(ts)) return true;
+    const age = Date.now() - ts;
+    if (age < 0) return true;
+    return age >= HEARTBEAT_MIN_SEC * 1000;
+  }
+
   async reclaimStale() {
     for (const t of await this.bus.listRecords(this.T.tasks)) {
       if (f1(t, "Status") === "working" && f1(t, "Claimed_By") === this.cfg.node) {
@@ -856,8 +880,8 @@ export class Kernel {
               if (ok) this.clearRetry(taskId);
               markInboxStatus(this.cfg.configDir, taskId, "failed", { reason: "timeout" });
               log(`inbox task timed out and marked failed: ${taskId}`);
-            } else {
-              // 未超时：刷新 Heartbeat_At 保活，避免 20 分钟租约回收
+            } else if (this.heartbeatDue(current)) {
+              // 未超时才保活，避免 20 分钟租约回收。不够最小间隔就不写，否则每轮扫表都叫醒全网。
               await this.bus.updateRecord(this.T.tasks, current.record_id, { Heartbeat_At: nowStr() });
               log(`inbox heartbeat refreshed: ${taskId}`);
             }
@@ -1293,6 +1317,18 @@ export class Kernel {
   }
 
   async sweepOnce() {
+    const t0 = Date.now();
+    let ok = false;
+    try {
+      await this._sweepBody();
+      ok = true;
+    } finally {
+      // 成功、提前 return、抛错都留一行。计数在这里清零，所以这一行只覆盖本轮。
+      log(formatStats("sweep end", Date.now() - t0, ok, this.bus.takeStats?.()));
+    }
+  }
+
+  async _sweepBody() {
     // 上一轮的消息索引不能带到这一轮，否则看不到别人刚写的行。
     this._round = null;
     // 心跳间隔回调若已经发出写请求，先等它落定，再开始本轮的表写入。

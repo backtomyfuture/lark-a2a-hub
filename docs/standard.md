@@ -251,20 +251,32 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - 建单靠 Idempotency_Key、消息靠 Msg_ID、认领靠 Claimed_By＋心跳回收（20 分钟无心跳视为放弃）——沿 v1。
 - **Idempotency_Key 语义**：同一 Idempotency_Key 在状态非 failed/canceled 的任务中只执行一次。节点认领前查重：已有同键任务处于其他任一状态（含进行中、中断态、completed、rejected）的，新任务置 rejected＋notice，notice 写明原任务的 Task_ID 并以 Ref_Task_IDs 指向它；同键任务全部为 failed/canceled 时可以执行。Idempotency_Key 为空的任务不查重。同键多单的执行者以先被目标守护进程处理到的那一单为准，不保证与建单顺序一致。客户端用同一 Idempotency_Key 重试必须保证指令文本一致；同键不同文本视为客户端错误，执行结果不作保证。
 - **心跳回收计入重试**：working 任务超过 20 分钟无心跳即回收，每回收一次 Retry_Count 加一，与执行失败共用 §4 的重试上限；未达上限回 submitted 重认领，已达上限则 Status=failed＋Messages 写 notice 说明（Runs 记 failed），不再回收为 submitted。本节点 direct 在途账本仍可能对应活进程（进程组还在，或无法确认已死）时，不得按本条送回 submitted，只续心跳，规则见 §4。
-- 同表写接口不支持并发：一切写操作串行＋退避重试；Messages 只追加不修改，天然避开大半写冲突。
+- **心跳写入有最小间隔**：不得每轮扫表无条件写（每次写都会触发全网记录变更事件）；写心跳的最坏间隔（最小间隔＋两次扫表的最长间隔＋扫表耗时）必须严格小于 20 分钟。本实现最小间隔 90 秒：加上对账周期 900 秒是 990 秒，距 20 分钟还剩 210 秒留给扫表耗时。扫表耗时没有硬上界，210 秒只是余量。
+- 同表写接口不支持并发：一切写操作串行＋退避重试。退避码：HTTP 429/5xx、`1254290`（请求过快）、`1254291`（同表写冲突）；HTTP 429 且响应体 `99991403`（月度调用量超限）不重试，明确报出。Messages 只追加不修改，天然避开大半写冲突。
 
 ### 8.5 通知与呈递
 
 **附则（automation 唤醒型节点，2026-11-04 P3 实测补充）**：某些 automation 型节点目前只有「Tasks 表新增记录」才能唤醒，Messages 新增唤不醒它。在 Messages 表自动化（新增记录→调其 webhook）就绪前，枢纽给这类节点的 answer 采取双写：Messages 写正文，另建一条轻量 Tasks 信号行（新任务形态、标题注明「答复信号」并指向 Msg_ID 与原 Task_ID）仅作唤醒，信号行不承载内容、接收方勿当新任务执行。自动化就绪后本附则自动失效。
 
 - 通知只报「哪个任务、什么新状态、哪条新消息」，内容由接收方回表拉全量（沿 A2A Push 语义）。
-- **结果呈递原路落盘唤醒 Agent，飞书端只发审批卡**：
+- **结果呈递原路落盘到发起方本机队列，由本机 Agent 经 `lah present`（可 `--wait` 阻塞等待）取走，飞书端只发审批卡**：
   - 飞书端只由 `role=hub` 发送 `auth-required` 交互式审批卡（以及可选的 `stale` 告警），不再往飞书发送大段纯文本结果刷屏。
-  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。
+  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。队列的追加与 `lah present --pop` 经同一把锁文件互斥，`--wait` 只读本机文件、不访问总线；队列文件格式不变。
   - 归属与过滤：节点发起的定时任务（`From_Node` 为本节点、`Source=cron`）由本节点收入其 `present_queue.jsonl` 原路呈递；`role=hub` 的主节点仅接收发起方为空、为 `"hub"`、或发起方字面为 `"cron"` 的任务结果，不再因 `Source=cron` 截留其他节点发起的任务。
 - **呈递去重**按「任务＋当前 Status_Msg」即 (Task_ID, Status_Msg) 计，终态再带上 Status。同一任务每出现一条新的 question / auth_request 都是新的呈递项，答复续跑或批准后到达的终态结果也要再呈递一次。已呈递的 Msg_ID 记在 Tasks.Metadata；Presented 列自 v3.5 起废弃（其信息与 presented_keys 重复），不再作为去重依据，代码切换后删列。对 Tasks.Metadata 的写入一律先读再合并（总线无 CAS，整段覆盖会互相吞键）。初次装机或初次启动时，若本地呈递状态不存在，自动以线上存量终态或已呈递任务建立装机水位线（Baseline），避免向本地队列倾倒全部历史已完成任务。
 
 ## 修订记录
+
+**v3.8 补订（2026-11-12，表结构不变）**：
+- 动机：扫表路径若每轮无条件写 `Heartbeat_At`，写操作会触发记录变更事件，形成「写 → 事件 → 扫表 → 再写」；结果落进本机队列后没有东西通知正在等待的会话；日志里看不见每轮扫表打了多少飞书请求、耗时多少、有没有退避。
+- 心跳：§8.4 规定写心跳有最小间隔。最坏间隔（最小间隔＋两次扫表的最长间隔＋扫表耗时）必须严格小于 20 分钟。本实现最小间隔 90 秒，对账周期按 900 秒，二者相加 990 秒，距 20 分钟剩 210 秒留给扫表耗时。扫表耗时没有硬上界。60 秒定时心跳不套这个间隔。
+- 呈递：§8.5 更正「落盘即唤醒会话」。队列只落盘，由本机 Agent 经 `lah present`（可 `--wait`）取走。追加与 `--pop` 经同一把锁互斥，`--wait` 只读本机文件。§10.4 补同步等待的用法。
+- 限流：§8.4 写明退避码。HTTP 429 且响应体 `99991403` 不重试。每轮请求数与耗时记在实现日志里，不进标准。
+- 否决的做法：
+  - 心跳最小间隔取 300 秒。300＋900 已经顶到 20 分钟，再加扫表耗时就越线。
+  - 用 rename 快照修 `--pop` 的「先读后清空」。并发下仍会丢条目，改为守护进程追加与 `--pop` 共用锁文件。
+  - `--wait` 盯门铃或用 `fs.watch`。门铃晚于队列落盘，`--pop` 改写后大小和 mtime 也不好跟旧值区分。改为按队列文件的 `(ino, size, mtimeMs)` 轮询。
+  - 统计日志只在异常时输出。空闲扫表也有列表请求，省掉正常行就看不到耗时分布。
 
 **v3.8（2026-11-11，Worker 名片）**：
 - 动机：总览把 Agent 画在了技能层，名册对「哪一行代表 Worker」没有成文口径。
@@ -442,7 +454,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
        - **区分提问（ask）与失败（fail）**：Agent 若因缺少必要信息、需要机主确认或参数模糊而暂时无法继续，应使用 `lah inbox ask` 转入 `input-required` 等待答复续跑，而不是使用 `fail`；一旦调用 `fail`，任务进入不可逆终态（A2A 终态不可变，禁止重开）。若发起方想在失败后调整要求重新尝试，必须在同一 `Context_ID` 下新建任务，新任务首条 instruction 的 `Ref_Task_IDs` 指回原任务；
        - **超时未处理**：若任务进入 inbox 后超过 `inbox_timeout_sec`（缺省 86400 秒）未被 Agent 本尊处理，守护进程负责超时关账，直接将任务置为 `failed` 并写 `notice`「本尊超时未处理」，Runs 记 `failed`，同样不计入重试；
      - 发起方答复后，中台自动将任务重新放回本地 inbox（状态变回 `pending`，追加最新 answer），本尊即可续跑。
-   - **双向对称**：作为发起方时，结果仍经 `present_queue.jsonl` 原路返回；独立 Agent 节点只需在交互开头跑 `lah present --pop`（收自己派出去的结果）和 `lah inbox --pop`（接派给自己的活）。
+   - **双向对称**：作为发起方时，结果仍经 `present_queue.jsonl` 原路返回；独立 Agent 节点只需在交互开头跑 `lah present --pop`（收自己派出去的结果）和 `lah inbox --pop`（接派给自己的活）。需要同步等结果时用 `lah present --wait <秒> --task <Task_ID> --pop`。
 
 ### 10.5 本地配置损坏的降级语义（表结构不变）
 

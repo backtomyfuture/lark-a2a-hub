@@ -6,7 +6,7 @@
 零服务器、零入站端口、每一步都留痕可查。
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.8.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.1-orange.svg)](CHANGELOG.md)
 [![Standard](https://img.shields.io/badge/standard-v3.8-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

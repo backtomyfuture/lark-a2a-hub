@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "../bus/feishu.mjs";
+import { appendQueueItem } from "../present-queue.mjs";
 import { messageText } from "./cards.mjs";
 
 const PRESENT_STATUSES = new Set([
@@ -165,7 +166,7 @@ export class PresentService {
     this.queuePath = queuePath || (statePath ? path.join(path.dirname(statePath), "present_queue.jsonl") : null);
     // 呈递门铃：本轮有新回执落盘时更新此文件（mtime 即信号），供本机 Agent 的
     // hook/轮询低成本感知「有新结果」，不必反复全量读队列。队列仍是真相，门铃
-    // 丢了只退化为下次主动 pop 时发现，不丢数据。
+    // 丢了只退化为下次主动 pop 时发现，不丢数据。lah present --wait 不依赖它，直接轮询队列。
     this.bellPath = statePath ? path.join(path.dirname(statePath), "present_bell") : null;
     this._phantomWarned = new Set();
     this.log = log ?? (() => {});
@@ -289,8 +290,8 @@ export class PresentService {
       };
 
       try {
-        fs.mkdirSync(path.dirname(this.queuePath), { recursive: true });
-        fs.appendFileSync(this.queuePath, JSON.stringify(queueItem) + "\n", { mode: 0o600 });
+        // 拿不到锁就抛错，落到下面的日志并 continue：不记入已呈递，下一轮再试，不丢也不重。
+        await appendQueueItem(this.queuePath, queueItem);
       } catch (e) {
         this.log(`写入 present_queue 失败 ${item.taskId}：${e?.message ?? e}`);
         continue;

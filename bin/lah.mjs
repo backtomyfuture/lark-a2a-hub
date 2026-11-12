@@ -622,25 +622,8 @@ if (cmd === "setup") {
     }
   }
 } else if (cmd === "present") {
-  const isPop = rest.includes("--pop");
-  const configDir = configDirFrom(rest);
-  const queuePath = path.join(configDir, "present_queue.jsonl");
-  try {
-    if (!fs.existsSync(queuePath)) {
-      process.exitCode = 0;
-    } else {
-      const content = fs.readFileSync(queuePath, "utf8");
-      if (isPop) {
-        fs.writeFileSync(queuePath, "", { mode: 0o600 });
-      }
-      if (content.trim()) {
-        process.stdout.write(content);
-      }
-    }
-  } catch (e) {
-    console.error("读取 present_queue.jsonl 失败：" + (e?.message ?? e));
-    process.exitCode = 1;
-  }
+  const { handlePresentCli } = await import("../src/present-queue.mjs");
+  process.exitCode = await handlePresentCli(rest, { configDir: configDirFrom(rest) });
 } else if (cmd === "schedule") {
   const { handleScheduleCli } = await import("../src/schedule-cli.mjs");
   process.exitCode = await handleScheduleCli(rest, { configDir: configDirFrom(rest) });
@@ -680,5 +663,5 @@ if (cmd === "setup") {
   lah schedule enable <id> [--config <dir>]  启用本机计划
   lah schedule disable <id> [--config <dir>]  停用本机计划
   lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>]  登记 Agent 观察镜像（不写本机计划）
-  lah present     [--pop]  读取本机结果呈递队列（--pop 同时清空）`);
+  lah present [--pop] [--task <Task_ID>] [--wait <秒>]  读取本机结果呈递队列；--wait 阻塞到出现匹配回执（超时退出码 2）；--pop 只移除本次输出的条目`);
 }
