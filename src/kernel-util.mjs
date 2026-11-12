@@ -58,6 +58,16 @@ export function nowStr() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}${sign}${oh}`;
 }
 
+// 一行 key=value、值里没有空格，方便按天 awk 相加。ms 不取整：调用方传入的就是要打印的数。
+// stats 缺席（总线没有 takeStats）时不补 0，避免把「没计数」写成「零请求」。
+export function formatStats(label, ms, ok, stats) {
+  let line = `${label} ms=${ms} ok=${ok ? 1 : 0}`;
+  if (stats) {
+    line += ` list=${stats.list ?? 0} get=${stats.get ?? 0} write=${stats.write ?? 0} other=${stats.other ?? 0} backoff=${stats.backoff ?? 0}`;
+  }
+  return line;
+}
+
 // Created_At 一律写 nowStr() 的完整 ISO（带时区偏移）：各节点时区不同，
 // 无偏移的本地时间文本混写会让同一任务里回复看起来比请求还早（会审实证）。
 

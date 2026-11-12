@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Kernel } from "../kernel.mjs";
+import { formatStats } from "../kernel-util.mjs";
 import { ApprovalService } from "./approval.mjs";
 import { PresentService } from "./present.mjs";
 import { StaleService } from "./stale.mjs";
@@ -92,7 +93,7 @@ export async function hubDoctor(configDir) {
       bad("结果呈递模块不可用");
       problems++;
     } else {
-      ok("结果呈递：归属于本节点或主节点的任务回执（completed / failed / rejected / input-required）写入 present_queue.jsonl 原路唤醒 Agent，去重键记在 present_state.json 与线上 Metadata");
+      ok("结果呈递：归属于本节点或主节点的任务回执（completed / failed / rejected / input-required）写入 present_queue.jsonl，由本机 Agent 经 lah present（可 --wait）取走，去重键记在 present_state.json 与线上 Metadata");
     }
     if (typeof stale.StaleService !== "function") {
       bad("陈旧告警模块不可用");
@@ -339,6 +340,28 @@ export class HubRuntime {
     }
   }
 
+  // 四段分开记，这样某一段失败仍能看出另外三段发了多少请求。
+  // kernel 的扫表由 Kernel.sweepOnce 自己打 sweep end，这里不再加一行。
+  async scanSections() {
+    for (const [name, job] of [
+      ["approval", () => this.approval?.scan()],
+      ["present", () => this.present?.scan()],
+      ["stale", () => this.stale?.scan()],
+      ["schedule", () => this.schedule?.scan()],
+    ]) {
+      const t0 = Date.now();
+      let ok = false;
+      try {
+        await job();
+        ok = true;
+      } catch (e) {
+        this.log(name + " scan failed: " + (e?.message ?? e));
+      } finally {
+        this.log(formatStats(`scan ${name}`, Date.now() - t0, ok, this.cfg.bus?.takeStats?.()));
+      }
+    }
+  }
+
   async run() {
     this.log(`hub daemon starting on ${this.cfg.node}（对账 ${this.sweepSec()}s，长连接必需，不使用 poll 退路；含能力登记与接单、审批、呈递、陈旧告警、later 复查；本机计划由内核本地调度）`);
     // hub 不走 Kernel.run。分钟定时器仍要起：到点经 kernel._notifyWake 抬这里的 _wakeFlag。
@@ -361,18 +384,7 @@ export class HubRuntime {
       } catch (e) {
         this.log("kernel sweep error: " + (e?.message ?? e));
       }
-      for (const [name, job] of [
-        ["approval", () => this.approval?.scan()],
-        ["present", () => this.present?.scan()],
-        ["stale", () => this.stale?.scan()],
-        ["schedule", () => this.schedule?.scan()],
-      ]) {
-        try {
-          await job();
-        } catch (e) {
-          this.log(name + " scan failed: " + (e?.message ?? e));
-        }
-      }
+      await this.scanSections();
       if (this._wakeFlag) continue;
       await this.waitWake();
     }
