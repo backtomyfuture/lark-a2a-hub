@@ -3,12 +3,17 @@
 // 写之前再回读任务，确认仍是 auth-required 且 Status_Msg 没变。
 // 通过后按「消息 → Parts → 任务行」写 auth_decision，批准回 submitted，驳回置 canceled 并写 notice。
 // 写操作经调用方逐条 await；本模块用一条队列串行回调，避免两张卡同时改同一张表。
+// 飞书要求卡片回调大约 3 秒内返回。同步路径只做本地校验和一次回读，
+// 通过就当场交回批准或驳回卡，写表放进后台。写失败或写前发现任务已变，才 PATCH 纠正卡片。
 
 import { signDecision } from "../approval-sign.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "../bus/feishu.mjs";
-import { buildCard } from "./cards.mjs";
+import { buildCard, buildStatusCard } from "./cards.mjs";
+
+// 同步回读的上限。飞书 3 秒预算里只留这一次读，读挂住不能把回调拖过超时。
+const READ_FRESH_MS = 2000;
 
 function toast(type, content) {
   return { toast: { type, content, i18n: { zh_cn: content } } };
@@ -81,6 +86,31 @@ export function actionValue(data) {
   return {};
 }
 
+// PATCH 用的是消息 id，不是 header.token，也不是卡片延时更新 token。
+export function cardMessageId(data) {
+  if (!data || typeof data !== "object") return "";
+  const layers = [
+    data.event,
+    data.payload?.event,
+    data.data?.event,
+    data.payload,
+    data.data,
+    data,
+  ];
+  for (const layer of layers) {
+    if (!layer || typeof layer !== "object" || Array.isArray(layer)) continue;
+    const ctx = layer.context;
+    if (ctx && typeof ctx === "object") {
+      const id = ctx.open_message_id ?? ctx.openMessageId ?? ctx.message_id;
+      if (typeof id === "string" && id.trim()) return id.trim();
+    }
+    if (!(layer.action || layer.operator || layer.context)) continue;
+    const direct = layer.open_message_id ?? layer.openMessageId;
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+  }
+  return "";
+}
+
 function nowIso() {
   // 与 kernel.nowStr 同一口径：本地时间 ISO 8601 带时区偏移。
   const d = new Date();
@@ -128,6 +158,8 @@ export class ApprovalService {
     this._tail = Promise.resolve();
     this._recentEvents = new Map();
     this._decidedCards = new Map();
+    // 正在写表的卡。回调已经返回，第二次点击不能再开一轮决定。
+    this._inflight = new Map();
     this._kernelMissLogged = false;
   }
 
@@ -145,6 +177,11 @@ export class ApprovalService {
     const run = this._tail.then(fn, fn);
     this._tail = run.then(() => {}, () => {});
     return run;
+  }
+
+  // 回调本身不等写表。测试要等后台决定落定再读总线。
+  whenIdle() {
+    return this._tail;
   }
 
   loadState() {
@@ -248,28 +285,37 @@ export class ApprovalService {
     return n;
   }
 
-  handleCardAction(data) {
-    return this.enqueue(() => this._handle(data));
-  }
-
-  async _handle(data) {
+  async handleCardAction(data) {
     try {
-      return await this._decide(data);
+      return await this._accept(data);
     } catch (e) {
       this.log("card action error: " + (e?.message ?? e));
-      return toast("error", "处理失败：" + String(e?.message ?? e).slice(0, 100));
+      return toast("error", "处理失败，请重试");
     }
   }
 
-  async _decide(data) {
+  _rawCard(info, patch) {
+    return { type: "raw", data: buildStatusCard(info, patch) };
+  }
+
+  _terminalResponse(entry) {
+    return {
+      ...toast("info", "该审批已处理"),
+      card: this._rawCard(entry.value, {
+        state: entry.state,
+        operator: entry.operator,
+        at: entry.at,
+        note: entry.note ?? "",
+      }),
+    };
+  }
+
+  // 本地校验之后只读一次任务行。通过就标成已决定并立刻交回终态卡，写表不挡回调。
+  async _accept(data) {
     this._purgeExpired(this._recentEvents);
     this._purgeExpired(this._decidedCards);
 
     const eventId = extractEventId(data);
-    if (eventId && this._recentEvents.has(eventId)) {
-      return toast("info", "该审批已处理。");
-    }
-
     const src = data?._source || "unknown";
     const owner = String(this.ownerOpenId ?? "").trim();
     const operator = operatorOpenId(data);
@@ -293,73 +339,211 @@ export class ApprovalService {
     if (!cardStatusMsg) return toast("error", "卡片缺少所批的 Status_Msg，已拒绝。");
 
     const decisionKey = `${recordId}|${cardStatusMsg}|${decision}|${operator}`;
-    if (this._recentEvents.has(decisionKey)) {
-      return toast("info", "该审批已处理。");
-    }
-
     const cardKey = `${recordId}|${cardStatusMsg}`;
-    if (this._decidedCards.has(cardKey)) {
-      return toast("info", "该审批已处理。");
+    // 同一次点击的并发回调要等第一笔回读结束。单线程里占坑发生在任何 await 之前。
+    for (;;) {
+      const pending = this._inflight.get(cardKey);
+      if (!pending) break;
+      await pending.done;
+      const later = this._decidedCards.get(cardKey);
+      if (later) return this._terminalResponse(later);
+    }
+    const decided = this._decidedCards.get(cardKey);
+    if (decided) return this._terminalResponse(decided);
+    if (eventId && this._recentEvents.has(eventId)) {
+      return toast("info", "该审批已处理");
+    }
+    if (this._recentEvents.has(decisionKey)) {
+      return toast("info", "该审批已处理");
     }
 
-    const preview = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
-    if (!preview.ok) return toast(preview.type, preview.content);
-
-    const taskId = f1(preview.task, "Task_ID");
-    const messages = (await this.bus.listRecords(this.bus.tables.messages))
-      .filter((msg) => f1(msg, "Task_ID") === taskId);
-    // 列表和第一笔写之间再读一次。过期卡在这里被拒绝，不会留下 auth_decision。
-    const fresh = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
-    if (!fresh.ok) return toast(fresh.type, fresh.content);
-    const task = fresh.task;
-    const statusMsg = fresh.statusMsg;
-    const decisionId = nextMsgId(taskId, messages);
-    await this.writeDecision(task, decisionId, statusMsg, decision);
-    if (decision === "reject") {
-      await this.writeNotice(task, bumpMsgId(decisionId), statusMsg);
+    let release = () => {};
+    const done = new Promise((resolve) => { release = resolve; });
+    this._inflight.set(cardKey, { done });
+    try {
+      let preview;
+      try {
+        preview = await this._readFreshLimited(recordId, cardTaskId, cardStatusMsg);
+      } catch (e) {
+        this.log("card read failed: " + (e?.message ?? e));
+        return toast("error", "处理失败，请重试");
+      }
+      if (!preview.ok) {
+        const at = this.now();
+        return {
+          ...toast(preview.type === "error" ? "error" : "info", preview.content),
+          card: this._rawCard(value, { state: "expired", operator, at, note: preview.content }),
+        };
+      }
+      const at = this.now();
+      const state = decision === "approve" ? "approved" : "rejected";
+      const ctx = {
+        cardKey,
+        decisionKey,
+        eventId,
+        value,
+        operator,
+        messageId: this._messageId(data, recordId, cardStatusMsg),
+        recordId,
+        decision,
+        cardTaskId,
+        cardStatusMsg,
+      };
+      const card = this._rawCard(value, { state, operator, at, note: "" });
+      this._markDecided(ctx, { state, note: "", at });
+      this.enqueue(() => this._finish(ctx));
+      return {
+        ...toast("info", state === "approved" ? "已批准" : "已驳回"),
+        card,
+      };
+    } finally {
+      this._inflight.delete(cardKey);
+      release();
     }
+  }
 
-    const again = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
-    if (!again.ok) {
-      this.log("card action: 决定消息已写入，但任务在落状态前变化，不再改任务行 " + taskId);
-      return toast("info", "任务状态已变化或审批已过期，未改任务状态。");
-    }
+  _messageId(data, recordId, statusMsg) {
+    const fromEvent = cardMessageId(data);
+    if (fromEvent) return fromEvent;
+    const state = this.loadState();
+    const row = state?.[recordId];
+    if (!row || String(row.status_msg ?? "") !== statusMsg) return "";
+    return String(row.message_id ?? "").trim();
+  }
 
-    const now = Date.now();
-    this._decidedCards.set(cardKey, { ts: now, decision });
-    this._recentEvents.set(decisionKey, now);
-    if (eventId) {
-      this._recentEvents.set(eventId, now);
-    }
-
-    if (decision === "approve") {
-      // 保留 Status_Msg，节点认领前用它核对 In_Reply_To。后续终态靠新 presentKey
-      // 再次呈递，不再清 Presented 列（v3.5 已废弃，见标准 §10.2）。
-      await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
-        Status: "submitted",
-        Status_Msg: statusMsg,
-      });
-      return toast("success", "已批准，任务重新入队执行。");
-    }
-    await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
-      Status: "canceled",
+  _readFreshLimited(recordId, cardTaskId, cardStatusMsg) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("readFresh timeout")), READ_FRESH_MS);
     });
-    return toast("info", "已驳回，任务取消。");
+    return Promise.race([
+      this.readFresh(recordId, cardTaskId, cardStatusMsg),
+      timeout,
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  _markDecided(ctx, { state, note, at }) {
+    const ts = Date.now();
+    this._decidedCards.set(ctx.cardKey, {
+      ts,
+      decision: ctx.decision,
+      value: ctx.value,
+      operator: ctx.operator,
+      state,
+      at,
+      note: note ?? "",
+    });
+    this._recentEvents.set(ctx.decisionKey, ts);
+    if (ctx.eventId) this._recentEvents.set(ctx.eventId, ts);
+  }
+
+  // 写失败或任务已变之后允许重试。事件去重键也要摘掉，否则 60 秒内点不了第二次。
+  _clearDecided(ctx) {
+    this._decidedCards.delete(ctx.cardKey);
+    this._recentEvents.delete(ctx.decisionKey);
+    if (ctx.eventId) this._recentEvents.delete(ctx.eventId);
+  }
+
+  async _publishCard(messageId, info, patch) {
+    let card;
+    try {
+      card = buildStatusCard(info, patch);
+    } catch (e) {
+      this.log("status card build failed: " + (e?.message ?? e));
+      return;
+    }
+    if (!messageId) {
+      this.log("card update skipped: 没有 message_id");
+      return;
+    }
+    if (typeof this.bus.patchInteractiveCard !== "function") {
+      this.log("card update skipped: 总线不能更新消息");
+      return;
+    }
+    try {
+      await this.bus.patchInteractiveCard(messageId, card);
+    } catch (e) {
+      // 审批结果以表为准。卡片没换掉只记一笔。
+      this.log("card update failed: " + (e?.message ?? e));
+    }
+  }
+
+  async _correctCard(ctx, state, note) {
+    this._clearDecided(ctx);
+    await this._publishCard(ctx.messageId, ctx.value, {
+      state,
+      operator: ctx.operator,
+      at: this.now(),
+      note: note ?? "",
+    });
+  }
+
+  async _finish(ctx) {
+    const { recordId, decision, cardTaskId, cardStatusMsg } = ctx;
+    try {
+      const preview = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
+      if (!preview.ok) {
+        await this._correctCard(ctx, "expired", preview.content);
+        return;
+      }
+      const taskId = f1(preview.task, "Task_ID");
+      const messages = (await this.bus.listRecords(this.bus.tables.messages))
+        .filter((msg) => f1(msg, "Task_ID") === taskId);
+      // 列表和第一笔写之间再读一次。过期卡在这里被拒绝，不会留下 auth_decision。
+      const fresh = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
+      if (!fresh.ok) {
+        await this._correctCard(ctx, "expired", fresh.content);
+        return;
+      }
+      const task = fresh.task;
+      const statusMsg = fresh.statusMsg;
+      // 失败重试时照样追加一条决定，不看之前写没写过：同一请求以最新一条为准（标准 §8.3），
+      // 而上一轮可能只写了消息没写签名 DataPart，或机主这次改了主意。
+      const decisionId = nextMsgId(taskId, messages);
+      await this.writeDecision(task, decisionId, statusMsg, decision);
+      if (decision === "reject") {
+        await this.writeNotice(task, bumpMsgId(decisionId), statusMsg);
+      }
+
+      const again = await this.readFresh(recordId, cardTaskId, cardStatusMsg);
+      if (!again.ok) {
+        this.log("card action: 决定消息已写入，但任务在落状态前变化，不再改任务行 " + taskId);
+        await this._correctCard(ctx, "expired", again.content);
+        return;
+      }
+
+      if (decision === "approve") {
+        // 保留 Status_Msg，节点认领前用它核对 In_Reply_To。后续终态靠新 presentKey
+        // 再次呈递，不再清 Presented 列（v3.5 已废弃，见标准 §10.2）。
+        await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
+          Status: "submitted",
+          Status_Msg: statusMsg,
+        });
+      } else {
+        await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
+          Status: "canceled",
+        });
+      }
+    } catch (e) {
+      const message = String(e?.message ?? e).slice(0, 100);
+      this.log("card action error: " + message);
+      await this._correctCard(ctx, "failed", message);
+    }
   }
 
   async readFresh(recordId, cardTaskId, cardStatusMsg) {
     const task = await this.bus.getRecord(this.bus.tables.tasks, recordId);
-    if (!task) return { ok: false, type: "error", content: "任务不存在，已拒绝。" };
+    if (!task) return { ok: false, type: "error", reason: "missing", content: "任务不存在，已拒绝。" };
     const taskId = String(f1(task, "Task_ID") ?? "");
     if (cardTaskId && taskId !== cardTaskId) {
       this.log("WARN card action rejected: task_id does not match record");
-      return { ok: false, type: "error", content: "卡片与任务编号不一致，已拒绝。" };
+      return { ok: false, type: "error", reason: "mismatch", content: "卡片与任务编号不一致，已拒绝。" };
     }
     const status = String(f1(task, "Status") ?? "");
     const statusMsg = String(f1(task, "Status_Msg") ?? "").trim();
     if (status !== "auth-required" || statusMsg !== cardStatusMsg) {
       this.log("WARN card action rejected: stale card for " + (taskId || recordId));
-      return { ok: false, type: "info", content: "任务状态已变化或审批已过期，未处理。" };
+      return { ok: false, type: "info", reason: "expired", content: "任务状态已变化或审批已过期，未处理。" };
     }
     return { ok: true, task, statusMsg };
   }

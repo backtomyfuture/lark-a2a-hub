@@ -1,10 +1,15 @@
 // 审批卡内容。脱敏按键名分词，不按子串，避免把含有这些词的普通字段误伤。
 // 卡片用 schema 2.0，按钮走 callback behavior，这样 Node SDK 的
-// card.action.trigger 才能收到点击。按钮 value 多带 status_msg，回调用它判断卡是否过期。
+// card.action.trigger 才能收到点击。按钮 value 多带 status_msg，回调用它判断卡是否过期，
+// 并带上标题、目标节点和技能，结果卡不用再读表。
+// 正文只取首条 instruction。auth_request 正文会把标题和指令再抄一遍，读它会让同一段话出现三次。
+// update_multi 是 schema 2.0 后续 PATCH 换卡的开关，缺了飞书会拒绝延时更新。
 
 import { f1 } from "../bus/feishu.mjs";
 
-const DETAIL_LIMIT = 2000;
+const INSTRUCTION_LIMIT = 300;
+const PARAM_LIMIT = 300;
+const TITLE_VALUE_LIMIT = 60;
 const SECRET_WORDS = new Set([
   "password", "passwd", "secret", "token", "apikey", "authorization", "credential",
 ]);
@@ -127,29 +132,48 @@ function firstInstruction(messages, taskId) {
   return rows[0];
 }
 
-function clip(text) {
+function clipChars(text, limit) {
   const value = String(text ?? "").trim();
-  if (value.length <= DETAIL_LIMIT) return value;
-  return value.slice(0, DETAIL_LIMIT).trimEnd() + "…（已截断）";
+  return value.length <= limit ? value : value.slice(0, limit);
 }
 
-export function pendingContent(task, messages = [], parts = []) {
-  const statusMsg = String(f1(task, "Status_Msg") ?? "").trim();
-  if (statusMsg) {
-    const body = messageText(parts, statusMsg);
-    if (body) return clip(body);
-  }
-  const instr = firstInstruction(messages, f1(task, "Task_ID"));
-  if (instr) {
-    const mid = f1(instr, "Msg_ID");
-    const summary = messageText(parts, mid);
-    const params = messageParams(parts, mid);
-    const chunks = [];
-    if (summary) chunks.push("摘要：" + summary);
-    if (params) chunks.push("参数：\n" + params);
-    if (chunks.length) return clip(chunks.join("\n"));
-  }
-  return clip(String(f1(task, "Context_ID") ?? ""));
+// 超长指令留在总线上。卡片只给入口，避免把同一段话截成两份还占满屏幕。
+function clipInstruction(text, taskId) {
+  const value = String(text ?? "").trim();
+  if (value.length <= INSTRUCTION_LIMIT) return value;
+  return value.slice(0, INSTRUCTION_LIMIT) + `…（全文：lah task why ${taskId}）`;
+}
+
+function clipParams(text) {
+  const value = String(text ?? "").trim();
+  if (value.length <= PARAM_LIMIT) return value;
+  return value.slice(0, PARAM_LIMIT).trimEnd() + "…";
+}
+
+// 与 kernel.capLabel 同一口径：有 Worker 时技能是 Worker/技能，否则就是技能名。
+function skillLabel(task) {
+  const worker = textValue(f1(task, "Worker_Hint"));
+  const skill = textValue(f1(task, "Skill_ID"));
+  return worker ? `${worker}/${skill || "(空)"}` : (skill || "-");
+}
+
+// 标题已经写在指令开头时再单独一行就是重复。
+function titleAlreadyLeads(title, instruction) {
+  const head = String(title ?? "").trim();
+  const body = String(instruction ?? "").trim();
+  return !!head && !!body && body.startsWith(head);
+}
+
+const CARD_CONFIG = { wide_screen_mode: true, update_multi: true };
+
+function cardHeader(content, template, subtitle) {
+  const header = {
+    title: { tag: "plain_text", content },
+    template,
+  };
+  const sub = String(subtitle ?? "").trim();
+  if (sub) header.subtitle = { tag: "plain_text", content: sub };
+  return header;
 }
 
 function button(label, type, value) {
@@ -161,51 +185,99 @@ function button(label, type, value) {
   };
 }
 
+function decisionButtons(base) {
+  const value = (decision) => ({ ...base, decision });
+  return {
+    tag: "column_set",
+    flex_mode: "flow",
+    columns: [
+      {
+        tag: "column",
+        width: "auto",
+        elements: [button("同意执行", "primary", value("approve"))],
+      },
+      {
+        tag: "column",
+        width: "auto",
+        elements: [button("驳回", "danger", value("reject"))],
+      },
+    ],
+  };
+}
+
+function instructionOf(task, messages, parts) {
+  const taskId = String(f1(task, "Task_ID") ?? "").trim();
+  const instr = firstInstruction(messages, taskId);
+  if (!instr) return { taskId, text: "", params: "" };
+  const mid = f1(instr, "Msg_ID");
+  return { taskId, text: messageText(parts, mid), params: messageParams(parts, mid) };
+}
+
 export function buildCard(task, messages, parts) {
-  const detail = pendingContent(task, messages, parts) || "-";
-  const recordId = task.record_id;
-  const taskId = f1(task, "Task_ID");
+  const { taskId, text, params } = instructionOf(task, messages || [], parts || []);
+  const title = textValue(f1(task, "Title"));
+  const target = textValue(f1(task, "Target_Node"));
+  const skill = skillLabel(task);
+  const worker = textValue(f1(task, "Worker_Hint"));
   const statusMsg = String(f1(task, "Status_Msg") ?? "").trim();
-  const base = { decision: "", record_id: recordId, task_id: taskId, status_msg: statusMsg };
-  const field = (label, value) => `**${label}**\n${value ?? ""}`;
+  const lines = [clipInstruction(text, taskId) || "（无文字指令）"];
+  if (!titleAlreadyLeads(title, text)) lines.push(title);
+  const paramText = clipParams(params);
+  if (paramText) lines.push("参数：\n" + paramText);
+  if (worker) lines.push("执行者：" + worker);
+  const base = {
+    record_id: task.record_id,
+    task_id: taskId,
+    status_msg: statusMsg,
+    title: clipChars(title, TITLE_VALUE_LIMIT),
+    target,
+    skill,
+  };
   return {
     schema: "2.0",
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: "plain_text", content: "中台任务待审批" },
-      template: "orange",
-    },
+    config: { ...CARD_CONFIG },
+    header: cardHeader(`待审批 · ${target}/${skill}`, "orange", taskId),
     body: {
       elements: [
-        {
-          tag: "markdown",
-          content: [
-            field("任务", f1(task, "Title")),
-            field("编号", taskId),
-            field("目标节点", f1(task, "Target_Node")),
-            field("技能", f1(task, "Skill_ID") || "-"),
-            field("执行者", f1(task, "Worker_Hint") || "节点默认"),
-            field("上下文", f1(task, "Context_ID") || "-"),
-          ].join("\n"),
-        },
-        { tag: "markdown", content: "**待执行内容**\n" + detail },
-        {
-          tag: "column_set",
-          flex_mode: "flow",
-          columns: [
-            {
-              tag: "column",
-              width: "auto",
-              elements: [button("同意执行", "primary", { ...base, decision: "approve" })],
-            },
-            {
-              tag: "column",
-              width: "auto",
-              elements: [button("驳回", "danger", { ...base, decision: "reject" })],
-            },
-          ],
-        },
+        { tag: "markdown", content: lines.filter((line) => String(line ?? "").trim()).join("\n") },
+        decisionButtons(base),
       ],
     },
+  };
+}
+
+const STATUS_HEADER = {
+  approved: ["已批准", "green"],
+  rejected: ["已驳回", "red"],
+  expired: ["已失效（任务状态已变化）", "grey"],
+  failed: ["处理失败，可重试", "red"],
+};
+
+// 回调换卡时手里只有按钮 value。除失败外不再留按钮，避免机主对已经落定的决定再点一次。
+// failed 保留同意/驳回，写表失败后可以原样重试。
+export function buildStatusCard(info, { state, at = "", note = "" } = {}) {
+  const src = info && typeof info === "object" && !Array.isArray(info) ? info : {};
+  const taskId = String(src.task_id ?? "").trim();
+  const title = String(src.title ?? "").trim();
+  const target = String(src.target ?? "").trim();
+  const skill = String(src.skill ?? "").trim();
+  const when = String(at ?? "").trim();
+  const extra = String(note ?? "").trim();
+  const [headerText, template] = STATUS_HEADER[state] ?? ["审批状态未知", "grey"];
+  const lines = [];
+  if (title) lines.push(title);
+  const where = [target, skill].filter(Boolean).join("/");
+  if (where) lines.push(where);
+  // 卡只发给机主本人，操作者必然是他，不必把 open_id 打在卡上。
+  if (state === "approved" && when) lines.push(when);
+  if ((state === "expired" || state === "failed") && extra) lines.push(extra);
+  if (!lines.length) lines.push(taskId || "-");
+  const elements = [{ tag: "markdown", content: lines.join("\n") }];
+  if (state === "failed") elements.push(decisionButtons(src));
+  return {
+    schema: "2.0",
+    config: { ...CARD_CONFIG },
+    header: cardHeader(headerText, template, taskId),
+    body: { elements },
   };
 }

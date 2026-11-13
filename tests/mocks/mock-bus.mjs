@@ -32,6 +32,7 @@ export class MockFeishuBus {
     this._faults = [];
     this.journal = [];
     this.sent = [];
+    this.cardUpdates = [];
     this._stats = { list: 0, get: 0, write: 0, other: 0, backoff: 0 };
     for (const id of Object.values(tables)) {
       if (id) this._rows.set(id, []);
@@ -123,6 +124,20 @@ export class MockFeishuBus {
 
   sendCard(openId, card) {
     return this.sendMessage(openId, "interactive", card, "open_id");
+  }
+
+  // 对齐 FeishuBus.patchInteractiveCard。content 是卡片 JSON 字符串，card 留下解析后的对象方便断言。
+  async patchInteractiveCard(messageId, card) {
+    await this._gate({ op: "card_update", table: "", messageId });
+    const content = typeof card === "string" ? card : JSON.stringify(card);
+    const item = {
+      message_id: messageId,
+      content,
+      card: structuredClone(typeof card === "string" ? JSON.parse(card) : card),
+    };
+    this.cardUpdates.push(item);
+    this._note({ op: "card_update", table: "", fields: { message_id: messageId } });
+    return {};
   }
 
   _known(table) {

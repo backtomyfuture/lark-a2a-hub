@@ -913,7 +913,14 @@ export async function doctor(configDir, appDir, opts = {}) {
       } catch { /* 忽略探测异常 */ }
 
       if (busAlive) {
-        ok(`发现本机 lark-cli Local Event Bus 在线（${busSockPath}，事件将无缝复用该 Bus）`);
+        if (role === "hub") {
+          // hub 自己拉 WSClient 应答卡片回调。socket 还在，说明同一个 appId 另有长连接。
+          // 飞书只随机投递一条。没注册卡片处理函数的那条会把这句当响应体回回去，飞书报 200672。
+          bad("hub 的 appId 不应同时被 lark-cli event consume 或其他进程占用长连接。hub 的卡片回调始终走自己的 WSClient。另一条没注册 card.action.trigger 的连接抢到点击时，SDK 会把 \"no card.action.trigger event handle\" 当响应回给飞书，飞书报 200672（没有接口）。");
+          problems++;
+        } else {
+          ok(`发现本机 lark-cli Local Event Bus 在线（${busSockPath}，表变更门铃复用该 Bus）`);
+        }
       } else {
         info(`本机 lark-cli Local Event Bus socket 存在但无法连接（${busSockPath}，事件将直连飞书 WSClient）`);
       }

@@ -96,22 +96,29 @@ export const approvalMethods = {
     return true;
   },
 
-  // 枢纽审批卡直接读这条正文，所以要带上即将执行的内容，而不是只留标题。
+  // 审批卡改读首条 instruction，不再读这段正文。这里只给总线留短说明，
+  // 标题已是指令前缀时不再写第二遍，空参数也不写，避免同一段话出现三次。
   async approvalBody(task) {
     const skill = this.capLabel(task) || "(空)";
-    const capName = this.commands[this.capKeyOf(task)]?.name || skill;
-    const instruction = clipText((await this.instructionText(task)) || "(无文字指令)", 500);
-    let paramText = "{}";
-    try { paramText = JSON.stringify(redactValue(await this.getParams(task))); }
-    catch { paramText = "{}"; }
+    const named = String(this.commands[this.capKeyOf(task)]?.name ?? "").trim();
+    const cap = named && named !== skill
+      ? `${clipText(named, 120)}（${clipText(skill, 80)}）`
+      : clipText(skill, 80);
+    const instructionRaw = String((await this.instructionText(task)) || "").trim();
+    const instruction = clipText(instructionRaw || "(无文字指令)", 500);
+    let paramText = "";
+    try {
+      const params = redactValue(await this.getParams(task));
+      const emptyObject = params && typeof params === "object" && !Array.isArray(params) && Object.keys(params).length === 0;
+      const emptyArray = Array.isArray(params) && params.length === 0;
+      if (params != null && params !== "" && !emptyObject && !emptyArray) paramText = JSON.stringify(params);
+    } catch { paramText = ""; }
     if (paramText.length > 800) paramText = paramText.slice(0, 800) + "…";
-    return [
-      "此任务为 approve 类，执行前需机主批准。",
-      `任务：${clipText(f1(task, "Title"), 200)}`,
-      `能力：${clipText(capName, 120)}（${clipText(skill, 80)}）`,
-      `指令摘要：${instruction}`,
-      `参数摘要：${paramText}`,
-    ].join("\n");
+    const title = String(f1(task, "Title") ?? "").trim();
+    const lines = ["需机主批准后执行", `能力：${cap}`, instruction];
+    if (paramText && paramText !== "{}" && paramText !== "[]") lines.push(`参数：${paramText}`);
+    if (title && !instructionRaw.startsWith(title)) lines.push(`标题：${clipText(title, 200)}`);
+    return lines.join("\n");
   },
 
   // 返回 true 表示本轮必须停手。已有批准则返回 false，续跑不必因为 Status_Msg 已指向 question 而再卡一次。
