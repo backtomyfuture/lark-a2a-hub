@@ -466,6 +466,121 @@ function scheduleBrief(entry, index) {
   return `本地计划 ${id}：cron ${cron || "(空)"}，cap ${cap || "(空)"}，${enabled}`;
 }
 
+// 标准 v3.8 能力分组与旧平表迁移提示：
+// Worker 名片代表实体与通用执行，专长技能与本尊技能归属清楚；
+// 对旧平表写法提示迁到 workers，帮助节点平滑升级到三层架构。
+export function describeCommands(cmds, flat, capPrefix, kind) {
+  const layout = [];
+  const hints = [];
+  if (!flat || typeof flat !== "object") return { summary: "", layout, hints };
+
+  // 1. 统计 Worker 数与技能数（汇总行）
+  // 标准 v3.8：Worker 名片代表 Worker 实体与通用执行，独立 Agent 节点本尊 agent 也是 Worker 名片。
+  const workerSet = new Set();
+  const hasSelfAgent = Boolean(flat.agent && typeof flat.agent === "object" && !flat.agent.worker);
+  let skillCount = 0;
+  for (const [key, entry] of Object.entries(flat)) {
+    if (entry?.worker) {
+      workerSet.add(entry.worker);
+      if (entry.skill !== "agent") skillCount++;
+    } else if (key !== "agent") {
+      skillCount++;
+    }
+  }
+  const workerCount = workerSet.size + (hasSelfAgent ? 1 : 0);
+  const selfSuffix = hasSelfAgent ? "（含本尊）" : "";
+  const totalCards = Object.keys(flat).length;
+  const summary = `commands.json：${workerCount} 个 Worker${selfSuffix}、${skillCount} 项技能，共 ${totalCards} 张名片`;
+
+  // 2. 按 cmds.workers 的书写顺序，只列 flat 里确实存在的 Worker，每个一行
+  const workerEntries = cmds?.workers && typeof cmds.workers === "object" && !Array.isArray(cmds.workers)
+    ? Object.entries(cmds.workers)
+    : [];
+
+  for (const [wName, wObj] of workerEntries) {
+    const agentEntry = flat[`${wName}/agent`];
+    // 只有归一后确实存在该 Worker 名片时才输出
+    if (!agentEntry || agentEntry.worker !== wName) continue;
+
+    const rawName = wObj?.name != null ? String(wObj.name).trim() : "";
+    const namePart = rawName ? `（${rawName}）` : "";
+    const capId = capIdOf("agent", agentEntry, capPrefix);
+
+    // 专长技能：该 Worker 名下除 agent 之外的技能
+    const specials = [];
+    for (const entry of Object.values(flat)) {
+      if (entry?.worker === wName && entry.skill !== "agent") {
+        specials.push(entry.skill);
+      }
+    }
+
+    const skillsPart = specials.length > 0
+      ? `；专长技能 ${specials.join(", ")}`
+      : "；无专长技能";
+
+    layout.push(`Worker ${wName}${namePart}：通用执行 ${capId}${skillsPart}`);
+  }
+
+  // 3. 节点本尊的 agent 条目（flat 里键为 agent、没有 worker 的那项，独立 Agent 节点就是这种）
+  const selfAgent = flat.agent;
+  if (selfAgent && typeof selfAgent === "object" && !selfAgent.worker) {
+    const capId = capIdOf("agent", selfAgent, capPrefix);
+    const mode = selfAgent.mode ?? "agent";
+    layout.push(`本尊即 Worker：agent（${capId}，mode ${mode}）`);
+  }
+
+  // 4. 其余没有 worker 的本尊条目合成一行：节点本尊技能（非 Worker）：k1, k2
+  const selfSkills = [];
+  for (const [key, entry] of Object.entries(flat)) {
+    if ((!entry || typeof entry !== "object" || !entry.worker) && key !== "agent") {
+      selfSkills.push(key);
+    }
+  }
+  if (selfSkills.length > 0) {
+    layout.push(`节点本尊技能（非 Worker）：${selfSkills.join(", ")}`);
+  }
+
+  // 5. hints（迁移提示）：对 flat 里满足条件的条目各出一条
+  if (kind !== "agent") {
+    const definedWorkers = cmds?.workers && typeof cmds.workers === "object" && !Array.isArray(cmds.workers)
+      ? cmds.workers
+      : {};
+
+    for (const [key, entry] of Object.entries(flat)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      if (entry.worker) continue;
+      const mode = entry.mode ?? "agent";
+      if (mode !== "agent") continue;
+      if (typeof entry.command !== "string" || !entry.command.trim()) continue;
+
+      // 建议的 Worker 名 W：键以 -agent 结尾就去掉这个后缀，否则用键本身
+      const rawW = key.endsWith("-agent") ? key.slice(0, -6) : key;
+      const isValidName = /^[A-Za-z0-9._-]+$/.test(rawW);
+      const isDuplicate = Object.prototype.hasOwnProperty.call(definedWorkers, rawW);
+      const giveSuggestion = isValidName && !isDuplicate;
+
+      if (giveSuggestion) {
+        const W = rawW;
+        const oldCap = capIdOf(key, entry, capPrefix);
+        const newCap = `CAP-${capPrefix}-${W}-agent`;
+        const capText = oldCap === newCap
+          ? `Cap_ID ${oldCap} 不变`
+          : `Cap_ID 会由 ${oldCap} 变为 ${newCap}（引用旧 Cap_ID 的本地计划要改 cap）`;
+
+        hints.push(
+          `迁移提示：能力 ${key} 是节点本尊执行的 agent 型条目，名册里会被当作技能而不是 Worker。它若是一个 Agent，可迁到 workers.${W}：${capText}；按技能名 --cap ${key} 派单要改成 --worker ${W}。它若只是用某个 Agent 跑的固定任务，改成那个 Worker 的专长技能。迁移前先清空本节点在途任务。见 docs/configuration.md「旧平表迁到 workers」`
+        );
+      } else {
+        hints.push(
+          `迁移提示：能力 ${key} 是节点本尊执行的 agent 型条目，名册里会被当作技能而不是 Worker。它若是一个 Agent，可迁到 workers 下（自选 Worker 名）；按技能名 --cap ${key} 派单要改成 --worker <Worker 名>。它若只是用某个 Agent 跑的固定任务，改成那个 Worker 的专长技能。迁移前先清空本节点在途任务。见 docs/configuration.md「旧平表迁到 workers」`
+        );
+      }
+    }
+  }
+
+  return { summary, layout, hints };
+}
+
 // schedules.json 不存在时什么都不打印。存在时复用 LocalScheduleService 的读取和拒收口径，
 // 只告警，不计入 problems：坏计划不能让 doctor 非零退出，也不能挡住守护进程启动。
 export function reportLocalSchedules(configDir, raw) {
@@ -628,10 +743,15 @@ export async function doctor(configDir, appDir, opts = {}) {
       const flat = normalizeCommands(cmds, (msg) => { bad(msg); layerProblems++; });
       const names = Object.keys(flat);
       const workerNames = cmds.workers && typeof cmds.workers === "object" && !Array.isArray(cmds.workers) ? Object.keys(cmds.workers) : [];
-      if (workerNames.length) info(`Worker：${workerNames.join(", ")}`);
-      if (names.length) ok(`commands.json：${names.length} 项能力（${names.join(", ")}）`);
-      else info("commands.json 为空：本节点不登记任何能力，不会认领任务");
       const capPrefix = raw?.capPrefix ?? raw?.node ?? "";
+      if (names.length) {
+        const { summary, layout, hints } = describeCommands(cmds, flat, capPrefix, kind);
+        ok(summary);
+        for (const line of layout) info(line);
+        for (const hint of hints) info(hint);
+      } else {
+        info("commands.json 为空：本节点不登记任何能力，不会认领任务");
+      }
       const shapeProblems = layerProblems + auditCommandsShape(flat, capPrefix);
       if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec 取值合法，cap_id 无重复）");
       problems += shapeProblems;

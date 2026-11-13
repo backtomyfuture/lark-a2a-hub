@@ -129,7 +129,8 @@ export const directMethods = {
   startFlightHeartbeat(flight) {
     if (flight.hbTimer) clearInterval(flight.hbTimer);
     flight.finishing = false;
-    // 60 秒一次，和原来 execute 里的间隔相同。扫表写总线时先等它结束，见 stopFlightHeartbeat。
+    // 60 秒一次，和原来 execute 里的间隔相同。必须 ≤ HEARTBEAT_MIN_SEC，见 kernel.mjs。
+    // 扫表写总线时先等它结束，见 stopFlightHeartbeat。
     flight.hbTimer = setInterval(() => {
       if (flight.finishing || flight.heartbeat || this._sweepBusy) return;
       flight.heartbeat = (async () => {
@@ -175,6 +176,8 @@ export const directMethods = {
   },
 
   async touchHeartbeat(task) {
+    // pokeFlight、多余账本和接管都从这里过。间隔内不写，打断「写 → 事件 → 扫表 → 再写」。
+    if (!this.heartbeatDue(task)) return;
     try {
       await this.bus.updateRecord(this.T.tasks, task.record_id, { Heartbeat_At: nowStr() });
     } catch (e) {

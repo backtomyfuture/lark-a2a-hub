@@ -33,6 +33,7 @@ export class MockFeishuBus {
     this.journal = [];
     this.sent = [];
     this.cardUpdates = [];
+    this._stats = { list: 0, get: 0, write: 0, other: 0, backoff: 0 };
     for (const id of Object.values(tables)) {
       if (id) this._rows.set(id, []);
     }
@@ -150,8 +151,20 @@ export class MockFeishuBus {
     throw fault.error;
   }
 
+  // 与 FeishuBus.takeStats 同一口径：取走清零，journal 保留给测试断言。
+  // 失败注入在 _note 之前抛，所以没发出去的调用不计。backoff 在内存总线里恒为 0。
+  takeStats() {
+    const snap = { ...this._stats };
+    this._stats = { list: 0, get: 0, write: 0, other: 0, backoff: 0 };
+    return snap;
+  }
+
   _note(entry) {
     this.journal.push(entry);
+    if (entry.op === "list") this._stats.list += 1;
+    else if (entry.op === "get") this._stats.get += 1;
+    else if (entry.op === "create" || entry.op === "update") this._stats.write += 1;
+    else if (entry.op === "send") this._stats.other += 1;
   }
 
   _wrap(fields) {

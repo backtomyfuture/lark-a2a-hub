@@ -12,7 +12,7 @@ description: 操作与调度 lark-a2a-hub (lah) 多 Agent 协作中台：查询�
 ## 核心原则
 
 1. **原路返回，飞书静默**：
-   - 任务发起方（`From_Node`）派出的任务，在执行节点产出结果后，回执消息 `To_Node` 原路指向发起方，由本机的 `lah daemon` 自动写入本地 `~/.hub-node/present_queue.jsonl`；
+   - 任务发起方（`From_Node`）派出的任务，在执行节点产出结果后，回执消息 `To_Node` 原路指向发起方，由本机的 `lah daemon` 自动写入本地 `~/.hub-node/present_queue.jsonl`。队列不会主动叫醒会话，要等结果请用 `lah present --wait`；
    - 飞书端不再发送文本消息刷屏，仅在涉及敏感操作时由主枢纽发送交互式审批卡片。
 2. **状态八态与生命周期**：
    - `submitted`（已入队）→ `working`（执行中）→ `completed` / `failed` / `canceled` / `rejected`；
@@ -31,9 +31,10 @@ lah task create --to <Target_Node> [--worker <Worker>] [--cap/--skill <Skill_ID>
 ```
 - 默认以本机节点名作为 `From_Node` 与 `Source`；
 - 寻址是三层：节点（`--to`）、Worker（`--worker`，节点上的某个 Agent）、技能（`--cap`）。名片一行就是「节点 × Worker × 技能」，Worker 为空表示节点本尊直接执行；
-- `--worker` 是硬约束：目标节点没有这个 Worker 或它不会这项技能，建单直接报错。只给 `--worker` 不给 `--cap` 时用该 Worker 的通用技能 `agent`；
+- `--worker` 是硬约束：目标节点没有这个 Worker 或它不会这项技能，建单直接报错。只给 `--worker` 不给 `--cap` 时用该 Worker 名片（通用执行）；
 - `--worker` 可省略：按技能名派单时由目标节点取默认 Worker；
-- `--cap`（或 `--skill`）可省略：系统会自动从目标节点的 `AgentCards` 中挑选首选通用能力（技能 `agent`）；
+- `--cap`（或 `--skill`）可省略：系统会自动挑选首选 Worker 名片（`AgentCards` 中该节点 `Skill_ID=agent` 的行）；
+- 目标节点迁到 `workers` 后，旧写法 `--cap <x>-agent` 会被拒，改用 `--worker <x>`；`--cap CAP-<前缀>-<x>-agent` 仍有效；
 - 若直接指定已知的 `CAP-...`，甚至可省略 `--to`（自动反查归属节点）；
 - 命令成功后输出生成的 `Task_ID`（如 `TASK-20261107-a1b2c3`）。
 
@@ -42,20 +43,25 @@ lah task create --to <Target_Node> [--worker <Worker>] [--cap/--skill <Skill_ID>
 # 让工作机 mba 执行任务（自动挑选 mba 的首选 Agent）
 lah task create --to mba --text "检查生产数据库磁盘剩余空间与连接数"
 
-# 指定由 mba 上的 agy 这个 Worker 来做（用它的通用技能 agent）
+# 指定由 mba 上的 agy 这个 Worker 来做（走它的 Worker 名片：通用执行）
 lah task create --to mba --worker agy --text "检查磁盘剩余空间" --params '{"path":"/"}'
 
 # 指定 Worker 与专长技能（Worker、Skill_ID 都取自 AgentCards）
 lah task create --to mba --worker agy --cap ops-check --text "巡检一遍"'
 ```
 
-### 2. 消费原路返回的结果队列 (`lah present --pop`)
-从本机读取并消费属于当前节点发起的任务回执：
+### 2. 消费原路返回的结果队列 (`lah present`)
+从本机读取属于当前节点发起的任务回执。队列不会主动叫醒当前会话。
 ```bash
-lah present --pop
+lah present [--pop] [--task <Task_ID>] [--wait <秒>]
 ```
-- 如果队列为空，命令无输出并干净退出；
-- 如果队列有回执，输出 JSON Lines（NDJSON），每行包含：
+- 不带 `--wait`：立刻读当前队列。空队列无输出，退出码 0。
+- `--wait <秒>`：阻塞到出现匹配回执。队列里已经有匹配则立刻返回。超时则标准输出为空，退出码 2。
+- `--task`：只看这一张任务。`--wait` 不带 `--task` 时，任意一条回执都会结束等待。多个在途任务务必带 `--task`。
+- 退出码：0 成功；1 是参数、读写或锁失败（未知参数会报错）；2 是等到超时，结果还没回来。
+- `--pop` 只移除本次输出的条目。没匹配上就不会删。等待期间被中断不会丢回执。
+- 只读本机队列文件，不访问飞书。
+- 有回执时输出 JSON Lines（NDJSON），每行包含：
   - `task_id`：任务编号
   - `status`：状态（`completed` / `failed` / `rejected` / `input-required`）
   - `title`：任务标题
@@ -64,7 +70,16 @@ lah present --pop
   - `outcome`：执行结果摘要
   - `error`：错误日志（若失败）
   - `text`：中台格式化的易读摘要
-- `--pop` 参数表示读取后从队列移除已读项，适合 Agent 轮询消费并直接向用户汇报。
+
+### 派单后要等结果
+
+当前会话要等这张单的结果再继续时：
+
+1. `lah task create …` 成功后记下输出的 `Task_ID`。
+2. `lah present --wait 100 --task <Task_ID> --pop`。宿主工具若有命令超时，`--wait` 取比它短的值，常见是 2 分钟。
+3. 退出码 0：按上面的字段处理这一行。状态是 `input-required` 时，先 `lah task reply`，再执行一次同样的等待。
+4. 退出码 2：结果还没回来。可以再调一次，或告诉用户任务仍在进行、稍后再查。
+5. 多个在途任务一定带 `--task`。只有匹配成功才会 `--pop`。等待期间被中断不会丢回执。
 
 ### 3. 答复任务追问 (`lah task reply`)
 当 `present_queue` 中收到某任务处于 `input-required` 时，使用原任务答复，促使目标节点原位恢复执行：
@@ -141,7 +156,7 @@ lah inbox fail --task <Task_ID> --text "<失败原因说明>"
 ## 独立 Agent 节点的推荐执行工作流
 
 独立 Agent 建议在每轮对话、定时轮询或平台启动 Hook 中执行「双向收割」：
-1. **收结果**：运行 `lah present --pop`，看自己之前派给其他节点（如爬虫节点、运维节点）的任务是否有产出；
+1. **收结果**：运行 `lah present --pop`，看自己之前派给其他节点（如爬虫节点、运维节点）的任务是否有产出。要在本轮里同步等到某一张单，改用 `lah present --wait <秒> --task <Task_ID> --pop`；
 2. **接新活**：运行 `lah inbox --pop`，看中台是否有其他节点指派给自己的新任务；
 3. **处理并交付**：执行完新任务后，运行 `lah inbox done --task <Task_ID> --text "..."`。
 

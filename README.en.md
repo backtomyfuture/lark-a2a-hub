@@ -6,8 +6,8 @@
 No server to run, no inbound ports, every step on the record.
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.7.0-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.7-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.8.1-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.8-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -67,6 +67,12 @@ flowchart LR
 </details>
 
 Every participant (node, hub, cloud bot) does two things: **read the table, write the table.** Event pushes are only a doorbell; content is always fetched from the table, so a dropped connection or restart loses no work.
+
+Who takes the work:
+
+![Dispatch addressing, four levels: Hub → node → worker (an agent on the machine) → skill](docs/images/topology.svg)
+
+Each worker is an agent on a machine and the one that takes the work; skills hang under it. A standalone agent node is its own worker, and deterministic scripts run directly on the node. The hub is also a node: the diagram draws it as a standalone agent node, but it can equally be a host node with several workers.
 
 A task's lifecycle:
 
@@ -157,7 +163,7 @@ The wizard also installs the `lah` Skill for your terminal agent (`~/.agents/ski
 ## Feature overview
 
 - **One process, two roles**: the hub is a single-process superset of a node, `lah daemon --role node|hub`, one config directory.
-- **Node / worker / skill**: a machine is a node, each agent on it is a worker, and what a worker can do is a skill. A task can name "this agent on that machine, using this skill", or name only the skill and let the node pick a worker. A named worker is never silently swapped.
+- **Node / worker / skill**: a machine is a node, each agent on it is a worker, and what a worker can do is a skill. A task can name "this agent on that machine, using this skill", or name only the skill and let the node pick a worker. A named worker is never silently swapped. The roster holds one card per worker, and skills hang under their worker.
 - **Capabilities as config**: one template in `commands.json` plugs in a script (`json` mode), an agent CLI (`agent` mode) or a resident agent itself (`inbox` mode). Editing the file hot-reloads the cards. A broken file keeps the previous table and pauses new claims until fixed.
 - **Questions and resume**: an agent can ask the requester mid-task (`input-required`); the answer resumes the same task. With a session id, `resume_command` can continue the same conversation.
 - **Owner approval**: tasks marked `approve` (per row or per local capability) enter `auth-required`; the hub sends the card early, and only the owner's tap counts. The hub signs every decision and nodes that pin the hub's public key verify it, so forged decision rows have no effect.

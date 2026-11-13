@@ -687,7 +687,7 @@ export function discoverLocalAgents() {
     if (fullPath) {
       discovered.push({
         ...item,
-        // Worker 名取旧能力名去掉 -agent 后缀，这样通用技能的 Cap_ID 仍是 CAP-<前缀>-<x>-agent。
+        // Worker 名取旧能力名去掉 -agent 后缀，这样 Worker 名片的 Cap_ID 仍是 CAP-<前缀>-<x>-agent。
         worker: item.skill.replace(/-agent$/, ""),
         path: fullPath,
         entry: {
@@ -705,7 +705,7 @@ export function discoverLocalAgents() {
   return discovered;
 }
 
-// 本机 Agent 登记为 Worker（标准 §9）。每个 Worker 自带通用技能 agent，不用另写技能条目。
+// 本机 Agent 登记为 Worker（标准 §9）。每个 Worker 自带一项通用执行 agent（即 Worker 名片），不用另写技能条目。
 // 旧版把它们写成名叫 <x>-agent 的扁平条目：同名 Worker 取代它，否则两者的 Cap_ID 会撞。
 export function buildAgentCommands(selectedAgents, existingCommands = {}) {
   const result = { ...existingCommands };
