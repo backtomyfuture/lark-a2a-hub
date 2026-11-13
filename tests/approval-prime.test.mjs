@@ -108,7 +108,7 @@ function approvalFor(dir, mock, kernel) {
 }
 
 async function decide(approval, task, statusMsg, decision) {
-  return approval.handleCardAction({
+  const res = await approval.handleCardAction({
     operator: { open_id: OWNER },
     action: {
       value: {
@@ -119,6 +119,9 @@ async function decide(approval, task, statusMsg, decision) {
       },
     },
   });
+  // 回调先交回终态卡，写表在后台。断言任务状态前要等这一轮结束。
+  await approval.whenIdle();
+  return res;
 }
 
 // 红线：行级 approve 在认领前只落一条 To_Node=hub 的 auth_request。重启再扫不得再写、不得再发卡。
@@ -238,7 +241,9 @@ test("节点 askApproval 沿用 hub 已写的 auth_request，批准后才执行�
     assert.equal(f1(await taskOf(mock, "TASK-GO-1"), "Status"), "auth-required");
 
     const toast = await decide(approval, pending, requestId, "approve");
-    assert.equal(toast.toast.type, "success");
+    assert.equal(toast.toast.type, "info");
+    assert.equal(toast.toast.content, "已批准");
+    assert.equal(toast.card.type, "raw");
     const released = await taskOf(mock, "TASK-GO-1");
     assert.equal(f1(released, "Status"), "submitted");
     assert.equal(f1(released, "Status_Msg"), requestId);
@@ -287,6 +292,7 @@ test("驳回后任务 canceled，节点不会认领", async () => {
     const pending = await taskOf(mock, "TASK-NO-1");
     const toast = await decide(approval, pending, f1(pending, "Status_Msg"), "reject");
     assert.equal(toast.toast.type, "info");
+    assert.equal(toast.toast.content, "已驳回");
     assert.equal(f1(await taskOf(mock, "TASK-NO-1"), "Status"), "canceled");
 
     await node.run({ once: true });

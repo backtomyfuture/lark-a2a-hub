@@ -6,7 +6,10 @@
 //   形状是 { [事件类型]: async (data) => {} }。
 //   与 bitable 变更事件一起注册进同一个 SDK EventDispatcher，从而共用一条长连接。
 //   hub 角色用键 "card.action.trigger" 注册卡片回调；审批回调只能从这条长连接进来，
-//   本进程不开回调地址。
+//   本进程不开回调地址。注册了这个键就始终走 SDK 的 WSClient，不走 lark-cli 的 bus.sock：
+//   本地总线的上游收到事件就回空 200，协议里没有回复帧，卡片 toast 回不出去。
+//   card.action.trigger 在总线上又是单消费者，被拒后再 fallback 自建第二条 WS，
+//   会和已有连接抢投递（同一应用只随机交给一条）。
 //   - 这些处理函数原样注册，本模块不包一层、也不替它们调用 onWake。
 //     卡片回调要不要接着扫表，由处理函数自己决定。
 //   - "drive.file.bitable_record_changed_v1" 由本模块占用为门铃。
@@ -21,6 +24,12 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 
 const EVENT_TYPE = "drive.file.bitable_record_changed_v1";
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// 卡片回调必须能把 toast 和卡片交回飞书。本地总线做不到，所以只要注册了处理函数就不挂总线。
+export function shouldAttachLocalBus(extraHandlers, sockExists) {
+  if (!sockExists) return false;
+  return typeof extraHandlers?.["card.action.trigger"] !== "function";
+}
 
 export function normalizeBusEvent(msg) {
   if (!msg || typeof msg !== "object") return { _source: "bus" };
@@ -249,6 +258,9 @@ export class FeishuEventReceiver {
           try {
             const msg = JSON.parse(line);
             if (msg.type === "hello_ack") {
+              if (key === "card.action.trigger") {
+                this.log("event receiver: card.action.trigger 出现在本地总线上，返回值到不了飞书。hub 不应走这条路径");
+              }
               if (!hasReportedReady) {
                 hasReportedReady = true;
                 this.busConnected = true;
@@ -260,11 +272,13 @@ export class FeishuEventReceiver {
               if (key === EVENT_TYPE) {
                 this.handle(payload);
                 if (typeof this.extraHandlers[EVENT_TYPE] === "function") {
+                  // 本地总线没有「把处理结果回给飞书」的帧，返回值只能丢掉。
                   Promise.resolve(this.extraHandlers[EVENT_TYPE](payload)).catch((e) => {
                     this.log(`event receiver: extraHandler ${EVENT_TYPE} error: ${e?.message ?? e}`);
                   });
                 }
               } else if (typeof this.extraHandlers[key] === "function") {
+                // card.action.trigger 同样回不出去。hub 已改为不走总线，这里只是兜底。
                 Promise.resolve(this.extraHandlers[key](payload)).catch((e) => {
                   this.log(`event receiver: extraHandler ${key} error: ${e?.message ?? e}`);
                 });
@@ -347,9 +361,13 @@ export class FeishuEventReceiver {
       ? path.join(os.homedir(), ".lark-cli", "events", this.appId, "bus.sock")
       : null;
 
-    if (busSockPath && fs.existsSync(busSockPath)) {
+    const sockExists = !!(busSockPath && fs.existsSync(busSockPath));
+    if (shouldAttachLocalBus(this.extraHandlers, sockExists)) {
       this._connectLocalBus(busSockPath);
     } else {
+      if (sockExists) {
+        this.log("event receiver: 已注册 card.action.trigger，不走本地总线，改走 WSClient。同一 appId 不要再被 lark-cli event consume 或其他进程占用长连接。");
+      }
       this._startWsClient();
     }
   }

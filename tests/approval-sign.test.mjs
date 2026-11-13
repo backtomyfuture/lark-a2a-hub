@@ -115,6 +115,7 @@ test("hub 签名的批准通过验签，任务执行完成", async () => {
       operator: { open_id: OWNER },
       action: { value: { record_id: task.record_id, task_id: "TASK-SIG-1", status_msg: f1(task, "Status_Msg"), decision: "approve" } },
     });
+    await approval.whenIdle();
     const decision = (await mock.findRecords(TABLES.messages, "Kind", "auth_decision"))[0];
     const data = JSON.parse(f1((await mock.findRecords(TABLES.parts, "Parent_ID", f1(decision, "Msg_ID"))).find((p) => f1(p, "Kind") === "data"), "Data"));
     assert.equal(data.alg, "ed25519");
@@ -151,6 +152,7 @@ test("更晚的冒写驳回不影响已签名的批准", async () => {
       operator: { open_id: OWNER },
       action: { value: { record_id: task.record_id, task_id: "TASK-SIG-1", status_msg: f1(task, "Status_Msg"), decision: "approve" } },
     });
+    await approval.whenIdle();
     await forgeDecision(mock, await taskOf(mock, "TASK-SIG-1"), { decision: "reject" }, "95");
     await node.run({ once: true });
     assert.equal(f1(await taskOf(mock, "TASK-SIG-1"), "Status"), "completed");

@@ -122,6 +122,15 @@ export class FeishuBus {
   sendCard(openId, card) {
     return this.sendMessage(openId, "interactive", card, "open_id");
   }
+
+  // 更新已发出的交互卡片。message_id 用发卡返回的 om_，或回调 context 里的 open_message_id。
+  // content 必须是卡片 JSON 字符串。发卡和这里的卡片都要带 config.update_multi，否则飞书拒绝。
+  // 大约 14 天内可改，不依赖回调里 30 分钟就失效的延时更新 token。
+  patchInteractiveCard(messageId, card) {
+    const id = encodeURIComponent(String(messageId));
+    const content = typeof card === "string" ? card : JSON.stringify(card);
+    return this.api("PATCH", `/im/v1/messages/${id}`, { content });
+  }
 }
 
 // 飞书字段值常为单元素数组，取标量。
