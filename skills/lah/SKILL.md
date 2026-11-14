@@ -17,8 +17,9 @@ description: 操作与调度 lark-a2a-hub (lah) 多 Agent 协作中台：查询�
 2. **状态八态与生命周期**：
    - `submitted`（已入队）→ `working`（执行中）→ `completed` / `failed` / `canceled` / `rejected`；
    - 中断态 `input-required`（提问待答）：必须在原任务通过 `lah task reply` 答复，目标节点自动续跑，禁止为答复新开任务。
-3. **审批拦截**：
-   - 若任务涉及关键操作（对外发消息、删改数据、花钱等），会自动转入 `auth-required`。主枢纽会在飞书向机主推送卡片，机主点击批准后自动恢复执行，无需终端干预。
+3. **审批**：
+   - 认领前：任务行或本机能力标了 `approve` 时，目标节点在执行前转入 `auth-required`，主枢纽向机主发卡。`Claimed_By` 仍为空时，批准后任务回到 `submitted` 再执行。
+   - 执行中：独立 Agent 在做对外发消息、删改数据、花钱、提交表单、改权限之前，调用 `lah inbox auth`，不要用 `lah inbox ask` 代替审批。机主批准后任务回到本尊收件箱，从断点继续。
 
 ---
 
@@ -145,7 +146,15 @@ lah inbox ask --task <Task_ID> --text "<需要发起方回答的问题>"
 ```
 发起方通过 `lah task reply` 答复后，中台会自动将该任务连同最新答复重新注入本尊的 `lah inbox`（状态恢复为 `pending`），本尊直接续跑。
 
-#### 5.4 标记任务失败 (`lah inbox fail`)
+#### 5.4 执行前请求机主批准 (`lah inbox auth`)
+对外发消息、删改数据、花钱、提交表单或改权限时，在动作之前停下来请求批准。不要把这类确认写成 `lah inbox ask`。
+```bash
+lah inbox auth --task <Task_ID> --text "<具体动作、目标对象与风险>"
+```
+- 命令在写总线之前就把本地条目标成 `waiting-auth`，`lah inbox --pop` 不会再把它取走；
+- 机主在飞书卡片上批准后，中台把该任务放回 `pending`，并带上批准说明。驳回则任务取消。
+
+#### 5.5 标记任务失败 (`lah inbox fail`)
 若任务无法完成或环境异常，终止任务并通知发起方：
 ```bash
 lah inbox fail --task <Task_ID> --text "<失败原因说明>"
@@ -179,7 +188,7 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] --text "<
 ```
 - 命令在总线生成 `Status=submitted`、`Source=cron` 的任务，并输出 `Task_ID`；已存在同键任务时直接输出已有 ID，不重复建单；
 - 本机 `lah daemon` 自动认领该任务并写入 `agent_inbox.jsonl`；
-- Agent 在执行完成后调用 `lah inbox done --task <Task_ID> --text "..."`（或 `ask`/`fail`）完成闭环交付。
+- Agent 在执行完成后调用 `lah inbox done --task <Task_ID> --text "..."`（或 `ask`/`auth`/`fail`）完成闭环交付。高风险动作用 `auth`，不要用 `ask`。
 
 ---
 

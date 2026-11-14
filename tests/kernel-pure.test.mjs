@@ -14,6 +14,7 @@ import {
   retryHoldUntil,
   saveRetryWatermark,
 } from "../src/kernel.mjs";
+import { InvalidReceipt, NeedAuth, NeedInput } from "../src/receipt.mjs";
 import { withTemp } from "./helpers.mjs";
 
 // 红线：失败立刻回到 submitted 会连打。第一次 60 秒，之后翻倍，封顶 10 分钟。
@@ -122,6 +123,35 @@ test("parseJsonReceipt 忽略未知键，need_input 才提问", () => {
   assert.throws(
     () => parseJsonReceipt(null),
     (err) => err.name === "InvalidReceipt",
+  );
+});
+
+// 红线：提问和执行中审批共用最后一道完整围栏。空审批说明、两个 JSON 键同时出现都是无效回执。
+test("parseAgentReceipt 最后一道 agent-auth 或 agent-ask 才算数", () => {
+  assert.throws(
+    () => parseAgentReceipt("```agent-ask\n先问\n```\n```agent-auth\n给客户发消息\n```\n"),
+    (err) => err instanceof NeedAuth && err.message === "给客户发消息",
+  );
+  assert.throws(
+    () => parseAgentReceipt("```agent-auth\n先批\n```\n```agent-ask\n还缺参数\n```\n"),
+    (err) => err instanceof NeedInput && err.message === "还缺参数",
+  );
+  assert.throws(
+    () => parseAgentReceipt("```agent-auth\n\n```\n"),
+    (err) => err instanceof InvalidReceipt,
+  );
+});
+
+test("parseJsonReceipt 拒收同时出现的 need_input 与 need_auth", () => {
+  assert.throws(
+    () => parseJsonReceipt({ summary: "x", need_input: "问", need_auth: "批" }),
+    (err) => err instanceof InvalidReceipt && err.message.includes("不能同时"),
+  );
+  const blank = parseJsonReceipt({ summary: "ok", need_auth: "  \n" });
+  assert.equal(blank.summary, "ok");
+  assert.throws(
+    () => parseJsonReceipt({ need_auth: "给客户发消息" }),
+    (err) => err instanceof NeedAuth && err.message === "给客户发消息",
   );
 });
 

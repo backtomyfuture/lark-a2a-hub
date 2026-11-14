@@ -86,7 +86,9 @@ stateDiagram-v2
     [*] --> submitted: created
     submitted --> working: node claims
     submitted --> auth_required: owner approval needed
-    auth_required --> submitted: owner approves
+    auth_required --> submitted: owner approves (before claim)
+    working --> auth_required: agent asks mid-run
+    auth_required --> working: owner approves, same node resumes
     auth_required --> canceled: owner rejects
     working --> input_required: agent asks a question
     input_required --> working: answer arrives, same task resumes
@@ -166,7 +168,7 @@ The wizard also installs the `lah` Skill for your terminal agent (`~/.agents/ski
 - **Node / worker / skill**: a machine is a node, each agent on it is a worker, and what a worker can do is a skill. A task can name "this agent on that machine, using this skill", or name only the skill and let the node pick a worker. A named worker is never silently swapped. The roster holds one card per worker, and skills hang under their worker.
 - **Capabilities as config**: one template in `commands.json` plugs in a script (`json` mode), an agent CLI (`agent` mode) or a resident agent itself (`inbox` mode). Editing the file hot-reloads the cards. A broken file keeps the previous table and pauses new claims until fixed.
 - **Questions and resume**: an agent can ask the requester mid-task (`input-required`); the answer resumes the same task. With a session id, `resume_command` can continue the same conversation.
-- **Owner approval**: tasks marked `approve` (per row or per local capability) enter `auth-required`; the hub sends the card early, and only the owner's tap counts. The hub signs every decision and nodes that pin the hub's public key verify it, so forged decision rows have no effect.
+- **Owner approval**: tasks marked `approve` (per row or per local capability) are put into `auth-required` by the target node before it claims them. An agent can also pause mid-run (`working → auth-required`, via `agent-auth` / `need_auth` / `lah inbox auth`) when it hits a risky action, and the original node resumes from where it stopped after approval. The hub only sends cards for tasks already in `auth-required`, and only the owner's tap counts. The hub signs every decision and nodes that pin the hub's public key verify it, so forged decision rows have no effect.
 - **In-flight ledger**: a `direct` command is written to a ledger before it is spawned. After a restart, a live process only gets its heartbeat renewed, never a second run. If the process identity does not match, no signal is sent, so nothing gets killed by mistake.
 - **Disciplined failure**: at most 2 retries with backoff starting at 60 s, doubling, capped at 10 min. More than 8 hops trips the breaker. Invalid receipts and failed submissions are not re-run, to avoid repeating side effects.
 - **Observable**: `lah task why` joins task, messages, runs, artifacts and local pending state. Receipts may carry `USAGE:`, accumulated into task metadata.

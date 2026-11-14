@@ -11,7 +11,9 @@
 
 import path from "node:path";
 import fs from "node:fs";
+import { pickSignedDecision } from "./approval-sign.mjs";
 import { f1 } from "./bus/feishu.mjs";
+import { readInbox } from "./inbox.mjs";
 
 // 解析时间戳为毫秒数。兼容 ISO 8601、空格分隔格式与数字。
 function parseTimestamp(val) {
@@ -222,6 +224,66 @@ export function checkLocalOutbox(configDir, taskId) {
   return result;
 }
 
+function msgSeqOf(id) {
+  const matched = String(id ?? "").match(/-(\d+)$/);
+  return matched ? Number(matched[1]) : -1;
+}
+
+function mergedData(parts, parentId) {
+  const out = {};
+  for (const p of parts) {
+    if (f1(p, "Parent_ID") !== parentId || f1(p, "Kind") !== "data" || !f1(p, "Data")) continue;
+    try { Object.assign(out, JSON.parse(f1(p, "Data"))); } catch { /* 坏数据跳过 */ }
+  }
+  return out;
+}
+
+function hubPublicKeyOf(configDir) {
+  if (!configDir) return "";
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(configDir, "node.json"), "utf8"));
+    return String(raw.hubPublicKey ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+// 只在已有验签通过的 approve 时提示续跑。伪造决定不当作已批准。
+function authResumeHint(taskRow, rawMessages, allParts, configDir) {
+  if (f1(taskRow, "Status") !== "auth-required") return "";
+  const statusMsg = String(f1(taskRow, "Status_Msg") ?? "");
+  if (!statusMsg) return "";
+  const candidates = rawMessages.filter((m) =>
+    f1(m, "Kind") === "auth_decision" &&
+    f1(m, "From_Node") === "hub" &&
+    f1(m, "Role") === "user" &&
+    f1(m, "In_Reply_To") === statusMsg)
+    .sort((a, b) => {
+      const ds = msgSeqOf(f1(b, "Msg_ID")) - msgSeqOf(f1(a, "Msg_ID"));
+      if (ds !== 0) return ds;
+      return parseTimestamp(f1(b, "Created_At")) - parseTimestamp(f1(a, "Created_At"));
+    });
+  const packed = candidates.map((m) => {
+    const data = mergedData(allParts, f1(m, "Msg_ID"));
+    return { decision: String(data.decision ?? ""), sig: data.sig };
+  });
+  if (pickSignedDecision(hubPublicKeyOf(configDir), f1(taskRow, "Task_ID"), statusMsg, packed) !== "approve") {
+    return "";
+  }
+  return "已批准，等待原节点续跑";
+}
+
+function localInboxView(configDir, taskId) {
+  if (!configDir) return null;
+  const item = readInbox(configDir).find((row) => row.task_id === taskId);
+  if (!item) return null;
+  return {
+    status: item.status || "",
+    auth_reason: item.auth_reason ? String(item.auth_reason).slice(0, 200) : "",
+    auth_msg_id: item.auth_msg_id || "",
+  };
+}
+
 // 核心入口：从总线读取并拼装单任务全链事实
 export async function getTaskWhy({ bus, configDir, taskId }) {
   const id = String(taskId ?? "").trim();
@@ -371,8 +433,10 @@ export async function getTaskWhy({ bus, configDir, taskId }) {
     };
   });
 
-  // 5. 检查本地待补交 outbox
+  // 5. 检查本地待补交 outbox 与收件箱里还没写完的审批
   const outbox = checkLocalOutbox(configDir, id);
+  const inbox = localInboxView(configDir, id);
+  const auth_hint = authResumeHint(taskRow, rawMessages, allParts, configDir);
 
   // 6. 汇编全链时间线
   const timeline = [];
@@ -475,6 +539,8 @@ export async function getTaskWhy({ bus, configDir, taskId }) {
     runs,
     artifacts,
     outbox,
+    inbox,
+    auth_hint,
   };
 }
 
@@ -501,6 +567,11 @@ export function formatWhyText(data) {
   const laterText = laterLine(data.later ?? task.later);
   if (laterText) lines.push(laterText);
   lines.push(`提问/待批: ${task.status_msg || "(无)"}`);
+  if (data.auth_hint) lines.push(data.auth_hint);
+  if (data.inbox?.status) {
+    const reason = data.inbox.auth_reason ? ` ${data.inbox.auth_reason}` : "";
+    lines.push(`收件箱: ${data.inbox.status}${reason}`);
+  }
   lines.push(`派生跳数: ${task.hop_count}`);
   lines.push(`目标节点: ${task.target_node || "(未指定)"}`);
   lines.push(`任务来源: ${task.source || "(未指定)"}`);

@@ -19,6 +19,7 @@ import { metadataMethods } from "./kernel-metadata.mjs";
 import { outboxMethods } from "./kernel-outbox.mjs";
 import {
   InvalidReceipt,
+  NeedAuth,
   NeedInput,
   laterClausePresent,
   parseAgentReceipt,
@@ -508,6 +509,7 @@ export class Kernel {
       qa,
       turns,
       files,
+      approvals: await this.collectApprovedAuths(task),
     });
   }
 
@@ -528,10 +530,12 @@ export class Kernel {
       "1. 完成后在围栏代码块之外用一段话汇报结果：做了什么、关键数据、异常项。",
       "2. 如有产物文件，在围栏之外单独整行写：ARTIFACT: <路径或URL>，可再跟一行 ARTIFACT_NAME: <名称>。围栏内部的同形文字不算产物。",
       "3. 如信息不足必须提问，把最后一个完整围栏写成 ```agent-ask，块内只写问题，然后停止。更早的围栏不算提问。",
-      "4. 不要输出与任务无关的内容。",
-      "5. 可选：围栏外整行 USAGE: input=<n> output=<n> cached=<n> cost=<x>（键可省略；不写表示未上报）。",
-      "6. 可选：围栏外整行 SESSION: <id>，只含字母数字和 . _ : -，供本机续接。",
-      "7. 可选：仅当本轮完成时，在围栏外单独整行写 LATER: <带时区偏移的 ISO8601 时刻> | <复查说明>。提问、失败或围栏内的同形文字不会预约。",
+      "4. 如即将执行对外发消息、删改数据、花钱、提交表单或改权限，必须先停手：把最后一个完整围栏写成 ```agent-auth，块内写明具体动作、目标对象与风险，然后停止。更早的围栏不算审批请求。",
+      "5. 任务数据文件的 approvals 数组是节点已验过机主签名的批准记录（decision 均为 approve，text 是当时请求的动作）。其中已覆盖的动作不要再次申请；超出其范围的新动作仍按第 4 条停手申请。",
+      "6. 不要输出与任务无关的内容。",
+      "7. 可选：围栏外整行 USAGE: input=<n> output=<n> cached=<n> cost=<x>（键可省略；不写表示未上报）。",
+      "8. 可选：围栏外整行 SESSION: <id>，只含字母数字和 . _ : -，供本机续接。",
+      "9. 可选：仅当本轮完成时，在围栏外单独整行写 LATER: <带时区偏移的 ISO8601 时刻> | <复查说明>。提问、审批、失败或围栏内的同形文字不会预约。",
     ].join("\n");
   }
 
@@ -557,7 +561,7 @@ export class Kernel {
   }
 
   // direct 账本与 carrier 代跑共用这一份准备结果，避免两条路径拼出来的 stdin 不一样。
-  // resume 只在问答续跑时为 true。失败重试和第一次执行都不许把旧会话当成还能接着用。
+  // resume 在问答续跑或执行中审批续跑时为 true。失败重试和第一次执行都不许把旧会话当成还能接着用。
   async prepareCommand(skill, task, params, extraAnswers, resume = false) {
     const entry = this.commands[skill] ?? {};
     let command = entry.command ?? "";
@@ -577,6 +581,7 @@ export class Kernel {
         task_id: f1(task, "Task_ID"), title: f1(task, "Title"),
         skill: entry.skill || skill, instruction: await this.instructionText(task),
         qa: dialogue.qa, turns: dialogue.turns, files: dialogue.files,
+        approvals: await this.collectApprovedAuths(task),
       } };
       return {
         command: substituteCommand(command, { session: sessionId || undefined }),
@@ -866,7 +871,8 @@ export class Kernel {
         if (entry.mode === "inbox") {
           const inboxList = readInbox(this.cfg.configDir);
           const item = inboxList.find((x) => x.task_id === taskId);
-          const isPendingOrAcked = item && (item.status === "pending" || item.status === "acked" || item.status === "waiting-answer");
+          // waiting-auth 时任务往往还停在 working（总线还没写成 auth-required）。这时回收会把已请求的批准丢掉。
+          const isPendingOrAcked = item && (item.status === "pending" || item.status === "acked" || item.status === "waiting-answer" || item.status === "waiting-auth");
           if (isPendingOrAcked) {
             const timeoutSec = Number(item.inbox_timeout_sec) || Number(entry.inbox_timeout_sec) || 86400;
             const claimedTime = item.claimed_at ? (typeof item.claimed_at === "number" ? item.claimed_at : Date.parse(item.claimed_at)) : Date.now();
@@ -969,8 +975,10 @@ export class Kernel {
   async execute(task, extraAnswers = null) {
     const taskId = f1(task, "Task_ID");
     const skill = this.capKeyOf(task);
-    // 认领会把 input-required 改成 working。续接与否必须在这之前看原状态。
-    const resume = f1(task, "Status") === "input-required";
+    // 认领会把中断态改成 working。续接与否、以及要核对的 Status_Msg，必须在这之前记下。
+    const origStatus = f1(task, "Status");
+    const statusMsg = String(f1(task, "Status_Msg") ?? "");
+    const resume = origStatus === "input-required" || origStatus === "auth-required";
     // 上次执行已经成功，只差写表。这里直接补齐，不能再认领或再跑命令。
     if (this.readOutbox(taskId)) {
       try { await this.submitOutbox(task, this.readOutbox(taskId)); }
@@ -981,14 +989,17 @@ export class Kernel {
     // 认领时回填实际选中的 Worker。此后的重试、回收重跑与问答续跑都钉在它上面（标准 §2）。
     const picked = this.commands[skill]?.worker;
     if (picked && !String(f1(task, "Worker_Hint") ?? "").trim()) claim.Worker_Hint = picked;
+    const resumeOwner = origStatus === "input-required" || origStatus === "auth-required";
     if (!(await this.updateTaskState(task, claim,
-      ["submitted", "input-required"], f1(task, "Status") === "input-required"))) return;
+      ["submitted", "input-required", "auth-required"], resumeOwner))) return;
     const check = await this.bus.getRecord(this.T.tasks, task.record_id);
     if (!check || f1(check, "Claimed_By") !== this.cfg.node || f1(check, "Status") !== "working") {
       log("claim lost " + taskId);
       return;
     }
     task = check;
+    // 批准后的 working 可能盖掉并发落下的 canceled。拉起命令前再对一下决定和撤单 notice。
+    if (origStatus === "auth-required" && !(await this.verifyApprovedAndUncanceled(task, statusMsg))) return;
     const entry = this.commands[skill] ?? {};
     if (this.usesDirectLedger(entry)) {
       log("claimed " + taskId);
@@ -1082,7 +1093,27 @@ export class Kernel {
         await this.applyUsage(task, e.usage ?? null);
         this.clearRetry(taskId);
         log(`input-required ${taskId}: ${String(e.message).slice(0, 120)}`);
-      } else {
+      } else if (e instanceof NeedAuth) {
+        const scope = String(openRunId ?? "").trim();
+        if (!scope) {
+          e = new Error("动态审批缺少稳定 runId");
+        } else {
+          try {
+            const rid = await this.writeRun(task, "paused", started, "auth-required: " + String(e.message).slice(0, 400));
+            const mid = await this.writeDynamicAuthRequest(task, String(e.message), scope);
+            if (!(await this.updateTaskState(task, {
+              Status: "auth-required", Latest_Run: rid, Status_Msg: mid, Heartbeat_At: "",
+            }, ["working"], true))) return;
+            await this.applyUsage(task, e.usage ?? null);
+            this.clearRetry(taskId);
+            log(`auth-required ${taskId}: ${String(e.message).slice(0, 120)}`);
+            return;
+          } catch (err) {
+            e = err;
+          }
+        }
+      }
+      if (!(e instanceof NeedInput) && !(e instanceof NeedAuth)) {
         const retries = Number(f1(task, "Retry_Count")) || 0;
         const rid = await this.writeRun(task, "failed", started, String(e.message ?? e).slice(0, 800));
         if (retries < MAX_RETRIES) {
@@ -1148,18 +1179,19 @@ export class Kernel {
     return best;
   }
 
-  // 首次派发与 input-required 续跑共用。返回 false 表示已经写了终态或审批等待，调用方不得执行。
-  async preflight(task, caps = null) {
+  // 不含 askApproval。resumeAuthCheck 已经握着批准，再走静态门会把任务打回等待或死循环。
+  async preflightChecks(task, caps = null, allowed = null) {
     const taskId = f1(task, "Task_ID");
     const skill = this.capKeyOf(task);
-    const allowed = [f1(task, "Status") === "input-required" ? "input-required" : "submitted"];
+    const status = f1(task, "Status");
+    const gate = allowed ?? [status === "input-required" ? "input-required" : status === "auth-required" ? "auth-required" : "submitted"];
     const dup = await this.earlierDuplicate(task);
     if (dup) {
       const origId = f1(dup, "Task_ID");
       await this.writeMessage(task, "notice",
         `拒收：Idempotency_Key 与更早任务 ${origId} 重复（原任务状态 ${f1(dup, "Status") || "未知"}），本任务不再执行。`,
         { refTaskIds: origId });
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (idempotency) ${taskId} -> ${origId}`);
       return false;
@@ -1169,7 +1201,7 @@ export class Kernel {
       const rid = await this.writeRun(task, "failed", nowStr(),
         `hop count ${hop} exceeds limit ${HOP_LIMIT} (circuit breaker)`);
       await this.writeMessage(task, "notice", `熔断：Hop_Count=${hop} 超过上限 ${HOP_LIMIT}，任务终止。`);
-      if (!(await this.updateTaskState(task, { Status: "failed", Latest_Run: rid }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "failed", Latest_Run: rid }, gate))) return false;
       this.clearRetry(taskId);
       log("circuit-broken " + taskId);
       return false;
@@ -1179,7 +1211,7 @@ export class Kernel {
       // 指定了 Worker 而本机没有这项 Worker × Skill，同样在这里拒收，不换别的 Worker 代跑。
       await this.writeMessage(task, "notice",
         `拒收：本节点无此能力或执行器未装：${this.capLabel(task) || "(空)"}（已登记能力：${[...skills].sort().join(", ") || "无"}）`);
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log("rejected (no capability) " + taskId);
       return false;
@@ -1188,7 +1220,7 @@ export class Kernel {
     if (bad.length) {
       await this.writeMessage(task, "notice",
         `拒收：任务参数含执行控制键（${bad.join(", ")}）。要执行的命令、目录、语境、Agent 与权限只来自本机 commands.json；唯一例外是 timeout_sec。`);
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log("rejected (control keys) " + taskId);
       return false;
@@ -1201,20 +1233,27 @@ export class Kernel {
       || (entryMode != null && !["agent", "json", "inbox"].includes(entryMode))) {
       await this.writeMessage(task, "notice",
         `拒收：本机 commands.json 中能力 ${skill} 的 context/mode 取值非法（context=${String(entryCtx)}，mode=${String(entryMode)}）。为避免静默改走别的执行路径，任务不执行；请修正配置（lah doctor 可检查）后重派。`);
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (invalid commands.json context/mode) ${taskId}`);
-      return false;
-    }
-    if (approvalRank(this.effectiveApproval(task, skill)) >= 2 && await this.askApproval(task)) {
       return false;
     }
     if (this.commands[skill]?.context === "carrier" && !(await pingCarrier(this.cfg.carrierSocket))) {
       await this.writeMessage(task, "notice",
         "拒收：本能力的执行语境为 carrier（用户终端代跑），但 carrier 当前离线；按规矩不静默改走直跑，请先在终端启动 hub-node host 后重派。");
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, allowed))) return false;
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log("rejected (carrier offline) " + taskId);
+      return false;
+    }
+    return true;
+  }
+
+  // 首次派发与 input-required 续跑共用。返回 false 表示已经写了终态或审批等待，调用方不得执行。
+  async preflight(task, caps = null) {
+    if (!(await this.preflightChecks(task, caps))) return false;
+    const skill = this.capKeyOf(task);
+    if (approvalRank(this.effectiveApproval(task, skill)) >= 2 && await this.askApproval(task)) {
       return false;
     }
     return true;
@@ -1240,6 +1279,92 @@ export class Kernel {
     // 水位未到只跳过本轮认领，不写 Retry_Count。回执无效不会走到这里的重试水位。
     if (this._retryBlocked(f1(task, "Task_ID"))) return;
     await this.execute(task);
+  }
+
+  // 写 working 之后再读。updateTaskState 不是 CAS，后到的写可能把 canceled 盖回去。
+  // 失败时写的 notice 不能 In_Reply_To 当前 Status_Msg，否则下一轮会把它当成撤单通知。
+  async verifyApprovedAndUncanceled(task, statusMsg) {
+    const taskId = f1(task, "Task_ID");
+    const fresh = await this.bus.getRecord(this.T.tasks, task.record_id);
+    const ownedWorking = !!(fresh && f1(fresh, "Status") === "working" && f1(fresh, "Claimed_By") === this.cfg.node);
+    const msgs = await this.reloadMessages(taskId);
+    const decision = await this.decisionForRequest(fresh || task, msgs, statusMsg);
+    const withdrawn = msgs.some((m) => f1(m, "Kind") === "notice" && f1(m, "In_Reply_To") === statusMsg);
+    if (ownedWorking && decision === "approve" && !withdrawn) return true;
+    this.dropSession(taskId);
+    if (ownedWorking) {
+      const current = fresh;
+      const rid = await this.writeRun(current, "failed", nowStr(), "审批续跑前复核未通过");
+      await this.writeMessage(current, "notice", "续跑前复核未通过：审批决定不再是批准，或任务已被撤单。已停止执行。");
+      const ok = await this.updateTaskState(current, {
+        Status: "failed", Latest_Run: rid, Heartbeat_At: "",
+      }, ["working"], true);
+      if (ok) this.clearRetry(taskId);
+      log(`auth resume aborted ${taskId}`);
+    }
+    return false;
+  }
+
+  // 已认领的 auth-required：先确认有效批准，再按模式续跑。未批准的停在原地，不能认领后判失败。
+  async resumeAuthCheck(task) {
+    if (f1(task, "Claimed_By") !== this.cfg.node) return;
+    if (f1(task, "Status") !== "auth-required") return;
+    const statusMsg = String(f1(task, "Status_Msg") ?? "");
+    const taskId = f1(task, "Task_ID");
+    const msgs = await this.reloadMessages(taskId);
+    if ((await this.decisionForRequest(task, msgs, statusMsg)) !== "approve") return;
+    if (!(await this.preflightChecks(task, null, ["auth-required"]))) return;
+    const entry = this.commands[this.capKeyOf(task)] ?? {};
+    if (entry.mode === "inbox") {
+      if (!(await this.updateTaskState(task, {
+        Status: "working", Heartbeat_At: nowStr(),
+      }, ["auth-required"], true))) return;
+      const check = await this.bus.getRecord(this.T.tasks, task.record_id);
+      if (!(await this.verifyApprovedAndUncanceled(check || task, statusMsg))) return;
+      const current = await this.bus.getRecord(this.T.tasks, task.record_id);
+      const request = msgs.find((m) => f1(m, "Msg_ID") === statusMsg);
+      enqueueOrUpdateInbox(this.cfg.configDir, {
+        task_id: taskId,
+        from_node: await this.initiatorOf(current || task),
+        status: "pending",
+        claimed_at: Date.now(),
+        auth_decision: {
+          status: "approved",
+          request_msg_id: statusMsg,
+          request_text: request ? await this.msgText(request) : "",
+          decided_at: nowStr(),
+        },
+        approvals: await this.collectApprovedAuths(current || task),
+      });
+      log(`inbox auth resumed ${taskId}`);
+      return;
+    }
+    if (this._directFlight) {
+      log(`defer auth resume ${taskId}: direct command in flight`);
+      return;
+    }
+    await this.execute(task);
+  }
+
+  // 终态已经落在总线上时，本机收件箱和会话不能再被 pop 或续跑拿去执行。
+  async cleanupTerminalLocals(tasks) {
+    const open = new Set(["pending", "acked", "waiting-answer", "waiting-auth"]);
+    let inbox = null;
+    for (const t of tasks) {
+      const st = f1(t, "Status");
+      if (!TERMINAL_STATUSES.has(st)) continue;
+      if (f1(t, "Target_Node") !== this.cfg.node && f1(t, "Claimed_By") !== this.cfg.node) continue;
+      const taskId = String(f1(t, "Task_ID") ?? "");
+      if (!/^[\w-]+$/.test(taskId)) continue;
+      if (!inbox) inbox = readInbox(this.cfg.configDir);
+      const item = inbox.find((x) => x.task_id === taskId);
+      if (item && open.has(item.status)) {
+        markInboxStatus(this.cfg.configDir, taskId, st);
+        item.status = st;
+      }
+      const sessionFile = path.join(this.cfg.configDir, "runs", taskId, "session.json");
+      if (fs.existsSync(sessionFile) || fs.existsSync(sessionFile + ".tmp")) this.dropSession(taskId);
+    }
   }
 
   // input-required 且归我认领的任务：question 之后出现 answer 则在原任务续跑。
@@ -1374,6 +1499,12 @@ export class Kernel {
         await this.resumeCheck(t);
       }
     }
+    for (const t of tasks) {
+      if (f1(t, "Target_Node") === this.cfg.node && f1(t, "Status") === "auth-required" && f1(t, "Claimed_By") === this.cfg.node) {
+        await this.resumeAuthCheck(t);
+      }
+    }
+    await this.cleanupTerminalLocals(tasks);
     // 短命令可能在本轮 spawn 之后就已经退出。收口仍在这次扫表里串行做完，present 才能看见终态。
     const flight = this._directFlight;
     if (flight && (flight.localExited || (flight.exitPath && fs.existsSync(flight.exitPath)))) {

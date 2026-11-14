@@ -123,8 +123,8 @@ Worker 条目与节点本尊的技能条目可用的字段：
 
 内核只认结构，不猜自然语言。完整语法见标准 §9。
 
-- **agent 模式**：最后一个完整的 ```` ```agent-ask ```` 围栏表示提问（任务转 `input-required`）；围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` 分别表示产物、用量、会话、预约复查。围栏内伪造的行不生效。
-- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`，可选 `usage`、`session`、`later`。未知顶层键忽略并记日志。
+- **agent 模式**：最后一个完整围栏若是 ```` ```agent-ask ````，表示提问（任务转 `input-required`）；若是 ```` ```agent-auth ````，表示执行中请求批准（块内写明动作、对象与风险，任务转 `auth-required`）。二者只认最后一个，空的 `agent-auth` 是无效回执。围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` 分别表示产物、用量、会话、预约复查。围栏内伪造的行不生效。`agent-auth` 在进程退出后才解析，拦不住已经做完的副作用；要在动作前停住，用 `lah inbox auth`。
+- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`。`need_input` 与 `need_auth` 不能同时出现。未知顶层键忽略并记日志。
 - `usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线；`later` 在任务完成时生效，由 hub 到点在同一 `Context_ID` 新建复查任务。
 
 ### 旧平表迁到 workers

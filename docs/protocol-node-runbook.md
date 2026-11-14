@@ -75,7 +75,8 @@ webhook 通知可能因网络抖动、自动化重试超时等出现丢失，因
 3. **提问**：Messages 写 question 消息（正文写其 TextPart）→ Tasks 置 input-required 且 Status_Msg=该 Msg_ID → Runs 关行 Outcome=paused。停手，不算失败。
 4. **续跑**：收到 answer（信号行/Messages 新增）后按 In_Reply_To 对上自己的 question → Status 回 working → 续跑，答复内容从 answer 的 Parts 读，不要求对方另开任务。
 5. **审批与取消**：
-   - Approval_Class=approve 的任务，先写 auth_request 消息＋置 auth-required（Status_Msg 指向该 auth_request）再停手，不经 working。
+   - Approval_Class=approve 的任务，先写 auth_request 消息＋置 auth-required（Status_Msg 指向该 auth_request）再停手，不经 working。hub 不会在 submitted 阶段替你写这条。
+   - **执行中动态审批（可选能力）**：已进入 working 后要做高风险动作时，可再写一条 auth_request（另附 DataPart `{"scope":"dynamic","run_id":"<本次执行段 id>"}`，同一次执行段重试用同一个 `run_id`）并把 Status 置 auth-required，保留 Claimed_By、清空心跳、Runs 记 paused（标准 §8.3）。机主批准后 hub 只写 auth_decision，**不会**把 Status 改回 submitted，也不改任务行；节点须按上面的四项鉴别核验后自己切回 working 续跑。因此没有 Tasks 行变化可触发，需靠 Messages 新增或定时对账发现决定。
    - **auth_decision 的四项鉴别（标准 §8.3）**：节点在续跑前，必须严格核验该决定同时满足下列四项条件：
      1. `From_Node=hub`、`Role=user`；
      2. `In_Reply_To` 等于任务当前 `Status_Msg`（指向旧 auth_request 的决定一律作废）；

@@ -164,7 +164,7 @@ lah task why TASK-XXXX          # 出问题时看时间线
 - **节点 / Worker / 技能三层**：一台机器是节点，机器上的每个 Agent 是 Worker，Worker 能做的事是技能。派单可以点名「哪台机器的哪个 Agent 用哪项技能」，也可以只点技能让节点自己挑 Worker；点了名就不会被悄悄换人。名册里每个 Worker 一张名片，技能挂在 Worker 下。
 - **能力即配置**：`commands.json` 一条模板接入脚本（`json` 模式）、Agent（`agent` 模式）或常驻 Agent 本尊（`inbox` 模式）。改文件即热更新名片，配置写坏时保留旧表并暂停接新单，修好自动恢复。
 - **提问与续跑**：Agent 可以中途向发起方提问（`input-required`），答复后在原任务续跑，不另开新任务；有 session 时可经 `resume_command` 续接同一会话。
-- **机主审批**：行级或本机声明为 `approve` 的任务进入 `auth-required`，由 hub 提前发卡，只认机主点击；hub 给每条决定签名，节点配了 hub 公钥后验签，冒写的决定行不生效。
+- **机主审批**：行级或本机声明为 `approve` 的任务由目标节点在认领前置 `auth-required`；Agent 执行中遇到高风险动作也可随时 `working → auth-required` 再发起一次（`agent-auth` / `need_auth` / `lah inbox auth`），批准后原节点从断点续跑。hub 只对已是 `auth-required` 的任务发卡，只认机主点击；hub 给每条决定签名，节点配了 hub 公钥后验签，冒写的决定行不生效。
 - **在途账本**：`direct` 命令的进程信息先落账本再 spawn。守护重启后进程还在就续心跳、不二次执行；身份对不上不发信号，免得误杀。
 - **失败有章法**：重试上限 2 次，60 秒起翻倍退避、封顶 10 分钟；跳数超过 8 熔断；回执无效或提交失败不重跑，避免副作用重复。
 - **可观测**：`lah task why` 汇总任务、消息、执行、产物与本机待补交状态；回执可带 `USAGE:` 用量，累计到任务元数据。

@@ -47,6 +47,19 @@ export function signDecision(privateKey, fields) {
   return crypto.sign(null, payload(fields), privateKey).toString("base64");
 }
 
+// 候选按调用方排好的「最新优先」顺序。pinned 为空时不验签，与没配 hubPublicKey 的节点一致。
+// 返回第一条幸存决定的字符串（空串也算有决定）；没有任何幸存候选才是 null。
+// 未通过验签的行直接跳过，不能挡住后面真正签过的点击。
+export function pickSignedDecision(publicKeyText, taskId, requestId, candidates) {
+  const pinned = String(publicKeyText ?? "").trim();
+  for (const c of candidates || []) {
+    const decision = String(c?.decision ?? "");
+    if (pinned && !verifyDecision(pinned, { taskId, requestId, decision }, c?.sig)) continue;
+    return decision;
+  }
+  return null;
+}
+
 // 公钥文本坏了、签名缺失或对不上，一律 false。不抛错：调用方把它当作「没有有效决定」。
 export function verifyDecision(publicKeyText, fields, sig) {
   try {

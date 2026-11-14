@@ -1,5 +1,5 @@
 // src/inbox.mjs —— 独立 Agent 收件箱操作库。
-// 承载 agent_inbox.jsonl 的原子读写、心跳核验与 lah inbox (done|ask|fail) 的总线状态流转。
+// 承载 agent_inbox.jsonl 的原子读写、心跳核验与 lah inbox (done|ask|fail|auth) 的总线状态流转。
 // 回执先落入本文件自己的 inbox-outbox（固定 Msg_ID / Part_ID / Artifact_ID / Run 更新），
 // 写表中途失败只补缺，不另开一条 result。这个目录不能并进内核的 outbox/：
 // 内核 flushOutbox 会把该目录下每个 json 当成自己的提交计划。
@@ -114,6 +114,7 @@ const OP_SPEC = {
   done: { msgKind: "result", outcome: "succeeded", taskStatus: "completed" },
   ask: { msgKind: "question", outcome: "paused", taskStatus: "input-required" },
   fail: { msgKind: "notice", outcome: "failed", taskStatus: "failed" },
+  auth: { msgKind: "auth_request", outcome: "paused", taskStatus: "auth-required" },
 };
 
 function inboxOutboxPath(configDir, taskId) {
@@ -202,6 +203,7 @@ function mimeOf(name) {
 function errorLogFor(op, text) {
   if (op === "fail") return String(text ?? "").slice(0, 800);
   if (op === "ask") return ("input-required: " + String(text ?? "").slice(0, 400)).slice(0, 800);
+  if (op === "auth") return ("auth-required: " + String(text ?? "").slice(0, 400)).slice(0, 800);
   return "";
 }
 
@@ -277,6 +279,7 @@ async function buildPlan({ bus, node, task, text, artifact, op }) {
     createdAt,
     msgId,
     msgPartId: `${msgId}-P1`,
+    msgDataPartId: op === "auth" ? `${msgId}-P2` : "",
     msgKind: spec.msgKind,
     artId,
     artPartId: artId ? `${artId}-P1` : "",
@@ -301,6 +304,7 @@ async function buildPlan({ bus, node, task, text, artifact, op }) {
       run: randomUUID(),
       message: randomUUID(),
       partText: randomUUID(),
+      partData: randomUUID(),
     },
   };
 }
@@ -375,7 +379,8 @@ async function ensureMessage(bus, plan, node) {
     Task_ID: plan.taskId,
     Context_ID: plan.contextId,
     From_Node: node,
-    To_Node: plan.recipient,
+    // 动态审批要进 hub 的发卡扫描。原路回给发起方，机主看不到这张请求。
+    To_Node: plan.op === "auth" ? "hub" : plan.recipient,
     Role: "agent",
     Kind: plan.msgKind,
     Created_At: plan.createdAt,
@@ -390,6 +395,16 @@ async function ensureMessage(bus, plan, node) {
     Kind: "text",
     Text: String(plan.text ?? "").slice(0, 4000),
   }, plan.tokens.partText);
+  if (plan.op === "auth" && plan.msgDataPartId) {
+    await ensureCreate(bus, bus.tables.parts, "Part_ID", plan.msgDataPartId, {
+      Part_ID: plan.msgDataPartId,
+      Parent_ID: plan.msgId,
+      Parent_Type: "message",
+      Seq: 2,
+      Kind: "data",
+      Data: JSON.stringify({ scope: "dynamic", run_id: plan.runId }),
+    }, plan.tokens.partData);
+  }
 }
 
 function taskFieldsOf(plan) {
@@ -422,6 +437,12 @@ function rememberLocal(configDir, plan) {
     markInboxStatus(configDir, plan.taskId, "waiting-answer", {
       asked_at: new Date().toISOString(),
       question: plan.text,
+    });
+  } else if (plan.op === "auth") {
+    markInboxStatus(configDir, plan.taskId, "waiting-auth", {
+      auth_msg_id: plan.msgId,
+      auth_reason: plan.text,
+      auth_requested_at: new Date().toISOString(),
     });
   } else {
     markInboxStatus(configDir, plan.taskId, "failed", {
@@ -486,4 +507,14 @@ export async function handleInboxAsk({ bus, configDir, node, taskId, text }) {
 export async function handleInboxFail({ bus, configDir, node, taskId, text }) {
   // inbox fail 是本尊宣告终止，直接进 failed，不按 Retry_Count 退回 submitted。
   return commitInboxReceipt({ bus, configDir, node, taskId, text, op: "fail" });
+}
+
+export async function handleInboxAuth({ bus, configDir, node, taskId, text }) {
+  const body = String(text ?? "").trim();
+  if (!body) throw new Error("审批说明不能为空");
+  // 先标 waiting-auth，写总线期间 lah inbox --pop 不能再把这条 pending 取走。
+  if (!markInboxStatus(configDir, taskId, "waiting-auth")) {
+    throw new Error(`收件箱没有任务 ${taskId}`);
+  }
+  return commitInboxReceipt({ bus, configDir, node, taskId, text: body, op: "auth" });
 }

@@ -576,6 +576,32 @@ if (cmd === "setup") {
         process.exitCode = 1;
       }
     }
+  } else if (sub === "auth") {
+    const argv = rest.slice(1);
+    let taskId = "";
+    let text = "";
+    let cfgDir = "";
+    for (let i = 0; i < argv.length; i++) {
+      const flag = argv[i];
+      if (flag === "--task") taskId = argv[++i] ?? "";
+      else if (flag === "--text") text = argv[++i] ?? "";
+      else if (flag === "--config") cfgDir = argv[++i] ?? "";
+      else if (!flag.startsWith("--") && !taskId) taskId = flag;
+    }
+    if (!taskId || !text.trim()) {
+      console.error("用法：lah inbox auth --task <Task_ID> --text <具体动作、对象与风险>");
+      process.exitCode = 1;
+    } else {
+      try {
+        const { handleInboxAuth } = await import("../src/inbox.mjs");
+        const cfg = loadConfig(cfgDir || configDir);
+        await handleInboxAuth({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text });
+        console.log(`✓ 任务 ${taskId} 已请求机主批准`);
+      } catch (e) {
+        console.error(e?.message ?? e);
+        process.exitCode = 1;
+      }
+    }
   } else if (sub === "fail") {
     const argv = rest.slice(1);
     let taskId = "";
@@ -651,6 +677,7 @@ if (cmd === "setup") {
   lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]
   lah inbox ask  --task <Task_ID> --text <补充提问>
   lah inbox fail --task <Task_ID> --text <失败原因>
+  lah inbox auth --task <Task_ID> --text <具体动作、对象与风险>
   lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--idempotency-key <键>]
   lah task reply  --task <Task_ID> --text <答复内容>
   lah task show   <Task_ID>
