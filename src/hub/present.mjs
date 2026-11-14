@@ -10,10 +10,12 @@ import { f1 } from "../bus/feishu.mjs";
 import { appendQueueItem } from "../present-queue.mjs";
 import { messageText } from "./cards.mjs";
 
+// canceled 也要呈递：hub 审批驳回不经执行节点，没有别的回执会送到发起方，
+// lah present --wait 会一直等下去。
 const PRESENT_STATUSES = new Set([
-  "completed", "failed", "rejected", "input-required",
+  "completed", "failed", "rejected", "canceled", "input-required",
 ]);
-const TERMINAL_STATUSES = new Set(["completed", "failed", "rejected"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "rejected", "canceled"]);
 const MSG_KINDS = new Set([
   "result", "question", "auth_request", "notice", "answer", "auth_decision",
 ]);
@@ -22,12 +24,14 @@ const PREFERRED_KIND = {
   completed: "result",
   failed: "notice",
   rejected: "notice",
+  canceled: "notice",
   "input-required": "question",
 };
 const STATUS_LABEL = {
   completed: "已完成",
   failed: "失败",
   rejected: "已拒收",
+  canceled: "已取消",
   "input-required": "需要补充信息",
 };
 
@@ -139,11 +143,11 @@ function readState(file) {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     const keys = Array.isArray(parsed?.keys) ? parsed.keys.filter((k) => typeof k === "string") : [];
-    return { keys, exists: true };
+    return { keys, exists: true, canceledBaseline: parsed?.canceledBaseline === true };
   } catch (e) {
-    if (e.code === "ENOENT") return { keys: [], exists: false };
+    if (e.code === "ENOENT") return { keys: [], exists: false, canceledBaseline: false };
     // 读坏了就当没有发过。重发一次好过把新结果永久吞掉。
-    return { keys: [], broken: e.message, exists: false };
+    return { keys: [], broken: e.message, exists: false, canceledBaseline: false };
   }
 }
 
@@ -151,7 +155,9 @@ function writeState(file, state) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
   const tmp = file + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify({ keys: state.keys }, null, 1), { mode: 0o600 });
+  const body = { keys: state.keys };
+  if (state.canceledBaseline) body.canceledBaseline = true;
+  fs.writeFileSync(tmp, JSON.stringify(body, null, 1), { mode: 0o600 });
   fs.renameSync(tmp, file);
   fs.chmodSync(file, 0o600);
 }
@@ -194,8 +200,7 @@ export class PresentService {
         const status = String(f1(task, "Status") ?? "");
         const taskId = String(f1(task, "Task_ID") ?? "");
         if (!taskId) continue;
-        const isTerminal = TERMINAL_STATUSES.has(status) || status === "canceled";
-        if (isTerminal || metaKeys(task).length > 0) {
+        if (TERMINAL_STATUSES.has(status) || metaKeys(task).length > 0) {
           const statusMsg = String(f1(task, "Status_Msg") ?? "");
           const key = presentKey(taskId, status, statusMsg);
           seen.add(key);
@@ -206,11 +211,36 @@ export class PresentService {
           }
         }
       }
+      state.canceledBaseline = true;
       try {
         writeState(this.statePath, state);
         this.log(`首次启动建立结果呈递水位线（baseline）：已标记 ${state.keys.length} 项历史存量终态任务`);
       } catch (e) {
         this.log("首次写入 present_state.json baseline 失败：" + (e?.message ?? e));
+      }
+    }
+
+    // 旧版本不呈递 canceled，升级后已有的 present_state.json 里没有这些键。
+    // 补一次只针对 canceled 的水位线，避免把历史撤单一次性倒进队列。
+    if (!state.canceledBaseline) {
+      let marked = 0;
+      for (const task of tasks) {
+        if (String(f1(task, "Status") ?? "") !== "canceled") continue;
+        const taskId = String(f1(task, "Task_ID") ?? "");
+        if (!taskId) continue;
+        const key = presentKey(taskId, "canceled", String(f1(task, "Status_Msg") ?? ""));
+        if (!seen.has(key)) {
+          seen.add(key);
+          state.keys.push(key);
+          marked += 1;
+        }
+      }
+      state.canceledBaseline = true;
+      try {
+        writeState(this.statePath, state);
+        this.log(`结果呈递补建 canceled 水位线：已标记 ${marked} 项历史撤单`);
+      } catch (e) {
+        this.log("写入 canceled 水位线失败：" + (e?.message ?? e));
       }
     }
 

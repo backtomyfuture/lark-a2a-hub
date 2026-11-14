@@ -79,6 +79,28 @@ export const STALE_MIN = 20;
 // 若把 sweepSec 调到 900 以上，这条不等式不再成立。
 export const HEARTBEAT_MIN_SEC = 90;
 
+// 本节点有挂起任务（input-required / auth-required）时的复查节奏：[挂起时长上限秒, 等待上限秒]。
+// 答复与批准只追加在 Messages 表；动态批准连任务行都不改，事件一漏就只能等 900 秒对账。
+// 等的一方自己回表看，事件只用来提前叫醒。挂得越久越稀，超过最后一档回到对账周期，
+// 免得一张没人批的单整夜按分钟扫表、耗掉月度调用量。
+export const PENDING_RECHECK = [[10 * 60, 60], [60 * 60, 180]];
+
+// 返回本轮等待上限（毫秒）。没有处在复查档内的挂起任务时返回 Infinity，即不缩短。
+export function pendingRecheckCapMs(sinceList, nowMs) {
+  let cap = Infinity;
+  for (const since of sinceList) {
+    const age = (nowMs - since) / 1000;
+    if (!Number.isFinite(age)) continue;
+    for (const [maxAge, sec] of PENDING_RECHECK) {
+      if (age < maxAge) {
+        cap = Math.min(cap, sec * 1000);
+        break;
+      }
+    }
+  }
+  return cap;
+}
+
 export class Kernel {
   constructor(cfg) {
     this.cfg = cfg;
@@ -103,6 +125,8 @@ export class Kernel {
     this._sweepBusy = false;
     this._minuteTimer = null;
     this._minuteTimerOn = false;
+    // 挂起任务首次被本进程看到的时刻，键为 Task_ID＋Status_Msg：同一任务再次提问或申请审批要重新计时。
+    this._pendingSince = new Map();
     this.present = new PresentService({
       bus: this.bus,
       nodeName: this.cfg.node,
@@ -1415,7 +1439,30 @@ export class Kernel {
     // 注意：不在此处清 _wakeFlag。清零点在主循环扫表之前（见 run()）：
     // 扫表期间到达的事件必须保留到这里，让下一轮立刻再扫一次，
     // 否则「事件比任务行先落库」时唤醒会被清掉、只能等对账兜底。
-    await this.waker.wait(() => this._wakeFlag);
+    await this.waker.wait(() => this._wakeFlag, { capMs: this.pendingWaitCapMs() });
+  }
+
+  // 只记本节点名下的挂起任务。扫表失败时不调用，沿用上一轮的记录。
+  trackPending(tasks, nowMs = Date.now()) {
+    const next = new Map();
+    for (const t of tasks) {
+      if (f1(t, "Target_Node") !== this.cfg.node) continue;
+      const status = f1(t, "Status");
+      if (status !== "input-required" && status !== "auth-required") continue;
+      const taskId = String(f1(t, "Task_ID") ?? "");
+      const key = taskId + "\t" + String(f1(t, "Status_Msg") ?? "");
+      let since = this._pendingSince.get(key);
+      if (since == null) {
+        since = nowMs;
+        log(`pending recheck ${taskId} ${status}: 短间隔回表等答复或审批`);
+      }
+      next.set(key, since);
+    }
+    this._pendingSince = next;
+  }
+
+  pendingWaitCapMs(nowMs = Date.now()) {
+    return pendingRecheckCapMs(this._pendingSince.values(), nowMs);
   }
 
   startEventReceiver() {
@@ -1504,6 +1551,7 @@ export class Kernel {
         await this.resumeAuthCheck(t);
       }
     }
+    this.trackPending(tasks);
     await this.cleanupTerminalLocals(tasks);
     // 短命令可能在本轮 spawn 之后就已经退出。收口仍在这次扫表里串行做完，present 才能看见终态。
     const flight = this._directFlight;

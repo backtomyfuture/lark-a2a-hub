@@ -264,11 +264,19 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - 通知只报「哪个任务、什么新状态、哪条新消息」，内容由接收方回表拉全量（沿 A2A Push 语义）。
 - **结果呈递原路落盘到发起方本机队列，由本机 Agent 经 `lah present`（可 `--wait` 阻塞等待）取走，飞书端只发审批卡**：
   - 飞书端只由 `role=hub` 发送 `auth-required` 交互式审批卡（以及可选的 `stale` 告警），不再往飞书发送大段纯文本结果刷屏。
-  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。队列的追加与 `lah present --pop` 经同一把锁文件互斥，`--wait` 只读本机文件、不访问总线；队列文件格式不变。
+  - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`canceled`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。`canceled` 包括 hub 审批驳回：这一终态不经执行节点，没有别的回执会送到发起方，不呈递则发起方的 `lah present --wait` 永远等不到。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`（过渡期同时标记 `Presented="Yes"`；v3.5 起代码只读 Metadata 的键，Presented 列随后删除——线上键必须保留，本地状态丢失时靠它防历史回执重放）。队列的追加与 `lah present --pop` 经同一把锁文件互斥，`--wait` 只读本机文件、不访问总线；队列文件格式不变。
   - 归属与过滤：节点发起的定时任务（`From_Node` 为本节点、`Source=cron`）由本节点收入其 `present_queue.jsonl` 原路呈递；`role=hub` 的主节点仅接收发起方为空、为 `"hub"`、或发起方字面为 `"cron"` 的任务结果，不再因 `Source=cron` 截留其他节点发起的任务。
 - **呈递去重**按「任务＋当前 Status_Msg」即 (Task_ID, Status_Msg) 计，终态再带上 Status。同一任务每出现一条新的 question / auth_request 都是新的呈递项，答复续跑或批准后到达的终态结果也要再呈递一次。已呈递的 Msg_ID 记在 Tasks.Metadata；Presented 列自 v3.5 起废弃（其信息与 presented_keys 重复），不再作为去重依据，代码切换后删列。对 Tasks.Metadata 的写入一律先读再合并（总线无 CAS，整段覆盖会互相吞键）。初次装机或初次启动时，若本地呈递状态不存在，自动以线上存量终态或已呈递任务建立装机水位线（Baseline），避免向本地队列倾倒全部历史已完成任务。
 
 ## 修订记录
+
+**未发布：挂起复查与 canceled 呈递（表结构不变）**：
+- 动机：生产测试中，执行中批准后原节点 12 分钟才续跑。批准只落 Messages、任务行不变，事件一漏就只能等 900 秒对账。hub 审批驳回写的 `canceled` 不在呈递范围里，发起方用 `lah present --wait` 等不到终态。
+- §10.3 新增「挂起复查」：节点名下有挂起任务时按挂起时长缩短扫表间隔（60 秒、180 秒两档，超过 60 分钟回到原周期）。
+- §8.5 呈递状态加入 `canceled`。升级后首轮对已有的 `canceled` 补一次水位线，不倒历史撤单。
+- 否决的做法：
+  - 批准时 hub 顺手改一下任务行来触发事件。仍然依赖事件送达，且给执行中的任务行加一次与执行节点并发的写。
+  - 挂起期间一律按 pollSec 扫表。一张没人批的单会整夜按分钟扫表，耗月度调用量。
 
 **未发布：执行中动态审批**：停用 hub 在 submitted 阶段代写 auth_request。认领前静态门仍由目标节点执行。新增 working→auth-required：执行方按实际动作写带 `scope=dynamic` 的 auth_request，`client_token` 按本次 `run_id` 稳定派生。批准后按 `Claimed_By` 分流：为空回 submitted，非空保持 auth-required 并由原节点 `resume=true` 续跑（含 input-required 上触发的静态门）。同一任务可多次动态请求。新增 `lah inbox auth`。`agent-auth` / `need_auth` 为退出后解析的软约定。表结构不变。
 
@@ -432,6 +440,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 | webhook | 飞书多维表格自动化在 Tasks 行新增或变更后，向协议接入型节点的端点 POST，只带 ID（Task_ID、状态、Msg_ID），不带正文；发起 POST 的是飞书自动化，本项目任何进程不主动推送 | 协议接入型节点（无法建长连接但有固定接收地址的外部节点，如 Grok bot） | `automation` |
 
 - **对账兜底**：三种方式都必须保留低频对账扫表，默认 15 分钟（900 秒）。事件断线不补发、出站通知可能丢失，对账是安全网，不是心跳。poll 方式的轮询间隔不得长于对账周期；协议接入型节点按其运行手册定期回表核对。
+- **挂起复查（等的一方自己回表看）**：答复（`answer`）与审批决定（`auth_decision`）只追加在 Messages；执行中批准连任务行都不改。守护进程型节点名下有 `input-required` 或 `auth-required` 任务时，两次扫表的间隔按挂起时长缩短：前 10 分钟不超过 60 秒，10～60 分钟不超过 180 秒，超过 60 分钟回到原周期。计时以 (Task_ID, Status_Msg) 为键，同一任务再提问或再申请审批重新计时。事件仍是提前叫醒，这一节奏只保证事件漏掉时的上限；它只缩短等待，不拉长。
 - **webhook 在本标准中只指出站通知**：发起 POST 的是飞书多维表格自动化，接收端点由协议接入型节点自有平台托管；本标准的实现绝不开监听端口、不做端口映射或隧道，也不主动 POST（§0 第 3 条）。接入步骤：在 Base 配置自动化（Tasks 行新增或变更时 → 发送 webhook 到节点地址，只带 ID），节点收到后经 REST 读表处理。因此守护进程型节点登记的 Receive_Mode 只取 `event` 或 `poll`；`automation` 只用于登记协议接入型节点，表中遗留选项 `webhook` 不再使用。
 - Receive_Mode 沿用表中现有选项（表结构不变），ws 方式在表中记为 `event`。
 - 审批卡回调同样经长连接接收，不开回调地址。

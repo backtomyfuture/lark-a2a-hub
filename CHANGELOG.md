@@ -5,6 +5,8 @@
 
 ## [未发布]
 
+- **挂起任务短间隔复查**：执行中批准只写 `auth_decision`、任务行不变，事件一漏原节点就要等 900 秒对账（生产实测 12 分 18 秒）。现在节点名下有 `input-required` 或 `auth-required` 任务时，扫表间隔按挂起时长缩短：前 10 分钟不超过 60 秒，60 分钟内不超过 180 秒，之后回到原周期。node 与 hub 角色同一口径。唤醒器 `wait()` 新增只缩不涨的 `capMs`。标准 §10.3 新增「挂起复查」。
+- **呈递覆盖 `canceled`**：hub 审批驳回写的 `canceled` 现在会落入发起方本机队列，正文取驳回 notice，`lah present --wait --task` 能等到终态。升级后首轮对已有 `canceled` 补一次水位线（`present_state.json` 记 `canceledBaseline`），不倒历史撤单。标准 §8.5 同步。
 - **修复审批卡回调：第一次点击报错、卡片不变还能再点**：旧回调要串行读写表八次以上才返回，超过飞书卡片回调的 3 秒时限（错误码 200341）；后台其实写完了，所以第二次点击看起来才生效。回调又只回 toast、从不换卡，按钮一直可点。现在同步路径只做机主与去重校验加一次回读（上限 2 秒），通过就当场换成「已批准 / 已驳回」卡（无按钮），写表放到后台串行执行；后台写失败时用 `PATCH /im/v1/messages/{message_id}` 把卡改成「处理失败，可重试」并恢复按钮，写前发现任务已变则改成「已失效」。重试一律追加新的 `auth_decision`，以最新一条为准（标准 §8.3）。卡片 `config.update_multi=true`。hub 注册了卡片回调后不再挂 lark-cli 的本地事件总线（它回不了卡片响应），`lah doctor` 对 hub 同机总线在线告警。
 - **审批卡精简**：标题改为「待审批 · <节点>/<技能>」、副标题为 Task_ID；正文只取首条 instruction（超 300 字截断并附 `lah task why`），标题已是指令开头时不重复，空参数、空执行者、Context_ID 不上卡。`auth_request` 正文同样去重。
 - **执行中动态审批**：hub 不再在 `submitted` 阶段代写 `auth_request`。认领前的行级 `Approval_Class=approve` 与本机 `approval_class` 下限仍由目标节点拦截。执行中可以 `working → auth-required`：direct / carrier 认 `agent-auth` 围栏或 json 的 `need_auth`，inbox 用 `lah inbox auth`。动态请求带 `scope=dynamic` 与稳定 `run_id`，`client_token` 按任务号加这次 `run_id` 派生，同一次执行重试不另发卡。批准后 `Claimed_By` 为空则回 `submitted`，非空则保持 `auth-required`，原节点核验签名决定后以续跑方式继续（含在 `input-required` 上撞上静态门的情况）。同一 `Status_Msg` 已有验签通过的决定时，再次点击不再写第二条。`agent-auth` 在进程退出后解析，拦不住已经发生的副作用。续跑时 `input.json` 带 `approvals`（已验签的批准记录），agent 提示模板说明其含义，避免续跑后把同一动作再申请一遍。审批卡遇到动态请求时，在指令之前多一块「执行中请求授权（节点名）」，写出执行方请求的具体动作。表结构不变，版本号未动。

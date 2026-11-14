@@ -529,10 +529,12 @@ class WsWaker {
 
   // 与原 waitWake 同一节奏：先睡 1 秒再看标志；每轮重新评估长连接状态，且上限只缩不涨。
   // 不在这里清标志。门铃变大时补一次 onWake，让不走 wait() 的调用方也能收到。
-  async wait(isAwake) {
+  // capMs 是调用方的额外上限（本节点有挂起任务时更短），只能缩短不能拉长。
+  async wait(isAwake, { capMs } = {}) {
     const start = this._doorbellSize();
     const disconnectEpoch = this._disconnectEpoch;
-    let maxWait = this._waitCapMs(start, disconnectEpoch);
+    const extraCap = Number.isFinite(capMs) && capMs > 0 ? capMs : Infinity;
+    let maxWait = Math.min(extraCap, this._waitCapMs(start, disconnectEpoch));
     let waited = 0;
     while (waited < maxWait) {
       if (this._stopped) return;
