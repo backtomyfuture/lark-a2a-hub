@@ -25,19 +25,19 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <!-- 上行：审批分支 -->
 <rect class="human" x="300" y="80" width="180" height="64" rx="12"/>
 <text x="390" y="108" class="sn" text-anchor="middle">auth-required</text>
-<text x="390" y="128" class="sd" text-anchor="middle">等机主审批</text>
+<text x="390" y="128" class="sd" text-anchor="middle">等机主审批（静态 / 动态）</text>
 
 <rect class="term" x="740" y="80" width="180" height="64" rx="12"/>
 <text x="830" y="108" class="sn" text-anchor="middle">canceled</text>
-<text x="830" y="128" class="sd" text-anchor="middle">机主驳回 · 终态</text>
+<text x="830" y="128" class="sd" text-anchor="middle">审批驳回 / 撤单 · 终态</text>
 
 <path class="conn" d="M482 112H734"/>
 <text x="608" y="100" class="l" text-anchor="middle">驳回</text>
 
 <path class="conn" d="M330 282V150"/>
-<text x="322" y="205" class="l" text-anchor="end">先审批</text>
+<text x="322" y="205" class="l" text-anchor="end">认领前 / 执行中</text>
 <path class="back" d="M450 144V244"/>
-<text x="458" y="205" class="l">批准</text>
+<text x="458" y="205" class="l">批准（待认领 / 续跑）</text>
 
 <!-- 主行 -->
 <rect class="state" x="40" y="250" width="180" height="64" rx="12"/>

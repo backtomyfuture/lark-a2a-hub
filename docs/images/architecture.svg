@@ -51,7 +51,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <rect class="item" x="36" y="184" width="142" height="36" rx="8"/>
 <text x="107" y="207" class="r" text-anchor="middle">任意 Agent</text>
 <rect class="item" x="36" y="230" width="142" height="36" rx="8"/>
-<text x="107" y="253" class="r" text-anchor="middle">定时计划（Rules）</text>
+<text x="107" y="253" class="r" text-anchor="middle">本机定时计划</text>
 <rect class="more" x="36" y="282" width="142" height="32" rx="8"/>
 <circle class="dot" cx="95" cy="298" r="2.4"/>
 <circle class="dot" cx="107" cy="298" r="2.4"/>
@@ -95,7 +95,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <rect class="chip" x="264" y="362" width="388" height="38" rx="9"/>
 <rect class="tag" x="272" y="368" width="128" height="26" rx="6"/>
 <text x="336" y="385.5" class="tn" text-anchor="middle">Rules</text>
-<text x="412" y="385.5" class="td">路由规则与定时计划，调度也走表</text>
+<text x="412" y="385.5" class="td">本机计划的只读观察镜像，全网总览</text>
 
 <!-- 2 & 3: 认领与回写 -->
 <path class="conn" d="M672 190H712"/>
@@ -143,7 +143,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 
 <rect class="plug" x="246" y="464" width="692" height="104" rx="14"/>
 <text x="266" y="492" class="h2">hub（枢纽）</text>
-<text x="392" y="492" class="s">审批、呈递、回收、调度都在这里</text>
+<text x="392" y="492" class="s">审批发卡、结果呈递、陈旧回收、预约复查</text>
 <rect class="item" x="266" y="510" width="158" height="36" rx="8"/>
 <text x="345" y="533" class="r" text-anchor="middle">审批交互卡</text>
 <rect class="item" x="434" y="510" width="158" height="36" rx="8"/>
@@ -151,7 +151,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <rect class="item" x="602" y="510" width="158" height="36" rx="8"/>
 <text x="681" y="533" class="r" text-anchor="middle">陈旧任务回收</text>
 <rect class="item" x="770" y="510" width="158" height="36" rx="8"/>
-<text x="849" y="533" class="r" text-anchor="middle">定时调度建单</text>
+<text x="849" y="533" class="r" text-anchor="middle">later 预约复查</text>
 
 <text x="480" y="606" class="s" text-anchor="middle">节点、hub、云端 bot 都是可替换的进程；表在，活就不丢。</text>
 </svg>
