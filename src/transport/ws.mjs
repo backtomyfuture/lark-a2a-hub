@@ -24,6 +24,36 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 
 const EVENT_TYPE = "drive.file.bitable_record_changed_v1";
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+// 服务端 PingInterval 当前为 90 秒；pingTimeout 必须严格小于它，否则半开连接上每次重发 ping
+// 都会重置看门狗。设为 30 秒可在最多约 120 秒（90+30）内掐断假死套接字并交给 SDK 重连。
+export const WS_PING_TIMEOUT_SEC = 30;
+// 与 SDK pullConnectConfig 的 15 秒 HTTP 超时对齐，防止 DNS/TLS 握手黑洞把 isConnecting 永久卡死。
+export const WS_HANDSHAKE_TIMEOUT_MS = 15_000;
+
+export function buildWsClientOptions({
+  appId,
+  appSecret,
+  domain,
+  onReady,
+  onError,
+  onReconnecting,
+  onReconnected,
+} = {}) {
+  return {
+    appId,
+    appSecret,
+    // 国际版 Lark 的长连接网关在另一套域名上，必须和读写表的域名一致。
+    domain: domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
+    // SDK LoggerLevel 枚举键是小写 warn=2；写成大写 WARN 会得 undefined 并回退到 info。
+    loggerLevel: Lark.LoggerLevel.warn,
+    handshakeTimeoutMs: WS_HANDSHAKE_TIMEOUT_MS,
+    wsConfig: { pingTimeout: WS_PING_TIMEOUT_SEC },
+    onReady,
+    onError,
+    onReconnecting,
+    onReconnected,
+  };
+}
 
 // 卡片回调必须能把 toast 和卡片交回飞书。本地总线做不到，所以只要注册了处理函数就不挂总线。
 export function shouldAttachLocalBus(extraHandlers, sockExists) {
@@ -54,16 +84,30 @@ export function normalizeBusEvent(msg) {
 }
 
 export class FeishuEventReceiver {
-  constructor({ appId, appSecret, baseToken, domain, doorbellFile, onEvent, onStatus, log, extraHandlers }) {
+  constructor({
+    appId,
+    appSecret,
+    baseToken,
+    domain,
+    doorbellFile,
+    onEvent,
+    onStatus,
+    onReconnecting,
+    log,
+    extraHandlers,
+    createClient,
+  }) {
     this.domain = domain;
     this.baseToken = baseToken;
     this.doorbellFile = doorbellFile;
     this.onEvent = onEvent;
     this.onStatus = onStatus;
+    this.onReconnecting = onReconnecting;
     this.log = log ?? (() => {});
     this.appId = appId;
     this.appSecret = appSecret;
     this.extraHandlers = extraHandlers ?? {};
+    this._createClient = createClient ?? ((opts) => new Lark.WSClient(opts));
     this._stopped = false;
     this.ws = null;
     this.busSockets = [];
@@ -325,28 +369,37 @@ export class FeishuEventReceiver {
       if (typeof userBitable === "function") await userBitable(wrapped);
     };
     const dispatcher = new Lark.EventDispatcher({}).register(handles);
-    this.ws = new Lark.WSClient({
+    let ws = null;
+    const isAlive = () => !this._stopped && (this.ws === null || this.ws === ws);
+    ws = this._createClient(buildWsClientOptions({
       appId: this.appId,
       appSecret: this.appSecret,
-      // 国际版 Lark 的长连接网关在另一套域名上，必须和读写表的域名一致。
-      domain: this.domain === "lark" ? Lark.Domain.Lark : Lark.Domain.Feishu,
-      loggerLevel: Lark.LoggerLevel.WARN,
+      domain: this.domain,
       onReady: () => {
+        if (!isAlive()) return;
         this.log("event receiver: ws connected");
         this.onStatus?.(true);
       },
       onError: (err) => {
+        if (!isAlive()) return;
         this.log("event receiver: ws error " + (err?.message ?? err));
         this.onStatus?.(false);
       },
-      onReconnecting: () => this.log("event receiver: reconnecting"),
+      onReconnecting: () => {
+        if (!isAlive()) return;
+        this.log("event receiver: reconnecting");
+        this.onReconnecting?.();
+      },
       onReconnected: () => {
+        if (!isAlive()) return;
         this.log("event receiver: reconnected");
         this.onStatus?.(true);
       },
-    });
-    // start() 返回的 Promise 只在连接关闭时才 settle，不 await。
-    Promise.resolve(this.ws.start({ eventDispatcher: dispatcher })).catch((e) => {
+    }));
+    this.ws = ws;
+    // SDK 1.76.0 的 start() 同步调起 reConnect(true) 后就会 resolve，不会等连接关闭。
+    Promise.resolve(ws.start({ eventDispatcher: dispatcher })).catch((e) => {
+      if (!isAlive()) return;
       this.log("event receiver: start failed " + e.message);
       this.onStatus?.(false);
     });
@@ -394,14 +447,17 @@ export function createWsWaker(cfg, opts = {}) {
 }
 
 class WsWaker {
-  constructor(cfg, { onWake, extraHandlers, log, onStatus } = {}) {
+  constructor(cfg, { onWake, extraHandlers, log, onStatus, sleep: sleepFn, createClient } = {}) {
     this.mode = "ws";
     this.cfg = cfg ?? {};
     this.onWake = onWake;
     this.extraHandlers = extraHandlers ?? {};
     this.log = log ?? (() => {});
     this.onStatus = onStatus;
+    this._sleep = sleepFn ?? sleep;
+    this._createClient = createClient;
     this._wsUp = false;
+    this._disconnectEpoch = 0;
     this._stopped = false;
     this._started = false;
     this.receiver = null;
@@ -424,13 +480,23 @@ class WsWaker {
       domain: this.cfg.domain ?? bus.domain,
       doorbellFile: this.cfg.doorbellFile,
       extraHandlers: this.extraHandlers,
+      createClient: this._createClient,
       onEvent: () => {
         if (this._stopped) return;
         this.onWake?.({ source: "event" });
       },
       onStatus: (up) => {
+        if (this._stopped) return;
+        if (!up && this._wsUp) this._disconnectEpoch += 1;
         this._wsUp = up;
         this.onStatus?.(up);
+      },
+      onReconnecting: () => {
+        if (this._stopped) return;
+        // 重连中只降本地等待上限，不向调用方上报 onStatus(false)，
+        // 避免 hub 误判为「SDK 已放弃重连」而强拆正在自愈的实例。
+        this._disconnectEpoch += 1;
+        this._wsUp = false;
       },
       log: this.log,
     });
@@ -453,17 +519,26 @@ class WsWaker {
     try { return fs.statSync(this.cfg.doorbellFile).size; } catch { return -1; }
   }
 
-  // 与原 waitWake 同一节奏：先睡 1 秒再看标志，进入等待时才采样门铃大小和连接状态。
+  _waitCapMs(doorbellStart, disconnectEpoch) {
+    // 只要本轮等待中发生过断连，即使 1 秒内秒级重连成功也不把上限拉回 sweepSec，
+    // 避免断线窗口内漏掉的非补发事件被迫等到下一轮 900 秒对账。
+    const healthyWs = this._wsUp && this._disconnectEpoch === disconnectEpoch;
+    const eventDriven = healthyWs || doorbellStart >= 0;
+    return (eventDriven ? this.cfg.sweepSec : this.cfg.pollSec) * 1000;
+  }
+
+  // 与原 waitWake 同一节奏：先睡 1 秒再看标志；每轮重新评估长连接状态，且上限只缩不涨。
   // 不在这里清标志。门铃变大时补一次 onWake，让不走 wait() 的调用方也能收到。
   async wait(isAwake) {
     const start = this._doorbellSize();
-    const eventDriven = this._wsUp || start >= 0;
-    const maxWait = (eventDriven ? this.cfg.sweepSec : this.cfg.pollSec) * 1000;
+    const disconnectEpoch = this._disconnectEpoch;
+    let maxWait = this._waitCapMs(start, disconnectEpoch);
     let waited = 0;
     while (waited < maxWait) {
       if (this._stopped) return;
-      await sleep(1000);
+      await this._sleep(1000);
       waited += 1000;
+      maxWait = Math.min(maxWait, this._waitCapMs(start, disconnectEpoch));
       if (this._stopped) return;
       if (isAwake?.()) {
         this.log("event: waking");
