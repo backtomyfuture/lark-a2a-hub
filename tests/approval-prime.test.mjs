@@ -1,4 +1,5 @@
-// 行级 Approval_Class=approve 必须在认领前由 hub 写成唯一一条 auth_request。
+// hub 不再在 submitted 阶段替节点写 auth_request。
+// 行级 Approval_Class 与 commands.json 下限仍由目标节点在认领前落静态门。
 // 总线是内存 mock。不读 ~/.hub-node，不打开长连接。
 
 import assert from "node:assert/strict";
@@ -102,7 +103,6 @@ function approvalFor(dir, mock, kernel) {
     bus: mock,
     ownerOpenId: OWNER,
     statePath: path.join(dir, "approval_state.json"),
-    kernel,
     log: () => {},
   });
 }
@@ -124,11 +124,16 @@ async function decide(approval, task, statusMsg, decision) {
   return res;
 }
 
-// 红线：行级 approve 在认领前只落一条 To_Node=hub 的 auth_request。重启再扫不得再写、不得再发卡。
-test("行级 approve 提前审批只写一条 auth_request，重复扫描与重启不新增", async () => {
+function cardText(mock) {
+  return mock.sent.map((item) => String(item.content ?? "")).join("\n");
+}
+
+// 红线：submitted + 行级 approve 时 hub 只扫、不代写。静态门由目标节点在认领前落一条。
+test("hub 扫描不抢跑，节点认领前只写一条静态 auth_request", async () => {
   await withTemp(async (dir) => {
+    const marker = path.join(dir, "ran");
     writeCommands(dir, {
-      command: echoCommand(),
+      command: nodeCommand(`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`),
       mode: "json",
       context: "direct",
       timeout_sec: 30,
@@ -137,6 +142,7 @@ test("行级 approve 提前审批只写一条 auth_request，重复扫描与重�
     });
     const mock = new MockFeishuBus({ tables: TABLES });
     const hub = new Kernel(kernelCfg(dir, mock, "hub", "hub"));
+    const node = new Kernel(kernelCfg(dir, mock, "node-a", "node"));
     const approval = approvalFor(dir, mock, hub);
     await seedTask(mock, {
       Task_ID: "TASK-APR-1",
@@ -144,10 +150,12 @@ test("行级 approve 提前审批只写一条 auth_request，重复扫描与重�
       Approval_Class: "approve",
     });
 
-    const primed = await approval.primeRowApprovals(await mock.listRecords(TABLES.tasks));
-    assert.equal(primed, 1);
-    assert.equal(await approval.scan(), 1);
+    assert.equal(await approval.scan(), 0);
+    assert.equal((await authRequests(mock, "TASK-APR-1")).length, 0);
+    assert.equal(f1(await taskOf(mock, "TASK-APR-1"), "Status"), "submitted");
+    assert.equal(mock.sent.length, 0);
 
+    await node.run({ once: true });
     const task = await taskOf(mock, "TASK-APR-1");
     const requests = await authRequests(mock, "TASK-APR-1");
     assert.equal(requests.length, 1);
@@ -156,10 +164,15 @@ test("行级 approve 提前审批只写一条 auth_request，重复扫描与重�
     assert.equal(f1(task, "Status"), "auth-required");
     assert.equal(f1(task, "Status_Msg"), f1(requests[0], "Msg_ID"));
     assert.equal(String(f1(task, "Claimed_By") ?? ""), "");
-    assert.equal(mock.sent.length, 1);
+    assert.equal(fs.existsSync(marker), false);
+    const dataParts = (await mock.findRecords(TABLES.parts, "Parent_ID", f1(requests[0], "Msg_ID")))
+      .filter((part) => f1(part, "Kind") === "data");
+    assert.equal(dataParts.length, 0);
 
-    assert.equal(await approval.scan(), 0);
+    assert.equal(await approval.scan(), 1);
     assert.equal((await authRequests(mock, "TASK-APR-1")).length, 1);
+    assert.match(cardText(mock), /待审批 · node-a\/echo/);
+    assert.doesNotMatch(cardText(mock), /执行中请求授权/);
     assert.equal(mock.sent.length, 1);
 
     const restarted = approvalFor(dir, mock, new Kernel(kernelCfg(dir, mock, "hub", "hub")));
@@ -171,7 +184,7 @@ test("行级 approve 提前审批只写一条 auth_request，重复扫描与重�
 });
 
 // 红线：消息列表暂时看不见已有 auth_request 时，同一 client_token 仍只能命中原行。
-test("client_token 在重扫看不见原消息时仍不插入第二条 auth_request", async () => {
+test("静态门 client_token 在重扫看不见原消息时仍不插入第二条", async () => {
   await withTemp(async (dir) => {
     writeCommands(dir, {
       command: echoCommand(),
@@ -180,14 +193,13 @@ test("client_token 在重扫看不见原消息时仍不插入第二条 auth_requ
       timeout_sec: 30,
     });
     const mock = new MockFeishuBus({ tables: TABLES });
-    const hub = new Kernel(kernelCfg(dir, mock, "hub", "hub"));
+    const node = new Kernel(kernelCfg(dir, mock, "node-a", "node"));
     await seedTask(mock, {
       Task_ID: "TASK-TOK-1",
       Context_ID: "CTX-TOK-1",
       Approval_Class: "approve",
     });
-    const first = await hub.primeSubmittedApproval(await taskOf(mock, "TASK-TOK-1"));
-    assert.equal(first.status, "auth-required");
+    assert.equal(await node.askApproval(await taskOf(mock, "TASK-TOK-1")), true);
     assert.equal((await authRequests(mock, "TASK-TOK-1")).length, 1);
 
     await mock.updateRecord(TABLES.tasks, (await taskOf(mock, "TASK-TOK-1")).record_id, {
@@ -201,20 +213,21 @@ test("client_token 在重扫看不见原消息时仍不插入第二条 auth_requ
       return origList(table);
     };
     const idempotentBefore = mock.journal.filter((item) => item.op === "create" && item.idempotent).length;
-    const again = await new Kernel(kernelCfg(dir, mock, "hub", "hub"))
-      .primeSubmittedApproval(await taskOf(mock, "TASK-TOK-1"));
-    assert.equal(again.status, "auth-required");
+    const again = await new Kernel(kernelCfg(dir, mock, "node-a", "node"))
+      .askApproval(await taskOf(mock, "TASK-TOK-1"));
+    assert.equal(again, true);
     const idempotentAfter = mock.journal.filter((item) => item.op === "create" && item.idempotent).length;
     assert.equal(idempotentAfter, idempotentBefore + 1);
     mock.listRecords = origList;
     const requests = await authRequests(mock, "TASK-TOK-1");
     assert.equal(requests.length, 1);
     assert.equal(f1(await taskOf(mock, "TASK-TOK-1"), "Status_Msg"), f1(requests[0], "Msg_ID"));
+    assert.equal(f1(await taskOf(mock, "TASK-TOK-1"), "Status"), "auth-required");
   });
 });
 
-// 红线：节点认领时看见既有 auth_request 就停在 auth-required，不能再写一条。
-test("节点 askApproval 沿用 hub 已写的 auth_request，批准后才执行到 completed", async () => {
+// 红线：认领前批准把任务放回 submitted。节点第二次才执行，全程仍只有一条静态请求。
+test("节点静态门批准后才执行到 completed", async () => {
   await withTemp(async (dir) => {
     writeCommands(dir, {
       command: echoCommand(),
@@ -233,12 +246,11 @@ test("节点 askApproval 沿用 hub 已写的 auth_request，批准后才执行�
       Context_ID: "CTX-GO-1",
       Approval_Class: "approve",
     });
-    assert.equal(await approval.scan(), 1);
+    await node.run({ once: true });
     const pending = await taskOf(mock, "TASK-GO-1");
     const requestId = f1(pending, "Status_Msg");
-    assert.equal(await node.askApproval(pending), true);
-    assert.equal((await authRequests(mock, "TASK-GO-1")).length, 1);
-    assert.equal(f1(await taskOf(mock, "TASK-GO-1"), "Status"), "auth-required");
+    assert.equal(f1(pending, "Status"), "auth-required");
+    assert.equal(String(f1(pending, "Claimed_By") ?? ""), "");
 
     const toast = await decide(approval, pending, requestId, "approve");
     assert.equal(toast.toast.type, "info");
@@ -288,7 +300,7 @@ test("驳回后任务 canceled，节点不会认领", async () => {
       Context_ID: "CTX-NO-1",
       Approval_Class: "approve",
     });
-    assert.equal(await approval.scan(), 1);
+    await node.run({ once: true });
     const pending = await taskOf(mock, "TASK-NO-1");
     const toast = await decide(approval, pending, f1(pending, "Status_Msg"), "reject");
     assert.equal(toast.toast.type, "info");
@@ -317,8 +329,8 @@ test("驳回后任务 canceled，节点不会认领", async () => {
   });
 });
 
-// 红线：回读发现已被认领时停手。working 不能被改回 auth-required。
-test("回读发现已认领或 working 时不改任务状态", async () => {
+// 红线：Claimed_By 已有值时批准不得把任务打回 submitted。
+test("执行中批准保持 auth-required，不写 submitted", async () => {
   await withTemp(async (dir) => {
     writeCommands(dir, {
       command: echoCommand(),
@@ -330,55 +342,33 @@ test("回读发现已认领或 working 时不改任务状态", async () => {
     const hub = new Kernel(kernelCfg(dir, mock, "hub", "hub"));
     const approval = approvalFor(dir, mock, hub);
     await seedTask(mock, {
-      Task_ID: "TASK-WORK-1",
-      Context_ID: "CTX-WORK-1",
-      Approval_Class: "approve",
-      Status: "working",
+      Task_ID: "TASK-DYN-1",
+      Context_ID: "CTX-DYN-1",
+      Approval_Class: "auto",
+      Status: "auth-required",
       Claimed_By: "node-a",
+      Status_Msg: "MSG-DYN-1-02",
     });
-    await seedTask(mock, {
-      Task_ID: "TASK-CLM-1",
-      Context_ID: "CTX-CLM-1",
-      Approval_Class: "approve",
-      Status: "submitted",
-      Claimed_By: "node-a",
+    await mock.createRecord(TABLES.messages, {
+      Msg_ID: "MSG-DYN-1-02",
+      Task_ID: "TASK-DYN-1",
+      Context_ID: "CTX-DYN-1",
+      From_Node: "node-a",
+      To_Node: "hub",
+      Role: "agent",
+      Kind: "auth_request",
+      Created_At: "2026-01-15T09:05:00+0800",
     });
-    assert.equal(await approval.primeRowApprovals(await mock.listRecords(TABLES.tasks)), 0);
-    const workingRes = await hub.primeSubmittedApproval(await taskOf(mock, "TASK-WORK-1"));
-    const claimedRes = await hub.primeSubmittedApproval(await taskOf(mock, "TASK-CLM-1"));
-    assert.equal(workingRes.acted, false);
-    assert.equal(claimedRes.acted, false);
-    assert.equal(f1(await taskOf(mock, "TASK-WORK-1"), "Status"), "working");
-    assert.equal(f1(await taskOf(mock, "TASK-CLM-1"), "Status"), "submitted");
-    assert.equal(f1(await taskOf(mock, "TASK-CLM-1"), "Claimed_By"), "node-a");
-    assert.equal((await authRequests(mock, "TASK-WORK-1")).length, 0);
-    assert.equal((await authRequests(mock, "TASK-CLM-1")).length, 0);
-
-    const race = await seedTask(mock, {
-      Task_ID: "TASK-RACE-1",
-      Context_ID: "CTX-RACE-1",
-      Approval_Class: "approve",
-    });
-    const origCreate = mock.createRecord.bind(mock);
-    mock.createRecord = async (table, fields, token) => {
-      const created = await origCreate(table, fields, token);
-      if (table === TABLES.messages && fields?.Kind === "auth_request" && fields?.Task_ID === "TASK-RACE-1") {
-        await mock.updateRecord(TABLES.tasks, race.record_id, {
-          Status: "working",
-          Claimed_By: "node-a",
-        });
-      }
-      return created;
-    };
-    const res = await approval.primeRowApprovals(await mock.listRecords(TABLES.tasks));
-    assert.equal(res, 0);
-    const after = await taskOf(mock, "TASK-RACE-1");
-    assert.equal(f1(after, "Status"), "working");
+    const pending = await taskOf(mock, "TASK-DYN-1");
+    const toast = await decide(approval, pending, "MSG-DYN-1-02", "approve");
+    assert.equal(toast.toast.type, "info");
+    assert.equal(toast.toast.content, "已批准");
+    const after = await taskOf(mock, "TASK-DYN-1");
+    assert.equal(f1(after, "Status"), "auth-required");
     assert.equal(f1(after, "Claimed_By"), "node-a");
-    assert.equal(String(f1(after, "Status_Msg") ?? ""), "");
-    assert.equal((await authRequests(mock, "TASK-RACE-1")).length, 1);
-    assert.equal(f1(await taskOf(mock, "TASK-WORK-1"), "Status"), "working");
-    assert.equal(f1(await taskOf(mock, "TASK-CLM-1"), "Status"), "submitted");
+    assert.equal(f1(after, "Status_Msg"), "MSG-DYN-1-02");
+    assert.equal(mock.journal.some((item) =>
+      item.op === "update" && item.table === TABLES.tasks && f1({ fields: item.fields }, "Status") === "submitted"), false);
   });
 });
 
@@ -408,7 +398,6 @@ test("非 approve 任务不提前审批，本地下限仍在认领时触发", as
       Context_ID: "CTX-NOTE-1",
       Approval_Class: "notify",
     });
-    assert.equal(await approval.primeRowApprovals(await mock.listRecords(TABLES.tasks)), 0);
     assert.equal(await approval.scan(), 0);
     assert.equal((await mock.listRecords(TABLES.messages)).some((row) => f1(row, "Kind") === "auth_request"), false);
 
@@ -426,6 +415,8 @@ test("非 approve 任务不提前审批，本地下限仍在认领时触发", as
     assert.equal(fs.existsSync(marker), false);
 
     assert.equal(await approval.scan(), 2);
+    assert.match(cardText(mock), /待审批 · node-a\/echo/);
+    assert.doesNotMatch(cardText(mock), /执行中请求授权/);
     assert.equal((await authRequests(mock, "TASK-AUTO-1")).length, 1);
     assert.equal((await authRequests(mock, "TASK-NOTE-1")).length, 1);
   });
@@ -451,7 +442,7 @@ test("行级与本机都不是 approve 时认领直接完成", async () => {
       Approval_Class: "notify",
     });
     await seedTask(mock, { Task_ID: "TASK-FREE-2", Context_ID: "CTX-FREE-2" });
-    assert.equal(await approval.primeRowApprovals(await mock.listRecords(TABLES.tasks)), 0);
+    assert.equal(await approval.scan(), 0);
     await node.run({ once: true });
     assert.equal(f1(await taskOf(mock, "TASK-FREE-1"), "Status"), "completed");
     assert.equal(f1(await taskOf(mock, "TASK-FREE-2"), "Status"), "completed");

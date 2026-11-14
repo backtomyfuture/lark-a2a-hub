@@ -81,7 +81,9 @@ node 角色从不写这两样，hub 角色是唯一写方。
 2. **幂等**：同一业务意图复用同一 Idempotency_Key；节点与枢纽都按它
    查重。写请求中途断线≠没建成：先按幂等键回表确认，再决定是否重建。
 3. **审批类**：Approval_Class=approve 的任务，节点在认领前（仍为
-   submitted）写 auth_request 并置 auth-required，不经 working。枢纽
+   submitted）写 auth_request 并置 auth-required，不经 working；hub
+   不在 submitted 阶段代写。执行中的节点也可以按实际动作再发一条带
+   `scope=dynamic` 的 auth_request（见标准 §8.3）。枢纽
    不要绕过审批直接改状态放行——决定必须以 auth_decision 消息落表，
    且 In_Reply_To 等于该任务当前 Status_Msg。
 4. **信号行（过渡手段）**：对只能被「Tasks 新增」唤醒的 automation 型
@@ -117,9 +119,11 @@ node 角色从不写这两样，hub 角色是唯一写方。
    卡片只发给机主不能代替这一步。通过后回读任务，确认仍为 auth-required
    且 Status_Msg 与卡片上的一致 → 写 auth_decision（From_Node=hub、Role=user、
    In_Reply_To=当前 Status_Msg；DataPart 写
-   `{"decision": "approve"|"reject"}`）→ approve 回置 submitted，
-   **保留 Status_Msg 不清**（节点认领前用它核对 In_Reply_To），并清
-   Presented 以便最终结果再呈递一次；reject 置 canceled，并写 notice。
+   `{"decision": "approve"|"reject"}`）。同一 Status_Msg 下已有验签通过的
+   决定时不再写第二条。approve 按 Claimed_By 分流：为空则回置 submitted，
+   **保留 Status_Msg 不清**（节点认领前用它核对 In_Reply_To）；非空
+   （执行中的动态审批，或 input-required 上撞到静态门）则不改任务行，
+   由原节点验签后自己切回 working 续跑。reject 置 canceled，并写 notice。
 3. 节点在下一轮唤醒时只认满足标准 §8.3 的 auth_decision——**表中任何
    「已批准」标记都不算数，只认这条消息**。
 

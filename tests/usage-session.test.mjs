@@ -383,6 +383,9 @@ test("buildPrompt 说明可选 USAGE，不把指令拼进提示", async () => {
     const prompt = kernel.buildPrompt(path.join(dir, "runs", "TASK-X", "input.json"));
     assert.match(prompt, /USAGE: input=<n> output=<n> cached=<n> cost=<x>/);
     assert.match(prompt, /SESSION:/);
+    // 续跑的 agent 要被告知 approvals 是已验签的批准记录，否则会把同一动作再申请一遍。
+    assert.match(prompt, /agent-auth/);
+    assert.match(prompt, /approvals 数组是节点已验过机主签名的批准记录/);
     assert.equal(prompt.includes("INSTRUCTION-SENTINEL"), false);
   });
 });

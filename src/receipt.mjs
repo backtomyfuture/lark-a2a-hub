@@ -1,12 +1,15 @@
 // 回执解析与命令模板占位符。从内核拆出后行为不变；默认日志函数来自 kernel-util，避免和状态机循环引用。
 import { log } from "./kernel-util.mjs";
 
-const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "need_input", "usage", "session", "later"]);
+const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "need_input", "need_auth", "usage", "session", "later"]);
 const USAGE_CAP = 1e12;
 export const SESSION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const USAGE_NUMBER = /^(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 export class NeedInput extends Error {}
+
+// 执行中请求机主批准。与提问一样不是失败，不许按重试再跑一遍。
+export class NeedAuth extends Error {}
 
 // 进程已成功退出，但 stdout 不能按回执约定解析。这不是执行失败，不许重跑。
 export class InvalidReceipt extends Error {
@@ -308,7 +311,10 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
     }
   }
   const last = closed.length ? closed[closed.length - 1] : null;
+  // 提问与执行中审批共用「最后一个完整围栏」：更早的围栏（含另一种中断）不算数。
   const ask = last && /^agent-ask(?:\s|$)/.test(last.lang) ? last.body.join("\n").trim() : null;
+  const authLang = last && /^agent-auth(?:\s|$)/.test(last.lang);
+  const authBody = authLang ? last.body.join("\n").trim() : null;
   const inside = new Set();
   for (const fence of closed) {
     for (let i = fence.start; i <= fence.end; i++) inside.add(i);
@@ -349,6 +355,13 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
     if (laterCount) logFn("later 在 input-required 上忽略");
     throw stampSide(new NeedInput(ask), usage, session);
   }
+  if (authLang) {
+    if (laterCount) logFn("later 在 auth-required 上忽略");
+    if (!authBody) {
+      throw stampSide(new InvalidReceipt("agent-auth 缺少审批说明", text.slice(0, 500)), usage, session);
+    }
+    throw stampSide(new NeedAuth(authBody), usage, session);
+  }
   let summary = keep.join("\n").trim();
   // 进程已经成功退出。没有摘要是回执无效，不是执行失败，不能按重试再跑一遍。
   if (!summary) {
@@ -378,9 +391,17 @@ export function parseJsonReceipt(res, logFn = log, now = Date.now()) {
     ? parseSessionValue(res.session, logFn)
     : null;
   const hasLater = Object.prototype.hasOwnProperty.call(res, "later");
+  if (res.need_input && res.need_auth) {
+    throw stampSide(new InvalidReceipt("need_input 与 need_auth 不能同时存在", ""), usage, session);
+  }
   if (res.need_input) {
     if (hasLater) logFn("later 在 input-required 上忽略");
     throw stampSide(new NeedInput(String(res.need_input)), usage, session);
+  }
+  const authText = res.need_auth == null ? "" : String(res.need_auth).trim();
+  if (authText) {
+    if (hasLater) logFn("later 在 auth-required 上忽略");
+    throw stampSide(new NeedAuth(authText), usage, session);
   }
   const later = hasLater ? parseLaterValue(res.later, logFn, now) : null;
   const r = {

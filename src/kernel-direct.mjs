@@ -16,7 +16,7 @@ import {
   spawnWrapped,
 } from "./direct-ledger.mjs";
 import { log, nowStr } from "./kernel-util.mjs";
-import { InvalidReceipt, NeedInput } from "./receipt.mjs";
+import { InvalidReceipt, NeedAuth, NeedInput } from "./receipt.mjs";
 
 const MAX_RETRIES = 2;
 
@@ -342,6 +342,32 @@ export const directMethods = {
           if (entry && !entry.broken) cleanupRunFiles(this.cfg.configDir, entry);
           this.clearFlight(flight);
           log(`input-required ${taskId}: ${String(e.message).slice(0, 120)}`);
+        }
+        return;
+      }
+      if (e instanceof NeedAuth) {
+        this.persistSession(taskId, e.session);
+        // token 用账本里的 runId。writeRun 在已 paused 时会新建下一行，拿它的返回值会发出第二张卡。
+        if (!String(flight.runId ?? "").trim()) {
+          await this.failExecution(current, flight, new Error("动态审批缺少稳定 runId"));
+          return;
+        }
+        try {
+          const rid = await this.writeRun(current, "paused", flight.started, "auth-required: " + String(e.message).slice(0, 400));
+          const mid = await this.writeDynamicAuthRequest(current, String(e.message), flight.runId);
+          const ok = await this.updateTaskState(current, {
+            Status: "auth-required", Latest_Run: rid, Status_Msg: mid, Heartbeat_At: "",
+          }, ["working"], true);
+          if (ok) {
+            await this.applyUsage(current, e.usage ?? null);
+            this.clearRetry(taskId);
+            const entry = this.loadFlightEntry(flight);
+            if (entry && !entry.broken) cleanupRunFiles(this.cfg.configDir, entry);
+            this.clearFlight(flight);
+            log(`auth-required ${taskId}: ${String(e.message).slice(0, 120)}`);
+          }
+        } catch (err) {
+          log(`auth-required write failed ${taskId}: ${err?.message ?? err}`);
         }
         return;
       }

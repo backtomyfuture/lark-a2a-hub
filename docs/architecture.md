@@ -121,8 +121,10 @@ flowchart TB
    Outcome=paused 关行；枢纽把问题呈递给操作者，答复以 answer 消息
    追加在**原任务**上，节点续跑——禁止为答复新开任务。
 4. 需要批准：写 auth_request → 置 auth-required；枢纽发审批卡，
-   操作者决定后 hub 角色写 auth_decision（DataPart 载决定）并回置
-   submitted，节点才执行；驳回则 canceled。
+   操作者决定后 hub 角色写 auth_decision（DataPart 载决定）。认领前
+   （Claimed_By 为空）的批准回置 submitted，节点再认领执行；执行中
+   （working → auth-required，Claimed_By 非空）的批准保持 auth-required，
+   由原节点验签后切回 working 从断点续跑；驳回则 canceled。
 5. 交付：产物登记 Artifacts（内容为其 FilePart）→ 写 result 消息 →
    置 completed，Runs 以 succeeded 关行。
 6. 失败：Runs 以 failed 关行并记 Error_Log；未达重试上限（2）回

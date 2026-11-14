@@ -213,6 +213,30 @@ function instructionOf(task, messages, parts) {
   return { taskId, text: messageText(parts, mid), params: messageParams(parts, mid) };
 }
 
+// 执行中动态审批的正文是执行方写下的具体动作，不是首条指令的重复，机主要看的就是它。
+// 认领前静态请求的正文只是把标题和指令抄一遍，不取。判别靠 DataPart 的 scope=dynamic。
+function dynamicRequestText(task, messages, parts) {
+  const statusMsg = String(f1(task, "Status_Msg") ?? "").trim();
+  if (!statusMsg) return "";
+  const taskId = String(f1(task, "Task_ID") ?? "").trim();
+  const req = messages.find((m) =>
+    String(f1(m, "Msg_ID") ?? "") === statusMsg &&
+    String(f1(m, "Task_ID") ?? "") === taskId &&
+    f1(m, "Kind") === "auth_request");
+  if (!req) return "";
+  const dynamic = partsOf(parts, statusMsg).some((part) => {
+    if (f1(part, "Kind") !== "data") return false;
+    try {
+      const raw = f1(part, "Data");
+      const data = typeof raw === "object" && raw ? raw : JSON.parse(String(raw ?? ""));
+      return data?.scope === "dynamic";
+    } catch {
+      return false;
+    }
+  });
+  return dynamic ? messageText(parts, statusMsg) : "";
+}
+
 export function buildCard(task, messages, parts) {
   const { taskId, text, params } = instructionOf(task, messages || [], parts || []);
   const title = textValue(f1(task, "Title"));
@@ -220,7 +244,11 @@ export function buildCard(task, messages, parts) {
   const skill = skillLabel(task);
   const worker = textValue(f1(task, "Worker_Hint"));
   const statusMsg = String(f1(task, "Status_Msg") ?? "").trim();
-  const lines = [clipInstruction(text, taskId) || "（无文字指令）"];
+  const lines = [];
+  const claimedBy = textValue(f1(task, "Claimed_By"));
+  const ask = dynamicRequestText(task, messages || [], parts || []);
+  if (ask) lines.push(`**执行中请求授权${claimedBy ? `（${claimedBy}）` : ""}**\n${clipInstruction(ask, taskId)}`);
+  lines.push(clipInstruction(text, taskId) || "（无文字指令）");
   if (!titleAlreadyLeads(title, text)) lines.push(title);
   const paramText = clipParams(params);
   if (paramText) lines.push("参数：\n" + paramText);

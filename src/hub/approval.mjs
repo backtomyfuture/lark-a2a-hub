@@ -1,12 +1,13 @@
 // hub 角色的审批中继（标准 §8.3）。
 // 扫 auth-required → 给机主发一张卡；卡片回调先核对操作者是机主，
 // 写之前再回读任务，确认仍是 auth-required 且 Status_Msg 没变。
-// 通过后按「消息 → Parts → 任务行」写 auth_decision，批准回 submitted，驳回置 canceled 并写 notice。
+// 通过后按「消息 → Parts → 任务行」写 auth_decision。认领前批准回 submitted；
+// 执行中（Claimed_By 非空）保持 auth-required，由原节点核验后自己续跑。驳回置 canceled 并写 notice。
 // 写操作经调用方逐条 await；本模块用一条队列串行回调，避免两张卡同时改同一张表。
 // 飞书要求卡片回调大约 3 秒内返回。同步路径只做本地校验和一次回读，
 // 通过就当场交回批准或驳回卡，写表放进后台。写失败或写前发现任务已变，才 PATCH 纠正卡片。
 
-import { signDecision } from "../approval-sign.mjs";
+import { pickSignedDecision, publicKeyOf, signDecision } from "../approval-sign.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "../bus/feishu.mjs";
@@ -145,7 +146,7 @@ function bumpMsgId(msgId) {
 }
 
 export class ApprovalService {
-  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000, kernel = null, signKey = null }) {
+  constructor({ bus, ownerOpenId = "", statePath, log, now = nowIso, dedupWindowMs = 60_000, signKey = null }) {
     // hub 的签名私钥（KeyObject）。有它就给每条决定签名，节点按固定公钥验签（标准 §8.3 第 5 条）。
     this.signKey = signKey;
     this.bus = bus;
@@ -154,13 +155,11 @@ export class ApprovalService {
     this.log = log ?? (() => {});
     this.now = now;
     this.dedupWindowMs = Number(dedupWindowMs) > 0 ? Number(dedupWindowMs) : 60_000;
-    this.kernel = kernel || null;
     this._tail = Promise.resolve();
     this._recentEvents = new Map();
     this._decidedCards = new Map();
     // 正在写表的卡。回调已经返回，第二次点击不能再开一轮决定。
     this._inflight = new Map();
-    this._kernelMissLogged = false;
   }
 
   _purgeExpired(map) {
@@ -220,7 +219,6 @@ export class ApprovalService {
     const state = this.loadState();
     if (state == null) return 0;
     const tasks = await this.bus.listRecords(this.bus.tables.tasks);
-    await this.primeRowApprovals(tasks);
     const pending = [];
     for (const task of tasks) {
       if (f1(task, "Status") !== "auth-required") continue;
@@ -249,40 +247,6 @@ export class ApprovalService {
       this.log("card sent for " + f1(task, "Task_ID"));
     }
     return sent;
-  }
-
-  hubKernel() {
-    return this.kernel || null;
-  }
-
-  // 只处理任务行 Approval_Class=approve。本机 commands.json 的下限 hub 看不见，仍等节点认领时触发。
-  // 发卡仍走下面的 auth-required 通道，去重键是 record_id + Status_Msg，不另做一套。
-  async primeRowApprovals(tasks) {
-    const kernel = this.hubKernel();
-    if (!kernel || typeof kernel.primeSubmittedApproval !== "function") {
-      if (!this._kernelMissLogged) {
-        this._kernelMissLogged = true;
-        this.log("hub 审批提前发卡未接上内核，本轮只给已是 auth-required 的任务发卡");
-      }
-      return 0;
-    }
-    let n = 0;
-    for (const task of tasks) {
-      if (f1(task, "Status") !== "submitted") continue;
-      if (String(f1(task, "Approval_Class") ?? "").trim() !== "approve") continue;
-      if (String(f1(task, "Claimed_By") ?? "").trim()) continue;
-      try {
-        const res = await kernel.primeSubmittedApproval(task);
-        if (res?.status === "auth-required" && res.msgId) {
-          task.fields = { ...(task.fields || {}), Status: "auth-required", Status_Msg: res.msgId };
-          n += 1;
-        }
-      } catch (e) {
-        // 单条失败留下 submitted，下一轮再试。不能挡住同轮其他任务的发卡。
-        this.log("row approval prime failed " + f1(task, "Task_ID") + ": " + (e?.message ?? e));
-      }
-    }
-    return n;
   }
 
   async handleCardAction(data) {
@@ -497,6 +461,14 @@ export class ApprovalService {
       }
       const task = fresh.task;
       const statusMsg = fresh.statusMsg;
+      const claimed = String(f1(task, "Claimed_By") ?? "").trim();
+      // 执行中的审批批准后任务行不动，内存去重一丢（重启）就拦不住重复点击。
+      // 这一类已有验签通过的决定就不再写第二条。认领前的审批不在此列：它的状态写可能中途失败，
+      // 重试要靠追加决定再补一次状态写。
+      if (claimed && await this.validDecisionFor(task, messages, statusMsg) !== null) {
+        await this._correctCard(ctx, "expired", "该审批已处理");
+        return;
+      }
       // 失败重试时照样追加一条决定，不看之前写没写过：同一请求以最新一条为准（标准 §8.3），
       // 而上一轮可能只写了消息没写签名 DataPart，或机主这次改了主意。
       const decisionId = nextMsgId(taskId, messages);
@@ -513,12 +485,16 @@ export class ApprovalService {
       }
 
       if (decision === "approve") {
-        // 保留 Status_Msg，节点认领前用它核对 In_Reply_To。后续终态靠新 presentKey
+        // 认领前（Claimed_By 为空）才回 submitted；执行中改回 submitted 会让原节点整段重跑，
+        // 所以执行中的批准只留下签名决定，由原节点核验后自己续跑。
+        // 保留 Status_Msg，节点用它核对 In_Reply_To。后续终态靠新 presentKey
         // 再次呈递，不再清 Presented 列（v3.5 已废弃，见标准 §10.2）。
-        await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
-          Status: "submitted",
-          Status_Msg: statusMsg,
-        });
+        if (!claimed) {
+          await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
+            Status: "submitted",
+            Status_Msg: statusMsg,
+          });
+        }
       } else {
         await this.bus.updateRecord(this.bus.tables.tasks, recordId, {
           Status: "canceled",
@@ -529,6 +505,43 @@ export class ApprovalService {
       this.log("card action error: " + message);
       await this._correctCard(ctx, "failed", message);
     }
+  }
+
+  // 与 kernel.decisionForRequest 同一套：有私钥就推导公钥，伪造的无签名行不当作已处理。
+  async validDecisionFor(task, messages, requestId) {
+    const taskId = f1(task, "Task_ID");
+    const candidates = (messages || []).filter((m) =>
+      f1(m, "Kind") === "auth_decision" &&
+      f1(m, "From_Node") === "hub" &&
+      f1(m, "Role") === "user" &&
+      f1(m, "In_Reply_To") === requestId)
+      .sort((a, b) => (this.msgNewer(a, b) ? -1 : 1));
+    const parts = await this.bus.listRecords(this.bus.tables.parts);
+    const packed = candidates.map((m) => {
+      const data = {};
+      for (const p of parts) {
+        if (f1(p, "Parent_ID") !== f1(m, "Msg_ID") || f1(p, "Kind") !== "data" || !f1(p, "Data")) continue;
+        try { Object.assign(data, JSON.parse(f1(p, "Data"))); } catch { /* 坏数据跳过 */ }
+      }
+      return { decision: String(data.decision ?? ""), sig: data.sig };
+    });
+    let key = "";
+    if (this.signKey) {
+      try { key = publicKeyOf(this.signKey); } catch { key = ""; }
+    }
+    return pickSignedDecision(key, taskId, requestId, packed);
+  }
+
+  msgTime(m) {
+    const raw = String(f1(m, "Created_At") ?? "").trim().replace(" ", "T");
+    const ts = Date.parse(raw);
+    return Number.isNaN(ts) ? 0 : ts;
+  }
+
+  msgNewer(a, b) {
+    const ds = msgSeq(a) - msgSeq(b);
+    if (ds !== 0) return ds > 0;
+    return this.msgTime(a) >= this.msgTime(b);
   }
 
   async readFresh(recordId, cardTaskId, cardStatusMsg) {
