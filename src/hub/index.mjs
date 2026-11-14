@@ -324,7 +324,9 @@ export class HubRuntime {
   async waitWake() {
     // 不清 _wakeFlag。清零在扫表之前：扫表期间到达的事件要留到下一轮立刻再扫。
     // stop() 之后最多再睡 1 秒就返回，避免对账间隔（默认 15 分钟）把退出拖住。
-    const maxWait = this.sweepSec() * 1000;
+    // hub 自己也接单：本机有挂起任务时按内核的复查节奏缩短，与 node 同一口径。
+    const pendingCap = this.kernel?.pendingWaitCapMs?.() ?? Infinity;
+    const maxWait = Math.min(pendingCap, this.sweepSec() * 1000);
     let waited = 0;
     while (waited < maxWait) {
       if (this._stopped) return;

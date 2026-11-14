@@ -64,7 +64,7 @@ lah present [--pop] [--task <Task_ID>] [--wait <秒>]
 - 只读本机队列文件，不访问飞书。
 - 有回执时输出 JSON Lines（NDJSON），每行包含：
   - `task_id`：任务编号
-  - `status`：状态（`completed` / `failed` / `rejected` / `input-required`）
+  - `status`：状态（`completed` / `failed` / `rejected` / `canceled` / `input-required`；`canceled` 含机主在审批卡驳回）
   - `title`：任务标题
   - `target_node`：执行节点
   - `message`：节点输出的最新说明

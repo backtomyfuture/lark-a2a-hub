@@ -17,7 +17,7 @@
    （`sweepSec`）。事件只当门铃，内容回表读取，并驱动呈递与审批回调。
 3. **结果呈递（原路落盘，飞书不再刷屏纯文本）**：
    - 飞书端只由 `role=hub` 发送 `auth-required` 交互式审批卡（以及可选的 `stale` 告警），不再往飞书发送大段纯文本结果刷屏。
-   - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`。
+   - 结果呈递遵循「谁发起、回给谁」原则：节点在收到 WebSocket 变更事件或对账扫表时，将属于本节点发起的任务结果（`completed`、`failed`、`rejected`、`canceled`、`input-required`）写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费并在当前对话界面中直接回复用户。去重键记在 `present_state.json` 与线上的 `Tasks.Metadata.presented_keys`。
    - 特殊归属：`From_Node` 或 `Source` 为 `"hub"` 或 `"cron"`（定时任务）的任务，统一由 `role=hub` 的主节点收入其 `present_queue.jsonl`，交由主节点 Agent 汇报。
 4. **审批中继**：扫到 auth-required 就发飞书交互卡片；回调必须先确认
    操作者是机主，再把决定落成 auth_decision（From_Node=hub、Role=user、In_Reply_To=任务当前 Status_Msg）并流转状态（标准 §8.3）。
@@ -95,7 +95,7 @@ node 角色从不写这两样，hub 角色是唯一写方。
 
 `lah daemon` 在收到 WebSocket 变更事件或对账扫表时处理结果呈递：
 
-- 要呈递的状态：completed、failed、rejected、input-required（不再包含 auth-required，审批单独走卡片）。
+- 要呈递的状态：completed、failed、rejected、canceled（含审批驳回）、input-required（不再包含 auth-required，审批单独走卡片）。
 - 原路分流与落盘：
   - 发起节点（`From_Node === 本节点`）将结果写入本机配置目录的 `present_queue.jsonl`，供本机 Agent / Hook 消费。
   - `Source="hub"` 或 `"cron"`（定时任务）归 `role=hub` 的主节点消费。

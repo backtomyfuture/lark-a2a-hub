@@ -28,8 +28,10 @@ class PollWaker {
   }
 
   // 不清除唤醒标志。isAwake 由调用方提供（内核的 _wakeFlag）。
-  async wait(isAwake) {
-    const maxWait = this.cfg.pollSec * 1000;
+  // capMs 是调用方的额外上限，只能缩短不能拉长。
+  async wait(isAwake, { capMs } = {}) {
+    const extraCap = Number.isFinite(capMs) && capMs > 0 ? capMs : Infinity;
+    const maxWait = Math.min(extraCap, this.cfg.pollSec * 1000);
     let waited = 0;
     while (waited < maxWait) {
       if (this._stopped) return;
