@@ -311,7 +311,7 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 | `lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>]` | 登记 Agent 观察镜像（不写本机计划） |
 | `lah present [--pop] [--task <Task_ID>] [--wait <秒>]` | 读取本机发起任务的回执队列。`--wait` 阻塞到出现匹配回执（超时退出码 2）；`--pop` 只移除本次输出的条目 |
 | `lah inbox [--pop] [--json]` | `kind=agent` 接单 |
-| `lah inbox done\|ask\|fail --task <id> --text …` | 完单（可带 `--artifact`）、追问、失败回执 |
+| `lah inbox done\|ask\|fail\|auth --task <id> --text …` | 完单（可带 `--artifact`）、追问、失败、执行中请求审批回执 |
 
 回执队列 `present_queue.jsonl` 旁边的 `present_bell` 仍会在有新回执落盘时刷新 mtime，供想低成本感知的 Hook 使用。`lah present --wait` 不依赖门铃，直接轮询队列文件。
 
