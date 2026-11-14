@@ -227,19 +227,6 @@ These invariants are enforced across both the standard and the codebase (see [SE
 - **Append-only messages**: `Messages` and `Parts` are never modified or deleted, and terminal tasks are never reopened.
 - **Fail loudly**: Offline carriers, missing capabilities, or invalid config modes result in explicit `offline` marks or `rejected` states—never silent fallbacks.
 
-## Design trade-offs
-
-The thin-kernel design borrows from [agent-autoloop](https://github.com/KKKKhazix/agent-autoloop) (command templates for agents, structured receipts, hop breakers, instruction/data separation, one-line install), adapted to a different problem space:
-
-| | agent-autoloop | lark-a2a-hub |
-|---|---|---|
-| **Where state lives** | Built-in local kernel database; chat tools as the decision surface | Feishu / Lark Bitable as the bus; nothing for users to self-host |
-| **Runtime model** | Runs inside the user's session | Unattended, resident daemon with boot autostart |
-| **Data model** | Custom | A2A-shaped: eight states, messages separate from artifacts, 3-layer cards |
-| **Cross-machine work** | Centered on a local fact log | Multiple nodes collaborate through one table; hub centralizes approval and presentation |
-
-We kept its resilience and observability ideas and left out local SQLite fact logs, inbound HTTP, and third-party plugin loading, which conflict with our outbound-only and zero-server red lines. Choose `lark-a2a-hub` when multiple machines and agents must coordinate under one auditable protocol; see `agent-autoloop`'s docs for single-machine interactive loops.
-
 ## Documentation
 
 | Document | Contents |
