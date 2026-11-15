@@ -5,6 +5,7 @@
 
 ## [未发布]
 
+- **移除 carrier 执行语境（破坏性变更）**：删除 `context: "carrier"`、`lah host`、`lah doctor --probe` 与 `src/carrier.mjs`；direct 路径复用的进程工具迁到 `src/proc.mjs`，行为不变。仍写 `context: "carrier"` 的能力会在认领时 `rejected` + notice（写明已移除），`lah doctor` 同样报错，不会静默改直跑；升级前请把这类能力改为 direct 或删除。`node.json` 里残留的 `carrierSocket` 被忽略。动机：生产从未使用，本机实测长驻进程局域网访问不可靠（DESIGN §9 注记④）。标准修订记录同步。
 - **挂起任务短间隔复查**：执行中批准只写 `auth_decision`、任务行不变，事件一漏原节点就要等 900 秒对账（生产实测 12 分 18 秒）。现在节点名下有 `input-required` 或 `auth-required` 任务时，扫表间隔按挂起时长缩短：前 10 分钟不超过 60 秒，60 分钟内不超过 180 秒，之后回到原周期。node 与 hub 角色同一口径。唤醒器 `wait()` 新增只缩不涨的 `capMs`。标准 §10.3 新增「挂起复查」。
 - **呈递覆盖 `canceled`**：hub 审批驳回写的 `canceled` 现在会落入发起方本机队列，正文取驳回 notice，`lah present --wait --task` 能等到终态。升级后首轮对已有 `canceled` 补一次水位线（`present_state.json` 记 `canceledBaseline`），不倒历史撤单。标准 §8.5 同步。
 - **修复审批卡回调：第一次点击报错、卡片不变还能再点**：旧回调要串行读写表八次以上才返回，超过飞书卡片回调的 3 秒时限（错误码 200341）；后台其实写完了，所以第二次点击看起来才生效。回调又只回 toast、从不换卡，按钮一直可点。现在同步路径只做机主与去重校验加一次回读（上限 2 秒），通过就当场换成「已批准 / 已驳回」卡（无按钮），写表放到后台串行执行；后台写失败时用 `PATCH /im/v1/messages/{message_id}` 把卡改成「处理失败，可重试」并恢复按钮，写前发现任务已变则改成「已失效」。重试一律追加新的 `auth_decision`，以最新一条为准（标准 §8.3）。卡片 `config.update_multi=true`。hub 注册了卡片回调后不再挂 lark-cli 的本地事件总线（它回不了卡片响应），`lah doctor` 对 hub 同机总线在线告警。

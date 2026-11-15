@@ -1,4 +1,4 @@
-// 守住内核状态机：认领后按 commands.json 执行，熔断、控制键、幂等、退避、非法语境、carrier 离线都不得真跑。
+// 守住内核状态机：认领后按 commands.json 执行，熔断、控制键、幂等、退避、非法语境（含已移除的 carrier）都不得真跑。
 // 总线是 tests/mocks/mock-bus.mjs。不读 ~/.hub-node，不取凭据。run({ once: true }) 不打开长连接。
 
 import assert from "node:assert/strict";
@@ -33,7 +33,6 @@ async function setup(dir, commandEntry) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
   });
   return { mock, kernel };
@@ -235,8 +234,9 @@ test("commands.json 的 context 非法时 rejected", async () => {
   });
 });
 
-// 红线：carrier 离线时能力标 offline，任务 rejected，绝不改走直跑。
-test("carrier 离线时 rejected 且名片为 offline", async () => {
+// 红线：carrier 语境已移除。旧配置里残留的 context=carrier 必须被拒收并写明原因，
+// 不能静默按 direct 直跑（那会换了执行环境悄悄跑起来）。
+test("context=carrier 的旧配置被 rejected 并提示已移除，且不执行命令", async () => {
   await withTemp(async (dir) => {
     const marker = path.join(dir, "ran");
     const { mock, kernel } = await setup(dir, {
@@ -249,10 +249,9 @@ test("carrier 离线时 rejected 且名片为 offline", async () => {
     await kernel.run({ once: true });
     assert.equal(f1(await taskOf(mock, "TASK-CAR-1"), "Status"), "rejected");
     assert.equal(fs.existsSync(marker), false);
-    const card = (await mock.listRecords(TABLES.agentCards))[0];
-    assert.equal(f1(card, "Availability"), "offline");
     const note = (await mock.findRecords(TABLES.messages, "Kind", "notice"))[0];
     const body = f1((await mock.findRecords(TABLES.parts, "Parent_ID", f1(note, "Msg_ID")))[0], "Text");
-    assert.match(body, /carrier 当前离线/);
+    assert.match(body, /carrier/);
+    assert.match(body, /移除/);
   });
 });

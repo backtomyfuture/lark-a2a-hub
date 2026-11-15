@@ -477,7 +477,6 @@ test("分钟定时器到点抬醒，requestStop 与 once 模式都不留下定�
       role: "node",
       configDir: dir,
       bus: mock,
-      carrierSocket: path.join(dir, "missing.sock"),
       events: false,
     });
     await kernel.run({ once: true });
@@ -515,7 +514,6 @@ test("分钟回调只在到期那一分钟唤醒，锚上水位或时区非法�
       role: "node",
       configDir: dir,
       bus: mock,
-      carrierSocket: path.join(dir, "missing.sock"),
       events: false,
       tz: "Asia/Shanghai",
     });
@@ -574,7 +572,6 @@ test("hub 的 run 会启动分钟定时器，退出时清掉", async () => {
         role: "hub",
         configDir: dir,
         bus: mock,
-        carrierSocket: path.join(dir, "missing.sock"),
         events: false,
       },
       log: () => {},
@@ -616,7 +613,6 @@ test("sweepOnce 里 tick 建出的任务在同一轮被认领，tick 抛错不�
       events: false,
       tz: "Asia/Shanghai",
       configDir: dir,
-      carrierSocket: path.join(dir, "missing.sock"),
       bus: mock,
     });
     writeSchedules(path.join(dir, "schedules.json"), [plan("DAILY", { text: "同一轮" })]);
@@ -660,7 +656,6 @@ test("tick 抛错时 sweepOnce 仍认领已在表里的 submitted 任务", async
       capPrefix: "test",
       events: false,
       configDir: dir,
-      carrierSocket: path.join(dir, "missing.sock"),
       bus: mock,
     });
     const msgId = "MSG-SEED-1";

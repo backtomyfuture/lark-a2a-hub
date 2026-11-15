@@ -47,7 +47,7 @@
   - 异步型工具（调用返回 ID、结果另行读取）由官方插件适配，插件清单随项目维护。
 - **context（在哪干活）**：执行语境，决定进程树的权限与生命周期。
   - `direct`（默认）：守护进程直接拉起。Linux 全功能；macOS 下不承诺局域网设备类任务；
-  - `carrier`（可选，见 §9）：用户终端内常驻的同命令子进程代为执行需要特殊语境的任务；
+  - `carrier`：已移除（2026-11-15，未发布），见 §9；
   - `tmux` / `herdr`（高级备选）：借用户已常驻的终端复用器会话执行；
   - 签名 App 宿主：产品化方向，不在 v1 范围。
 
@@ -82,6 +82,8 @@
 
 ## 9. macOS 局域网一章（本项目的差异点）
 
+状态：carrier 已于 2026-11-15 移除，原因：生产未使用、本机实测长驻进程局域网访问不可靠（见下方注记④），以下保留作历史记录。
+
 - 实测事实：由 launchd 拉起的守护进程，其进程树访问局域网会被 macOS 本地网络隐私机制静默拦截（表现为 No route to host）；同一命令在用户终端、或有实体的应用进程树里则正常。裸 CLI 在系统隐私设置里没有可授权的条目，无从点授权。
 - 因此「macOS ＋ 开机自启 ＋ 局域网能力」三者同时成立时，直跑必然被拦。这是操作系统按进程祖先算账，换语言、换运行时都不改变。
 - 解法（不增加读者负担的分工）：
@@ -106,7 +108,7 @@
 
 ```
 lark-a2a-hub/
-  bin/lah.mjs           # CLI 主入口（bin/hub-node.mjs 为兼容别名）：setup / daemon / doctor / service / host / task
+  bin/lah.mjs           # CLI 主入口（bin/hub-node.mjs 为兼容别名）：setup / daemon / doctor / service / task
                         #   支持 --role node|hub；task create 建单
                         #   省略 --role 时读 node.json 的 role，缺省 node
   src/kernel.mjs          # 状态机骨架（认领/心跳/熔断/对账主循环）
@@ -120,7 +122,7 @@ lark-a2a-hub/
   src/kernel-outbox.mjs   # 回执 outbox（原型混入）
   src/kernel-metadata.mjs # usage/later 的 Metadata 合并写（原型混入）
   src/bus/              # feishu.mjs（Bitable REST）、feishu-events.mjs（ws 长连接门铃）
-  src/carrier.mjs       # carrier 语境（unix socket 上的 NDJSON）
+  src/proc.mjs          # 进程组拉起、超时 TERM/KILL、输出头尾截断（direct 路径复用）
   src/setup.mjs         # 装机向导（支持 --role node|hub，hub 配置机主 open_id）
   src/doctor.mjs        # 只读自检（按角色检查，打印角色与唤醒方式）
   src/service.mjs       # launchd / systemd 用户级自启（带 --role，hub/node 独立服务名）
@@ -151,7 +153,7 @@ lark-a2a-hub/
     {
       "skill": "ops-agent",
       "executor": { "type": "command", "command": "agy --dangerously-skip-permissions --print {prompt}" },
-      "context": "carrier",
+      "context": "direct",
       "needs_lan": true,
       "side_effect": "write"
     },
@@ -171,7 +173,7 @@ lark-a2a-hub/
 - M1 内核移植：以 Python worker-4.1 为参考实现/规格，Node 版跑通认领→执行→回执全链（echo 能力验收）。【2026-11-04 已完成：Node 版在 mini 以独立 node-dev 身份试运行，ECHO-001/002 两单全链通过、参数完整回显；agent 模式仅做本地回执解析单测，未做端到端实测，留待后续。】
 - M2 飞书后端：事件订阅＋对账、能力自注册、提问/审批续跑。【2026-11-04 进展：事件订阅已落地并验收——官方 Node SDK 长连接接收器集成进守护进程（单进程）、事件即唤醒，对账退为 15 分钟安全网；沙盒实测建单后数秒认领（对账周期 900 秒下只能由事件触发）；与同机 Python 节点共存方案＝共享门铃文件（任一接收端收到事件都追加落盘、互相叫醒，飞书多连接分发不丢唤醒），生产节点门铃实测被同步唤醒。剩余：能力名片细化。】
 - M3 安装与自启：curl 安装脚本、launchd/systemd 注册、自检命令。【2026-11-04 已完成：v0.2.0，install.sh / doctor / service 均实测，见仓库提交 329a18c。】
-- M4 carrier context：子进程＋本地 socket、能力分流与离线标注，在真实局域网任务上验收。【2026-11-04 已验收（带本机限定）：机制全量落地（v0.3.0）——分流执行、探活同步 Availability、离线拒收均实测通过；终验发现本机（mini＋Clash TUN 环境）长驻进程裸 TCP 局域网访问均不可靠、终端语境在本机不构成有权语境，见 §9 注记④。本机局域网工作继续走 ssh 通道；carrier 作为语境抽象与离线纪律保留，stock 环境下的有效性待其他机器验证。】
+- M4 carrier context：子进程＋本地 socket、能力分流与离线标注，在真实局域网任务上验收。【2026-11-04 已验收（带本机限定）：机制全量落地（v0.3.0）——分流执行、探活同步 Availability、离线拒收均实测通过；终验发现本机（mini＋Clash TUN 环境）长驻进程裸 TCP 局域网访问均不可靠、终端语境在本机不构成有权语境，见 §9 注记④。本机局域网工作继续走 ssh 通道；carrier 作为语境抽象与离线纪律保留，stock 环境下的有效性待其他机器验证。】已移除（2026-11-15，未发布）。
 - M5 文档与发布：README（重点讲清 §9 的现象与解法）、配置规范、首个公开版本。
 
 ## 13. 已定事项

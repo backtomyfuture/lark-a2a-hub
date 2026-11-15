@@ -2,7 +2,7 @@
 //   macOS：写 LaunchAgent 并 launchctl bootstrap（用户级，无需 sudo）
 //   Linux：写 systemd 用户单元并 enable --now（用户级，无需 sudo）
 //   Windows：写当前用户的任务计划程序任务（登录触发，无需管理员）
-// --remove 反向卸载。carrier 语境进程是另一个概念（设计 §9），不在此命令内。
+// --remove 反向卸载。
 
 import fs from "node:fs";
 import os from "node:os";

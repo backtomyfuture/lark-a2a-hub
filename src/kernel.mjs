@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { f1 } from "./bus/feishu.mjs";
 import { createWaker } from "./transport/index.mjs";
-import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
+import { runDetachedCommand } from "./proc.mjs";
 import { createTask } from "./hub/create.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
@@ -111,7 +111,6 @@ export class Kernel {
     this._wsUp = false;
     // 名片缓存只在整轮写表成功之后更新。失败时保持 null / 空表，下一轮会再校准。
     this.registeredCards = new Map();
-    this.carrierAvailability = null;
     this._commandsStamp = null;
     this._commandsHash = null;
     this._syncedCommandsHash = null;
@@ -563,20 +562,8 @@ export class Kernel {
     ].join("\n");
   }
 
-  // 执行分流（executor × context）：默认 direct 在本进程直跑；
-  // 条目标了 context: "carrier" 时经本地 socket 交给用户终端里的 carrier
-  // 代跑（设计 §9），执行语义与直跑一致，只是换了进程语境。
-  async execFor(entry, command, stdinText, timeoutSec, cwd) {
-    if (entry?.context === "carrier") {
-      return execViaCarrier(this.cfg.carrierSocket, {
-        command, cwd, input: stdinText, timeoutSec,
-      });
-    }
-    return this.runShell(command, stdinText, timeoutSec, cwd);
-  }
-
   runShell(command, stdinText, timeoutSec, cwd) {
-    // 与 carrier 共用独立进程组：超时先 TERM 整组，宽限后再 KILL，避免孙进程残留。
+    // 独立进程组：超时先 TERM 整组，宽限后再 KILL，避免孙进程残留。
     return runDetachedCommand(command, stdinText, timeoutSec, cwd);
   }
 
@@ -584,7 +571,7 @@ export class Kernel {
     return parseAgentReceipt(out);
   }
 
-  // direct 账本与 carrier 代跑共用这一份准备结果，避免两条路径拼出来的 stdin 不一样。
+  // direct 账本与同步路径共用这一份准备结果，避免两条路径拼出来的 stdin 不一样。
   // resume 在问答续跑或执行中审批续跑时为 true。失败重试和第一次执行都不许把旧会话当成还能接着用。
   async prepareCommand(skill, task, params, extraAnswers, resume = false) {
     const entry = this.commands[skill] ?? {};
@@ -652,7 +639,7 @@ export class Kernel {
   async runCommand(skill, task, params, extraAnswers, resume = false) {
     const entry = this.commands[skill] ?? {};
     const prep = await this.prepareCommand(skill, task, params, extraAnswers, resume);
-    const p = await this.execFor(entry, prep.command, prep.stdinText, prep.timeout, prep.cwd);
+    const p = await this.runShell(prep.command, prep.stdinText, prep.timeout, prep.cwd);
     return this.interpretCommandResult(prep.mode, p);
   }
 
@@ -673,7 +660,7 @@ export class Kernel {
     return capIdOf(skill, entry, this.cfg.capPrefix);
   }
 
-  desiredCard(skill, entry, carrierUp) {
+  desiredCard(skill, entry) {
     const receiveMode = receiveModeOf(this.cfg);
     const isInbox = entry?.mode === "inbox";
     const desc = isInbox ? (entry?.desc || `${this.cfg.node} 独立 Agent 本尊`) : (entry?.desc ?? "");
@@ -688,8 +675,7 @@ export class Kernel {
       // 留空＝节点本尊直接执行（标准 §6）。
       Worker: entry?.worker || "",
       Side_Effect: entry?.side_effect ?? "write",
-      // carrier 离线只改名片，不把任务悄悄改成直跑。
-      Availability: entry?.context === "carrier" && !carrierUp ? "offline" : "online",
+      Availability: "online",
       Dispatchable: "Yes",
       Daemon_Version: DAEMON_VERSION,
       Receive_Mode: receiveMode,
@@ -715,14 +701,14 @@ export class Kernel {
     };
   }
 
-  // 串行对账名片。registeredCards / carrierAvailability 必须等全部写成功再换，
+  // 串行对账名片。registeredCards 必须等全部写成功再换，
   // 否则写失败会被当成“已经同步”，下一轮不再补。
-  async reconcileCards(carrierUp) {
+  async reconcileCards() {
     const rows = await this.bus.listRecords(this.T.agentCards);
     const wanted = new Map();
     for (const [skill, entry] of Object.entries(this.commands)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const fields = this.desiredCard(skill, entry, carrierUp);
+      const fields = this.desiredCard(skill, entry);
       if (wanted.has(fields.Cap_ID)) {
         log(`Cap_ID 重复，能力 ${skill} 不登记（${fields.Cap_ID} 已被占用）`);
         continue;
@@ -766,7 +752,6 @@ export class Kernel {
     const next = new Map();
     for (const [capId, fields] of wanted) next.set(capId, { ...fields });
     this.registeredCards = next;
-    this.carrierAvailability = !!carrierUp;
     this._syncedCommandsHash = this._commandsHash;
   }
 
@@ -1249,25 +1234,20 @@ export class Kernel {
       log("rejected (control keys) " + taskId);
       return false;
     }
-    // context 拼错（如 carier）若静默按 direct 直跑，就绕过了 carrier 离线拒收这条红线；
-    // mode 拼错同理会悄悄变成 agent。取值非法一律拒收，把配置错误喊出来。
+    // context 只认 direct。旧配置里的 carrier 语境已移除，若静默按 direct 直跑，
+    // 会让原本要在用户终端语境里跑的命令换了环境执行；拼错的 context、mode 同理。
+    // 取值非法一律拒收，把配置错误喊出来。
     const entryCtx = this.commands[skill]?.context;
     const entryMode = this.commands[skill]?.mode;
-    if ((entryCtx != null && !["direct", "carrier"].includes(entryCtx))
+    if ((entryCtx != null && entryCtx !== "direct")
       || (entryMode != null && !["agent", "json", "inbox"].includes(entryMode))) {
+      const carrierHint = entryCtx === "carrier"
+        ? "carrier 语境已在本版本移除，请把该能力改为 direct 或删除。" : "";
       await this.writeMessage(task, "notice",
-        `拒收：本机 commands.json 中能力 ${skill} 的 context/mode 取值非法（context=${String(entryCtx)}，mode=${String(entryMode)}）。为避免静默改走别的执行路径，任务不执行；请修正配置（lah doctor 可检查）后重派。`);
+        `${carrierHint}拒收：本机 commands.json 中能力 ${skill} 的 context/mode 取值非法（context=${String(entryCtx)}，mode=${String(entryMode)}）。为避免静默改走别的执行路径，任务不执行；请修正配置（lah doctor 可检查）后重派。`);
       if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (invalid commands.json context/mode) ${taskId}`);
-      return false;
-    }
-    if (this.commands[skill]?.context === "carrier" && !(await pingCarrier(this.cfg.carrierSocket))) {
-      await this.writeMessage(task, "notice",
-        "拒收：本能力的执行语境为 carrier（用户终端代跑），但 carrier 当前离线；按规矩不静默改走直跑，请先在终端启动 hub-node host 后重派。");
-      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
-      this.clearRetry(taskId);
-      log("rejected (carrier offline) " + taskId);
       return false;
     }
     return true;
@@ -1410,7 +1390,7 @@ export class Kernel {
         log(`defer resume ${f1(task, "Task_ID")}: direct command in flight`);
         return;
       }
-      // 暂停期间能力被撤、跳数被改、本地下限收紧或 carrier 离线，都要在续跑前再拦一次。
+      // 暂停期间能力被撤、跳数被改、本地下限收紧或配置被改坏，都要在续跑前再拦一次。
       if (!(await this.preflight(task))) return;
 
       if (entry.mode === "inbox") {
@@ -1514,10 +1494,8 @@ export class Kernel {
     await this.reclaimStale();
     const { changed } = this.loadCommands();
     if (this._commandsEverLoaded) {
-      const carrierUp = await pingCarrier(this.cfg.carrierSocket);
-      const needCards = !this._capsReady || changed || carrierUp !== this.carrierAvailability;
-      if (needCards) {
-        await this.reconcileCards(carrierUp);
+      if (!this._capsReady || changed) {
+        await this.reconcileCards();
         this._capsReady = true;
       }
     }

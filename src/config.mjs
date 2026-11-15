@@ -207,7 +207,6 @@ export function loadConfig(configDir) {
     sweepSec: cfg.sweepSec ?? 900,
     events: cfg.events !== false,
     doorbellFile: cfg.doorbellFile ? cfg.doorbellFile.replace(/^~/, os.homedir()) : null,
-    carrierSocket: cfg.carrierSocket ? cfg.carrierSocket.replace(/^~/, os.homedir()) : path.join(configDir, "carrier.sock"),
     capPrefix: cfg.capPrefix ?? cfg.node,
     // hub 的审批签名公钥（base64）。配了就只认签名对得上的 auth_decision（标准 §8.3 第 5 条）。
     hubPublicKey: cfg.hubPublicKey,

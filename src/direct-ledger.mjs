@@ -1,4 +1,4 @@
-// direct 语境的在途账本。只服务 kernel 的 json/agent 直跑，carrier 与 inbox 不走这里。
+// direct 语境的在途账本。只服务 kernel 的 json/agent 直跑，inbox 不走这里。
 //
 // 为什么先落盘再 spawn：守护进程在命令执行中崩溃时，detached 子进程还活着，
 // 但没有 pid 与退出码的话，重启后的心跳回收会把任务送回 submitted 再跑一遍。
@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { KILL_GRACE_MS } from "./carrier.mjs";
+import { KILL_GRACE_MS } from "./proc.mjs";
 
 export { KILL_GRACE_MS };
 
@@ -67,7 +67,7 @@ export function saveEntry(configDir, entry) {
   return dest;
 }
 
-// 与 carrier 的 PATH 前缀一致，避免直跑和代跑找到的可执行文件不一样。
+// 与 proc.mjs 的 PATH 前缀一致，避免同步直跑和账本直跑找到的可执行文件不一样。
 export function commandEnv(extra) {
   const env = { ...process.env, ...extra };
   const prefix = ["/opt/homebrew/bin", path.join(os.homedir(), ".local/bin"), "/usr/local/bin"];
@@ -297,7 +297,7 @@ export function readExitCode(file) {
 }
 
 // 没超过头尾预算时整段解码，避免在 64KiB 边界拆开一个多字节字符。
-// 超过时沿用 carrier 的省略标记，回执解析只看标记之后。
+// 超过时沿用 proc.mjs 的省略标记，回执解析只看标记之后。
 export function readBoundedFile(file) {
   let st;
   try {

@@ -32,7 +32,6 @@ function makeKernel(dir) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: new MockFeishuBus({ tables: TABLES }),
   });
 }

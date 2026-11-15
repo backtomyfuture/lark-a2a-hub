@@ -147,7 +147,6 @@ test("direct 在途时 inbox 心跳仍刷新且不被回收", async () => {
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
       });
       kernels.push(kernel);

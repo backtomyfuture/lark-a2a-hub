@@ -568,7 +568,7 @@ function isUnfinishedExample(raw) {
   return fields.some(isPlaceholderToken);
 }
 
-// 只认安装脚本种下的那份示例：相对路径 echo 指错，lan-exec 又会让 doctor 因 carrier 离线失败。
+// 只认安装脚本种下的那份示例：相对路径 echo 指错，lan-exec 这类旧示例能力已不可用。
 // 用户事后自己写的能力表不在这里替换。
 function isExampleCommands(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;

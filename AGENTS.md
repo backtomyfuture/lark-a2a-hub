@@ -6,8 +6,8 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 
 ## 目录与职责
 
-- `bin/lah.mjs` / `bin/hub-node.mjs`：CLI 分发 `setup | daemon | reconcile | doctor | inventory | service | host | task (create|reply|show|why|cancel|begin) | schedule (ls|add|rm|enable|disable|register) | present | inbox | update`（支持 `--role node|hub`；省略时 daemon / doctor / service 读 `node.json` 的 role，缺省 node）；配置目录取 `--config <dir>` > `HUB_NODE_HOME` > `~/.hub-node`（内含 `node.json` 与 `commands.json`）。
-- `src/kernel.mjs`：状态机骨架（构造、`sweepOnce`/`run` 主循环与状态迁移），唯一写任务状态的节点代码。辅助拆在 `receipt.mjs`（回执与命令模板）、`retry-state.mjs`（退避水位）、`session-store.mjs`（session.json）、`config.mjs`（配置与控制键）、`kernel-util.mjs`（日志与小工具），以及原型混入的 `kernel-direct.mjs`、`kernel-approval.mjs`、`kernel-outbox.mjs`、`kernel-metadata.mjs`。常量 `DAEMON_VERSION`、`HOP_LIMIT=8`、`MAX_RETRIES=2`、`STALE_MIN=20`（无心跳 20 分钟回收）、`HEARTBEAT_MIN_SEC=90`（扫表路径写心跳的最小间隔，不等式见该常量旁注释）留在本文件。写回执（result/question/notice）时 `To_Node` 原路指向发起方 `From_Node`（auth_request 除外，指向 hub）。node 与 hub 角色在扫表与事件唤醒时均通过 `PresentService` 将属于本节点发起的任务回执落入本地 `present_queue.jsonl`，只落盘，由本机 Agent 经 `lah present [--wait]` 取走，不主动唤醒会话。呈递状态含 `canceled`（hub 审批驳回不经执行节点，不呈递则发起方等不到终态）。`context=direct` 的 json/agent 命令在 spawn 前把在途账本写到配置目录 `runs/<Task_ID>/entry.json`（不进总线）；扫表认领并 spawn 后立即返回，同一时刻只保留一条 direct 命令，结果在下一轮收口时串行写回。carrier 与 inbox 仍走同步路径。
+- `bin/lah.mjs` / `bin/hub-node.mjs`：CLI 分发 `setup | daemon | reconcile | doctor | inventory | service | task (create|reply|show|why|cancel|begin) | schedule (ls|add|rm|enable|disable|register) | present | inbox | update`（支持 `--role node|hub`；省略时 daemon / doctor / service 读 `node.json` 的 role，缺省 node）；配置目录取 `--config <dir>` > `HUB_NODE_HOME` > `~/.hub-node`（内含 `node.json` 与 `commands.json`）。
+- `src/kernel.mjs`：状态机骨架（构造、`sweepOnce`/`run` 主循环与状态迁移），唯一写任务状态的节点代码。辅助拆在 `receipt.mjs`（回执与命令模板）、`retry-state.mjs`（退避水位）、`session-store.mjs`（session.json）、`config.mjs`（配置与控制键）、`kernel-util.mjs`（日志与小工具），以及原型混入的 `kernel-direct.mjs`、`kernel-approval.mjs`、`kernel-outbox.mjs`、`kernel-metadata.mjs`。常量 `DAEMON_VERSION`、`HOP_LIMIT=8`、`MAX_RETRIES=2`、`STALE_MIN=20`（无心跳 20 分钟回收）、`HEARTBEAT_MIN_SEC=90`（扫表路径写心跳的最小间隔，不等式见该常量旁注释）留在本文件。写回执（result/question/notice）时 `To_Node` 原路指向发起方 `From_Node`（auth_request 除外，指向 hub）。node 与 hub 角色在扫表与事件唤醒时均通过 `PresentService` 将属于本节点发起的任务回执落入本地 `present_queue.jsonl`，只落盘，由本机 Agent 经 `lah present [--wait]` 取走，不主动唤醒会话。呈递状态含 `canceled`（hub 审批驳回不经执行节点，不呈递则发起方等不到终态）。`context=direct` 的 json/agent 命令在 spawn 前把在途账本写到配置目录 `runs/<Task_ID>/entry.json`（不进总线）；扫表认领并 spawn 后立即返回，同一时刻只保留一条 direct 命令，结果在下一轮收口时串行写回。inbox 仍走同步路径。
 - `src/config.mjs`：除节点配置外，承载能力表归一（`normalizeCommands` / `resolveCapKey` / `capIdOf`，Node / Worker / Skill 三层的唯一口径）。
 - `src/approval-sign.mjs`：审批决定的 ed25519 签名与验签；hub 私钥在其配置目录 `approval_key.pem`，节点按 `node.json` 的 `hubPublicKey` 验。
 - `src/schedule-cron.mjs`：五段 cron 解析、时区墙钟转换与期次键计算纯函数（共享模块）。
@@ -16,7 +16,7 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 - `src/schedule-cli.mjs`：`lah schedule (ls|add|rm|enable|disable|register)` 与 `lah task begin` CLI 实现。
 - `src/bus/feishu.mjs`：Bitable REST 客户端（全局 `fetch`）；对 1254290（请求过快）与 1254291（写冲突）以及 429/5xx 退避重试；HTTP 429 且响应体 99991403（月度配额）不重试；`takeStats()` 计数与退避日志；`f1()` 把单元素数组字段取成标量。
 - `src/bus/feishu-events.mjs`：长连接订阅 `drive.file.bitable_record_changed_v1`，只当门铃叫醒内核，不解析事件内容。
-- `src/carrier.mjs`：carrier 语境（unix socket 上的 NDJSON，`ping` / `exec` 两种帧）。
+- `src/proc.mjs`：进程组拉起、超时 TERM/KILL、输出头尾截断，供 direct 路径复用。
 - `src/setup.mjs` / `src/doctor.mjs` / `src/service.mjs`：装机向导、只读自检（按 Worker 分组展示本机能力，对旧平表给出迁移提示）、LaunchAgent / systemd / Windows 任务计划程序用户级自启（均支持 `--role node|hub` 与 `--kind host|agent`）；自动安装 `lah` Agent Skill。
 - `src/inventory.mjs`：`lah inventory` 只读盘点本节点名片与任务：列出名片行的 Worker、Skill、Receive_Mode、Availability、Dispatchable，按状态汇总本节点任务，并与本地配置的 Receive_Mode 期望、nodeDesc 对比报出漂移；不创建、不更新、不删除任何行。
 - `src/update.mjs`：`lah update` 自更新程序本体：git pull、依赖重装、入口与 Skill 补齐，不碰配置目录；`--check` 只看远端有没有新版本。只支持 git 检出，tarball 安装须重跑安装脚本。
@@ -27,7 +27,7 @@ lark-a2a-hub：以飞书多维表格为共享总线、按 A2A 数据模型调度
 - `src/transport/`：唤醒工厂（`createWaker`），支持 `ws`（长连接门铃 + 卡片回调）与 `poll`（默认 45 秒）两种入站唤醒，外加 15 分钟对账定时兜底；webhook 专指飞书自动化出站 POST，本项目不主动推送。hub 角色强制 ws。`wait(isAwake, { capMs })` 的 `capMs` 只缩不涨：本节点名下有 `input-required` / `auth-required` 任务时，内核按 `PENDING_RECHECK`（前 10 分钟 60 秒、60 分钟内 180 秒）缩短等待，答复与批准不靠事件送达（标准 §10.3「挂起复查」）。
 - 部署约定：每个节点（含 hub）各用一个独立的飞书自建应用，长连接一应用一条，不存在同一应用多连接时事件只投给其中一条的分发问题。排查「事件没叫醒」时先看该节点自己的长连接（`fbab0f5` 起有 SDK 心跳看门狗），不要往跨节点分发方向找。
 - `docs/standard.md`：**中台标准，权威**。`docs/base-schema.md` 与 `schema/base-schema.json` 是生成物，由 `schema/generate_schema.mjs` 产出。
-- `docs/configuration.md`：配置目录、`node.json` / `commands.json` 字段、回执约定、carrier 与 CLI 速查；README 只保留价值主张与上手，细节放这里。改 CLI 或配置字段时同步它。
+- `docs/configuration.md`：配置目录、`node.json` / `commands.json` 字段、回执约定与 CLI 速查；README 只保留价值主张与上手，细节放这里。改 CLI 或配置字段时同步它。
 - `config/*.example.json`：配置样例，只放占位符。
 - `tests/`：`node:test` 测试（`tests/*.test.mjs`）与内存总线 `tests/mocks/`。不连真实 Base，状态只写临时目录。
 
@@ -38,10 +38,9 @@ npm install --omit=dev                     # 唯一运行时依赖 @larksuiteoap
 # 语法检查：node --check 只检查第一个文件参数，必须逐个跑；src/**/*.mjs 在默认 shell 里会漏掉 src/*.mjs
 for f in bin/*.mjs src/*.mjs src/*/*.mjs schema/*.mjs; do node --check "$f" || exit 1; done
 echo '{"k":1,"_hub":{"task_id":"TASK-X"}}' | node src/executors/echo.mjs   # json 回执冒烟
-node bin/lah.mjs doctor  --config <dir> [--role node|hub] [--probe <host:port>]   # 示例配置与真实配置各跑一遍；--probe 经在线 carrier 做一次只读 TCP 探测
+node bin/lah.mjs doctor  --config <dir> [--role node|hub]   # 示例配置与真实配置各跑一遍
 node bin/lah.mjs daemon  --config <dir> [--role node|hub]
 node bin/lah.mjs reconcile --config <dir>
-node bin/lah.mjs host    --config <dir>   # carrier，只能由用户在终端里启动
 node bin/lah.mjs setup   --config <dir> [--role node|hub] [--yes --base … --node … --zone … --prefix … --owner …]
 node bin/lah.mjs service --config <dir> [--role node|hub] [--remove]
 node bin/lah.mjs inventory --config <dir>
@@ -72,7 +71,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 
 - Node >= 24，ESM `.mjs`，HTTP 只用全局 `fetch`。新增运行时依赖须有充分理由。
 - 三层寻址（标准 v3.8 §0 第 8 条、§6、§9）：Node＝机器，Worker＝机器上的 Agent，Skill＝该 Worker 能做的一类任务。`commands.json` 根上的保留键 `workers` 定义 Worker（启动模板），其余键是 Skill：自带 `command` 的由节点本尊执行（Worker 为空），写 `workers: [...]` 的是专长技能，每个 Worker 在名册里有一张 Worker 名片（`Skill_ID=agent`，代表它在册及其通用执行）。`src/config.mjs` 的 `normalizeCommands` 把它归一成平表（能力键：节点本尊＝技能名，Worker 的能力＝`<worker>/<skill>`），内核、doctor、本地调度共用这一份；按任务取条目一律用 `kernel.capKeyOf(task)`，不要直接拿 `Skill_ID` 查 `this.commands`。任务行 `Worker_Hint` 写了是硬约束，留空由节点取默认并在认领时回填。名册里 `Skill_ID=agent` 的行是 Worker 名片（代表 Worker 本身，不是技能）；`Worker` 列是路由键，不得写展示名。
-- 内核是薄壳：新能力 = `commands.json` 一条模板（`command`、`mode: agent|json|inbox`（默认 agent）、`context: direct|carrier`、`timeout_sec`（默认 600）、`cwd`（默认配置目录）、`side_effect`、`cap_id`、`name`、`desc`、可选 `resume_command`（含 `{session}` 与 `{prompt}`，仅 direct 问答续跑或执行中审批续跑且本机已有 session 时替换 `command`）），启动时自动登记 AgentCards。`context`、`mode` 取值非法时认领预检直接 `rejected`，不静默降级。不往内核里塞执行器或某个 Agent 的专用代码。host 节点能力来自 commands.json 的本机命令模板；agent 节点只有一张本尊 Worker 名片 `agent`（inbox 模式），执行主体是节点本尊，守护进程不替它拉起任何外部 Agent。
+- 内核是薄壳：新能力 = `commands.json` 一条模板（`command`、`mode: agent|json|inbox`（默认 agent）、`context: direct`（可省略）、`timeout_sec`（默认 600）、`cwd`（默认配置目录）、`side_effect`、`cap_id`、`name`、`desc`、可选 `resume_command`（含 `{session}` 与 `{prompt}`，仅 direct 问答续跑或执行中审批续跑且本机已有 session 时替换 `command`）），启动时自动登记 AgentCards。`context`、`mode` 取值非法时认领预检直接 `rejected`，不静默降级。不往内核里塞执行器或某个 Agent 的专用代码。host 节点能力来自 commands.json 的本机命令模板；agent 节点只有一张本尊 Worker 名片 `agent`（inbox 模式），执行主体是节点本尊，守护进程不替它拉起任何外部 Agent。
 - 读写总线一律经 `FeishuBus`，读字段用 `f1()`；写操作逐条 `await`，不对同表并发写（不用 `Promise.all` 批量写）。
 - 常驻韧性：启动期任何失败都只记日志、进主循环重试，进程不退出；能力登记成功前不处理任务。
 - 唤醒标志在 `run()` 扫表前清零，不在 `waitWake()` 里清（ECHO-004 竞态）；事件只是门铃，15 分钟对账扫表是兜底。
@@ -100,8 +99,8 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 - 跳数熔断：`Hop_Count > 8` 时只写 Runs(failed) + notice 并置 `failed`，不执行。派生子任务 `Hop_Count = 父 + 1`，累加不清零（问人也不清）。
 - 结构化回执，不猜自然语言：agent 模式只认输出中最后一个完整的 ```` ```agent-ask ```` 围栏（→ input-required）或 ```` ```agent-auth ```` 围栏（→ auth-required，块内说明不能为空），以及围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:`；json 模式只认 stdout 最后一行 JSON（`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`），`need_input` 与 `need_auth` 不能同时非空，未知顶层键忽略并记日志。围栏内伪造的行不生效。`agent-auth` 在进程退出后解析，不是执行前硬拦截。`usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线，仅供同一任务问答续跑或执行中审批续跑时配合本机 `resume_command` 使用；`later`（只在 completed 时生效）写入 `Tasks.Metadata.later`，由 hub 当时钟到期后在同一 `Context_ID` 新建复查任务（`Hop_Count+1`）。扩展回执语法须同时改 `buildPrompt`、`parseAgentReceipt` / `parseJsonReceipt` 与标准 §9。
 - 指令与数据分离：要执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。任务行的 `Worker_Hint` 与 `Skill_ID` 只是在本机 `commands.json` 已登记能力里按名字选一项，不携带命令内容，选不中就拒收。不得新增从任务参数或消息正文读取 command / cwd / context / Agent / 权限的路径；现存唯一例外是 `params.timeout_sec`，不要扩大。标准 §9 的 agent 输入约定已实现：`kernel.mjs` 把指令文本、参数、问答与 FilePart 写进本次执行的 `input.json`（600 权限），`buildPrompt` 只拼受信模板与该文件路径；参数带执行控制键（command / cwd / context / agent 等）由 `controlKeysIn` 检出后直接拒收。不得回退：不要再把指令文本、参数 JSON 或答复拼进 prompt，也不要放宽控制键拒收。
-- 失败要响：carrier 离线时对应能力标 `Availability=offline`、任务置 `rejected` + notice，绝不静默改走直跑；守护进程只连接 carrier，从不拉起它。
-- 只出不进：不开监听端口（carrier 的 unix socket 除外）、不做端口映射或隧道。这条对 node、hub 一律适用；webhook 只指飞书自动化出站 POST（本项目不主动推送），卡片回调同样走长连接，任何角色都不提供入站端点。
+- 失败要响：配置里残留 `context: carrier`（已移除）时认领预检 `rejected` + notice，绝不静默改走直跑。
+- 只出不进：不开监听端口、不做端口映射或隧道。这条对 node、hub 一律适用；webhook 只指飞书自动化出站 POST（本项目不主动推送），卡片回调同样走长连接，任何角色都不提供入站端点。
 - 凭据不入仓库、不入总线、不进日志：示例只用占位符；真实值在 600 权限的 env 文件里；setup 与 doctor 不打印凭据明文。
 - 角色边界：`auth_decision` 只由 hub 角色的代码路径写。`canceled`：守护进程的 node 角色代码路径从不写；仅发起方显式执行的 `lah task cancel` 可撤自己发起的单。hub 角色可撤任意单，审批驳回仍由 hub 守护进程写 `canceled`。`kernel.mjs` 与 `inbox.mjs` 不写 `canceled`。
 - 建单顺序（hub 角色）：先写 instruction 消息与 Parts，最后写 Tasks 行；Tasks 行是触发信号。

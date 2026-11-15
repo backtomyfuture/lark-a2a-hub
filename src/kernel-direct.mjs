@@ -2,7 +2,7 @@
 // MAX_RETRIES 与 kernel.mjs 同值。不从 kernel.mjs 导入，避免循环依赖。
 import fs from "node:fs";
 import { f1 } from "./bus/feishu.mjs";
-import { KILL_GRACE_MS } from "./carrier.mjs";
+import { KILL_GRACE_MS } from "./proc.mjs";
 import {
   beginLaunchEntry,
   classifyEntry,
@@ -22,7 +22,7 @@ const MAX_RETRIES = 2;
 
 export const directMethods = {
 
-  // 未写 context 时直跑就是 direct。inbox 与 carrier 不进账本，避免改变它们的同步语义。
+  // 未写 context 时直跑就是 direct。inbox 不进账本，避免改变它们的同步语义。
   usesDirectLedger(entry) {
     const ctx = entry?.context ?? "direct";
     const mode = entry?.mode ?? "agent";

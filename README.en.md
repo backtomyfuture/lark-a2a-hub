@@ -85,9 +85,9 @@ lah task why TASK-XXXX                            # inspects the full timeline (
 
 | Scenario | Setup | Reference |
 |---|---|---|
-| **Self-host a hub** | Open the [Feishu Bitable standard template](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) and click "Use this template" to clone all 7 tables (`lah setup` also opens it if no Base is found), then run `lah setup --role hub --owner <owner open_id>`; one process acts as both hub and execution node | [Configuration · Self-host hub](docs/configuration.md#8-自建中台hub-角色) |
+| **Self-host a hub** | Open the [Feishu Bitable standard template](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) and click "Use this template" to clone all 7 tables (`lah setup` also opens it if no Base is found), then run `lah setup --role hub --owner <owner open_id>`; one process acts as both hub and execution node | [Configuration · Self-host hub](docs/configuration.md#7-自建中台hub-角色) |
 | **International Lark tenant** | Pass `lah setup --domain lark`; Lark tenants create the 7 tables manually from the schema | [Base schema](docs/base-schema.md) |
-| **Cloud bot without a daemon** | Join via Feishu automation webhook as a protocol node | [Configuration · External bots](docs/configuration.md#9-接入外部-bot飞书自动化--webhook) · [Protocol node runbook](docs/protocol-node-runbook.md) |
+| **Cloud bot without a daemon** | Join via Feishu automation webhook as a protocol node | [Configuration · External bots](docs/configuration.md#8-接入外部-bot飞书自动化--webhook) · [Protocol node runbook](docs/protocol-node-runbook.md) |
 
 ## How it works
 
@@ -177,7 +177,7 @@ stateDiagram-v2
   - **Single-process superset**: `hub` is a superset of `node` via `lah daemon --role node|hub`—it runs local capabilities while handling network-wide approval cards, result presentation, stale task recovery, and `later` follow-ups.
   - **Host & standalone agent modes**: `kind: host` nodes detect local CLIs and spawn jobs per `commands.json`; `kind: agent` standalone nodes read/reply via `agent_inbox.jsonl` (`inbox` mode).
   - **Hot reload & safe fallback**: Edits to `commands.json` sync to `AgentCards` automatically; invalid JSON preserves the previous table and pauses new claims until repaired.
-  - **LAN isolation (`carrier`)**: When a macOS background daemon cannot reach LAN targets, `lah host` runs a terminal `carrier` over a local unix socket. Offline carriers mark capabilities `offline` and explicitly reject tasks—never silently downgrading to direct execution.
+  - **Direct execution**: The daemon runs commands directly. On macOS, tasks that need LAN access should use an ssh command template.
 
 - **Mid-task Q&A & two-phase owner approval**
   - **Same-task Q&A resume**: Agents emitting ```` ```agent-ask ```` (or `need_input` / `lah inbox ask`) enter `input-required` and resume on the same task once answered; `resume_command` continues the conversation when a local `session.json` exists.
@@ -196,15 +196,14 @@ stateDiagram-v2
 
 ## Common commands
 
-Commands default to `~/.hub-node` (override with `--config <dir>` or `HUB_NODE_HOME`). Full flags and options are documented in [Configuration · CLI cheat sheet](docs/configuration.md#7-cli-速查).
+Commands default to `~/.hub-node` (override with `--config <dir>` or `HUB_NODE_HOME`). Full flags and options are documented in [Configuration · CLI cheat sheet](docs/configuration.md#6-cli-速查).
 
 | Area | Command | Purpose |
 |---|---|---|
 | **Setup & Ops** | `lah setup [--role node\|hub] [--domain feishu\|lark]` | Wizard: resolve Base tables, detect local agents, install Skill, configure autostart |
-| | `lah doctor [--role node\|hub] [--probe <host:port>]` | Read-only checks for config, connectivity, AgentCards, and schedules |
+| | `lah doctor [--role node\|hub]` | Read-only checks for config, connectivity, AgentCards, and schedules |
 | | `lah service [--role node\|hub] [--remove]` | Install or remove user-level autostart service |
 | | `lah inventory` | Read-only summary of this node's AgentCards and tasks by state |
-| | `lah host` | Run the LAN `carrier` process in a user terminal |
 | | `lah update [--check]` | Update program files from git without touching configuration |
 | **Tasks & Debug** | `lah task create --to <node> [--worker <W>] [--cap <skill>] --text …` | Validate roster and dispatch a task |
 | | `lah present [--wait <sec>] [--task <ID>] [--pop]` | Read or wait for terminal/question receipts in the local queue |
@@ -220,18 +219,18 @@ Commands default to `~/.hub-node` (override with `--config <dir>` or `HUB_NODE_H
 
 These invariants are enforced across both the standard and the codebase (see [SECURITY.md](SECURITY.md) for the full threat model):
 
-- **Outbound only**: No listening ports (other than the carrier's local unix socket), no port forwarding or reverse tunnels, and no inbound webhooks. Event subscriptions and card callbacks run over long-lived outbound connections.
+- **Outbound only**: No listening ports, no port forwarding or reverse tunnels, and no inbound webhooks. Event subscriptions and card callbacks run over long-lived outbound connections.
 - **Instructions separate from data**: Executable commands, directories, and contexts come solely from local `commands.json`. Task instructions, parameters, and file pointers go into a mode-600 `input.json` and are never interpolated into shell commands; parameters containing execution control keys (`command`, `cwd`, `context`, `agent`, `worker`, etc.) are rejected outright.
 - **Signed owner approval**: Outbound messages, data deletion/mutation, spending, form submission, and permission changes require `auth-required`. Only structured `auth_decision` records verified as coming from the owner and signed by the hub count—never free text or flags on the task row. Nodes can tighten approval classes locally, never loosen them.
 - **Credentials stay off the bus**: App secrets and the hub's ed25519 private key remain in mode-600 local files. The Bitable carries only task records and file pointers; logs never print credentials or tokens.
 - **Append-only messages**: `Messages` and `Parts` are never modified or deleted, and terminal tasks are never reopened.
-- **Fail loudly**: Offline carriers, missing capabilities, or invalid config modes result in explicit `offline` marks or `rejected` states—never silent fallbacks.
+- **Fail loudly**: Missing capabilities or invalid config values are explicitly rejected—never a silent path switch.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/configuration.md](docs/configuration.md) | Config directory, `node.json` / `commands.json` / `schedules.json`, receipts, carrier, log metrics, full CLI cheat sheet (Chinese) |
+| [docs/configuration.md](docs/configuration.md) | Config directory, `node.json` / `commands.json` / `schedules.json`, receipts, log metrics, full CLI cheat sheet (Chinese) |
 | [docs/standard.md](docs/standard.md) | **The hub standard (normative)**: seven-table model, eight-state machine, communication / approval / idempotency / scheduling protocol (Chinese) |
 | [docs/architecture.md](docs/architecture.md) | Layering, core decisions and rationale, lifecycle, and failure model |
 | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | Field-level definitions of the seven tables, generated from the live Base |

@@ -21,7 +21,7 @@ const OWNER = "ou_test_owner";
 function kernelFor(dir, mock, node, role, extra = {}) {
   return new Kernel({
     node, role, kind: "host", zone: "test", capPrefix: "test", events: false,
-    configDir: dir, carrierSocket: path.join(dir, "missing.sock"), bus: mock, ...extra,
+    configDir: dir, bus: mock, ...extra,
   });
 }
 
