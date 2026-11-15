@@ -1,7 +1,14 @@
 # Changelog
 
 本项目的主要变更记录如下。节点适配器版本号见 `package.json` /
-`hub-node --version`；中台标准版本独立编号（现行 v3.9）。
+`hub-node --version`；中台标准版本独立编号（现行 v3.10）。
+
+## [Unreleased]
+
+中台标准 v3.10（表结构不变）。
+
+- **herdr 执行语境（标准 §9）**：`commands.json` 的 Worker 可写 `context: "herdr"` + `herdr_kind`（可选 `herdr_args` / `herdr_session` / `herdr_keep` / `herdr_autostart`），不写 `command`。认领后守护进程为该任务新建 herdr 工作区、拉起交互式 Agent、只发含 `input.json` 路径与回执命令的受信提示；结果只认窗格内执行的 `lah inbox done|ask|auth|fail`。不占 direct 槽，可并行。扫表时查看窗格：结束一轮没回执先追问一次，再无回执或窗格关闭、Agent 退出即 `failed` + notice；Agent 自己的对话框不代按。问答续跑与执行中审批续跑回到同一窗格。守护进程默认按需拉起专用 herdr 会话（缺省 `lah`，多个 herdr Worker 共用；无头服务与守护进程进程组脱钩，守护进程重启或退出不停它），空闲 10 分钟（收件箱无该会话未结束的 herdr 条目、会话里无工作区）后关闭；从不启停用户的默认会话。`herdr_autostart: false` 恢复只探测不启动。拉起失败或非托管会话未运行时名片 `Availability=offline`，任务排队不拒收，不改走直跑，拉起失败后 5 分钟内不重试。终态（含撤单）后关闭为任务建的工作区。`herdr_*` 键加入执行控制键。`lah doctor` 校验 herdr 条目、报告各会话状态与是否托管，本机找不到 herdr 计为问题。新增 `src/herdr.mjs`、`src/kernel-herdr.mjs` 与 `tests/herdr.test.mjs`。
+- **systemd 单元改为 `KillMode=process`**：默认的 control-group 在停止或重启守护进程时会杀光整个 cgroup，守护进程拉起的 herdr 服务与 direct 在途命令都会被连带杀掉。现在只杀守护进程本身，派生进程由在途账本与 herdr 会话续接。已注册的 Linux 节点需重跑一次 `lah service` 才会写入新单元。launchd 与 Windows 不受影响。
 
 ## [0.9.0] - 2026-11-15（验收层 v1、移除 carrier、执行中动态审批、挂起复查）
 

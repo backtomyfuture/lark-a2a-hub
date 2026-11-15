@@ -9,6 +9,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { loadConfig, DAEMON_VERSION } from "./kernel.mjs";
 import { capIdOf, capIdsOf, normalizeCommands } from "./config.mjs";
+import { createHerdrClient, herdrConfigProblem, herdrManagedSessions, herdrSessionOf, isHerdrEntry } from "./herdr.mjs";
 import { openHost } from "./bus/feishu.mjs";
 import { isHubPublicKey, readHubPublicKey } from "./approval-sign.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
@@ -121,7 +122,7 @@ function readAgyPermissionsAllow() {
 }
 
 const COMMAND_MODES = new Set(["agent", "json", "inbox"]);
-const COMMAND_CONTEXTS = new Set(["direct"]);
+const COMMAND_CONTEXTS = new Set(["direct", "herdr"]);
 
 function hasVerify(entry) {
   return typeof entry?.verify === "string" && entry.verify.trim().length > 0;
@@ -158,7 +159,12 @@ function auditCommandsShape(cmds, capPrefix) {
     }
     if (entry.context != null && !COMMAND_CONTEXTS.has(entry.context)) {
       const hint = entry.context === "carrier" ? "carrier 语境已在本版本移除，请把该能力改为 direct 或删除；" : "";
-      bad(`能力 ${name}：context=${JSON.stringify(entry.context)} 非法（${hint}只认 direct；认领时内核会拒收该能力的任务，不会静默直跑）`);
+      bad(`能力 ${name}：context=${JSON.stringify(entry.context)} 非法（${hint}只认 direct / herdr；认领时内核会拒收该能力的任务，不会静默直跑）`);
+      problems++;
+    }
+    const herdrProblem = herdrConfigProblem(entry);
+    if (herdrProblem) {
+      bad(`能力 ${name}：${herdrProblem}`);
       problems++;
     }
     if (entry.timeout_sec != null) {
@@ -201,6 +207,34 @@ function auditCommandsShape(cmds, capPrefix) {
     }
   }
   return problems;
+}
+
+// 服务没在跑不算配置错误：专用会话由守护进程按需拉起，其余会话能力标离线、任务入队等它回来。
+// 本机根本没有 herdr 才是问题：专用会话也拉不起来。返回问题数。
+async function reportHerdr(flat) {
+  const entries = Object.entries(flat).filter(([, e]) => isHerdrEntry(e));
+  if (!entries.length) return 0;
+  const client = createHerdrClient();
+  if (!(await client.installed())) {
+    bad(`本机找不到 herdr 可执行文件：${entries.map(([n]) => n).join(", ")} 无法拉起，名片会标离线、任务排队；请先安装 herdr（https://herdr.dev）`);
+    return 1;
+  }
+  const managed = herdrManagedSessions(entries.map(([, e]) => e));
+  const sessions = new Map();
+  for (const [name, e] of entries) {
+    const s = herdrSessionOf(e);
+    if (!sessions.has(s)) sessions.set(s, []);
+    sessions.get(s).push(name);
+  }
+  for (const [s, names] of sessions) {
+    const label = s ? `herdr 会话 ${s}` : "herdr 默认会话";
+    let up = false;
+    try { up = await client.serverRunning(s); } catch { up = false; }
+    if (up) ok(`${label} 在运行（${names.join(", ")}${managed.has(s) ? "；守护进程托管，空闲 10 分钟自动关闭" : ""}）`);
+    else if (managed.has(s)) info(`${label} 未运行：有任务时守护进程会按需自动拉起（${names.join(", ")}）；运行时可用 herdr --session ${s} 连进去看`);
+    else info(`告警：${label} 未运行：${names.join(", ")} 名片标离线，任务入队等待；请在终端启动 herdr${s ? ` --session ${s}` : ""}（herdr_autostart=false${s ? "" : " 或默认会话"}，守护进程不会替你启动）`);
+  }
+  return 0;
 }
 
 async function auditAgentTemplates(cmds) {
@@ -739,6 +773,7 @@ export async function doctor(configDir, appDir, opts = {}) {
       for (const [key, entry] of Object.entries(flat)) if (!entry?.worker) templates[key] = entry;
       for (const name of workerNames) templates[`worker:${name}`] = cmds.workers[name];
       problems += await auditAgentTemplates(templates);
+      problems += await reportHerdr(flat);
     } else if (role === "hub") {
       info("未配置 commands.json（hub 仍可承担审批/呈递，但不会认领干活任务）");
     } else {

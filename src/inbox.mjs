@@ -50,7 +50,8 @@ export function writeInbox(configDir, list) {
   fs.chmodSync(file, 0o600);
 }
 
-export function enqueueOrUpdateInbox(configDir, item) {
+// herdr 语境传 status=dispatching：入队即对本尊的 lah inbox --pop 不可见，由守护进程自己送进窗格。
+export function enqueueOrUpdateInbox(configDir, item, { status = "pending" } = {}) {
   const list = readInbox(configDir);
   const idx = list.findIndex((x) => x.task_id === item.task_id);
   if (idx >= 0) {
@@ -58,12 +59,12 @@ export function enqueueOrUpdateInbox(configDir, item) {
       ...list[idx],
       ...item,
       updated_at: new Date().toISOString(),
-      status: "pending", // 置回 pending 等待 Agent 消费
+      status, // 置回待消费
     };
   } else {
     list.push({
       ...item,
-      status: "pending",
+      status,
       created_at: new Date().toISOString(),
     });
   }

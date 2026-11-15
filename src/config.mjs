@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FeishuBus } from "./bus/feishu.mjs";
+import { herdrConfigProblem, isHerdrEntry } from "./herdr.mjs";
 
 // 任务参数里唯一允许影响执行的键是 timeout_sec。其余执行控制键一律拒收（标准 §9）：
 // 命令、目录、语境、Agent、权限只来自本机 commands.json，不能从总线上改。
@@ -11,6 +12,7 @@ const EXEC_CONTROL_KEYS = new Set([
   "side_effect", "approval_class", "permissions", "permission",
   "shell", "env", "executable", "argv", "bin", "max_timeout_sec",
   "verify", "verify_timeout_sec",
+  "herdr_kind", "herdr_args", "herdr_session", "herdr_keep", "herdr_autostart",
 ]);
 
 export function controlKeysIn(params) {
@@ -43,11 +45,19 @@ export function clampTimeoutSec(raw, entry) {
 
 const WORKER_NAME = /^[A-Za-z0-9._-]+$/;
 // 启动方式只归 Worker 管，技能条目不能改写。
-const LAUNCH_KEYS = new Set(["command", "resume_command", "mode", "context", "cwd", "workers", "cap_id", "worker", "skill"]);
+const LAUNCH_KEYS = new Set([
+  "command", "resume_command", "mode", "context", "cwd", "workers", "cap_id", "worker", "skill",
+  "herdr_kind", "herdr_args", "herdr_session", "herdr_keep", "herdr_autostart",
+]);
 const APPROVAL_RANK = { "": 0, auto: 0, notify: 1, auto_notify: 1, approve: 2 };
 
 function isEntry(v) {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+// herdr 语境的结果只走 inbox 回执，mode 省略时补成 inbox，内核其余路径按 inbox 处理即可。
+function withHerdrDefaults(entry) {
+  return isHerdrEntry(entry) && entry.mode == null ? { ...entry, mode: "inbox" } : entry;
 }
 
 export function capKey(worker, skill) {
@@ -94,6 +104,10 @@ export function normalizeCommands(raw, onProblem = () => {}) {
       for (const [name, w] of Object.entries(raw.workers)) {
         if (!WORKER_NAME.test(name)) {
           onProblem(`Worker ${name}：名字只能含字母、数字、. _ -`);
+        } else if (isHerdrEntry(w)) {
+          const problem = herdrConfigProblem(w);
+          if (problem) onProblem(`Worker ${name}：${problem}`);
+          else workers[name] = withHerdrDefaults(w);
         } else if (!isEntry(w) || typeof w.command !== "string" || !w.command.trim()) {
           onProblem(`Worker ${name} 缺 command 模板`);
         } else if (w.mode != null && w.mode !== "agent" && w.mode !== "json") {
@@ -108,8 +122,8 @@ export function normalizeCommands(raw, onProblem = () => {}) {
   for (const [key, entry] of Object.entries(raw)) {
     if (key === "workers") continue;
     if (!isEntry(entry) || !Array.isArray(entry.workers)) {
-      // 节点本尊的能力（或坏条目）：原样留给既有校验。
-      out[key] = entry;
+      // 节点本尊的能力（或坏条目）：原样留给既有校验；herdr 的取值问题由认领预检与 doctor 报出。
+      out[key] = withHerdrDefaults(entry);
       continue;
     }
     if (typeof entry.command === "string" && entry.command.trim()) {
