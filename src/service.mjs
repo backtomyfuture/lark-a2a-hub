@@ -134,6 +134,9 @@ export function renderSystemdUnit({ role, node, appBin, configDir, isSystem = fa
     `WorkingDirectory=${configDir}`,
     `Restart=on-failure`,
     `RestartSec=5`,
+    // 默认 control-group 会在停止或重启时杀光整个 cgroup，herdr 服务与 direct 在途命令都会陪葬；
+    // 只杀主进程，派生进程由在途账本与 herdr 会话自己续接，空闲的 herdr 由守护进程按时关掉。
+    `KillMode=process`,
   ];
   if (isSystem && user) {
     serviceLines.unshift(`User=${user}`);

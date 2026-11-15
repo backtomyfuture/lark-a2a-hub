@@ -100,7 +100,9 @@ Worker 条目与节点本尊的技能条目可用的字段：
 |---|---|
 | `command` | 命令模板。agent 模式含 `{prompt}` |
 | `mode` | `agent`（默认）纯文本输出＋结构化回执；`json` 脚本类，stdin 收信封、stdout 最后一行出结果；`inbox` 交给本尊收件箱 |
-| `context` | 只有 `direct`（默认，可省略，守护进程直接拉起）。取值非法时任务直接 `rejected`，不静默降级。旧配置写了 `carrier` 的能力已移除，需改为 `direct` 或删除 |
+| `context` | `direct`（默认，可省略，守护进程直接拉起）或 `herdr`（在本机 herdr 里开窗格跑交互式 Agent，见下文 [herdr 语境](#herdr-语境)）。取值非法时任务直接 `rejected`，不静默降级。旧配置写了 `carrier` 的能力已移除，需改为 `direct` 或删除 |
+| `herdr_kind` `herdr_args` `herdr_session` `herdr_keep` | 仅 `context: herdr`：Agent 种类（`herdr agent start --kind` 的取值）、传给 Agent 的参数数组、herdr 命名会话（缺省：自动拉起时为专用会话 `lah`，`herdr_autostart=false` 时为默认会话）、终态后是否保留工作区（缺省 false） |
+| `herdr_autostart` | 仅 `context: herdr`，布尔，缺省 `true`：守护进程按需拉起专用会话、空闲 10 分钟后关闭。写 `false` 只探测不启动，服务不在就标离线、任务排队。默认会话永远不会被启停 |
 | `timeout_sec` | 单次执行上限，默认 600 |
 | `verify` | 可选。一条本机 shell 命令，与 `command` 同一可信等级，原样执行，不做 `{prompt}` / `{session}` 替换。只支持 `context=direct` 的 `json` / `agent`。Skill 条目优先，Skill 未写时用其 Worker 条目的值。`mode=inbox` 写了是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。命令必须只读、可重复。执行者的数据不拼进命令，只经两条通道：stdin 一行 JSON `{"task_id","summary","artifact","artifact_name","checks"}`，以及环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`、`LAH_RUN_DIR`、`LAH_MAIN_STDOUT` |
 | `verify_timeout_sec` | 可选正数，缺省 120，夹紧到 1–1800。继承规则同 `verify` |
@@ -111,7 +113,41 @@ Worker 条目与节点本尊的技能条目可用的字段：
 | `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 只对节点本尊的条目有效，可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`。计划里的 `cap` 按这个口径匹配。迁到 Worker 时删掉 `cap_id`，Worker 能力不接受显式 Cap_ID。 |
 | `workers` | 仅专长技能条目：能跑这项技能的 Worker 名数组。写了它就不能写 `command` / `mode` / `context` / `cwd` / `resume_command`，这些取自 Worker |
 
-命令、目录、语境、`verify` 只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` / `verify` / `verify_timeout_sec` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
+命令、目录、语境、`verify` 只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` / `verify` / `verify_timeout_sec` / `herdr_kind` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
+
+### herdr 语境
+
+想让 Agent 在自己看得见、能接手的终端窗格里干活时，用 `context: "herdr"`（需要本机装了 [herdr](https://herdr.dev)；服务默认由守护进程按需拉起）。条目不写 `command`：
+
+```json
+{
+  "workers": {
+    "claude-h": {
+      "context": "herdr",
+      "herdr_kind": "claude",
+      "herdr_args": ["--permission-mode", "acceptEdits"],
+      "cwd": "~/work/repo",
+      "inbox_timeout_sec": 7200,
+      "name": "Claude（herdr 窗格）"
+    },
+    "codex-h": {
+      "context": "herdr",
+      "herdr_kind": "codex",
+      "name": "Codex（herdr 窗格，与 claude-h 共用 lah 会话）"
+    }
+  }
+}
+```
+
+- 认领后守护进程为这个任务新建一个 herdr 工作区（不抢焦点），拉起 Agent，发一段只含 `input.json` 路径与回执命令的提示。任务正文不进提示。
+- Agent 用 `lah inbox done|ask|auth|fail --config <配置目录> --task <Task_ID>` 回执，提示里给的是绝对路径命令。聊天输出不算结果。
+- 结束一轮没回执会被追问一次，仍没有就 `failed`；窗格被关、Agent 退出也是 `failed`。Agent 卡在自己的权限对话框时守护进程不代按，去窗格里处理。
+- 会话与启停：缺省（`herdr_autostart` 不写或 `true`）时守护进程用自己的专用会话 `lah`，有任务要认领或续跑时按需拉起（无头 `herdr --session lah server`，与守护进程脱钩，守护进程重启、`lah update` 或退出都不会停它，也不会杀掉窗格里在跑的 Agent）。没有未结束的 herdr 任务、会话里也没有工作区，连续 10 分钟后自动关掉。多个 herdr Worker 没写 `herdr_session` 时共用这一个会话，每个任务一个工作区。想看 Agent 在干什么，在终端里执行 `herdr --session lah` 连进去；你在里面开的工作区会挡住空闲关闭，关掉后才会计时。
+- 写了 `herdr_session` 就按同样规则管那个命名会话；同一会话只要有一个条目写了 `"herdr_autostart": false`，守护进程就不启停它。
+- `"herdr_autostart": false` 恢复只探测不启动：没写 `herdr_session` 时用你自己的默认 herdr 会话。守护进程从不启停默认会话；服务没开时名片标离线，任务排队等它回来，不会改走直跑。
+- 拉起失败（比如本机没装 herdr）时名片标离线、任务排队不拒收，日志写明原因，5 分钟后再试。`lah doctor` 会报出各会话状态，本机找不到 herdr 会计为问题。
+- 任务结束（含撤单）后工作区自动关掉；要保留看记录就写 `"herdr_keep": true`。
+- herdr 任务不占 direct 的单并发槽，多个可以同时跑；不支持 `verify` 与 `resume_command`（同 inbox）。
 
 热更新与降级：
 

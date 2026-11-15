@@ -16,6 +16,8 @@ import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
 import { TERMINAL_STATUSES, annotateElapsed, approvalRank, formatStats, log, nowStr } from "./kernel-util.mjs";
 import { approvalMethods } from "./kernel-approval.mjs";
 import { directMethods } from "./kernel-direct.mjs";
+import { herdrMethods } from "./kernel-herdr.mjs";
+import { herdrConfigProblem, isHerdrEntry } from "./herdr.mjs";
 import { metadataMethods } from "./kernel-metadata.mjs";
 import { outboxMethods } from "./kernel-outbox.mjs";
 import {
@@ -691,7 +693,9 @@ export class Kernel {
   desiredCard(skill, entry) {
     const receiveMode = receiveModeOf(this.cfg);
     const isInbox = entry?.mode === "inbox";
-    const desc = isInbox ? (entry?.desc || `${this.cfg.node} 独立 Agent 本尊`) : (entry?.desc ?? "");
+    const herdr = isHerdrEntry(entry);
+    const inboxDesc = herdr ? `${entry.worker || skill}（herdr 窗格里的 ${entry.herdr_kind}）` : `${this.cfg.node} 独立 Agent 本尊`;
+    const desc = isInbox ? (entry?.desc || inboxDesc) : (entry?.desc ?? "");
     const skillName = entry?.name ?? (entry?.worker && entry?.skill === "agent" ? entry.worker : (entry?.skill || skill));
     return {
       Cap_ID: this.capIdFor(skill, entry),
@@ -703,7 +707,8 @@ export class Kernel {
       // 留空＝节点本尊直接执行（标准 §6）。
       Worker: entry?.worker || "",
       Side_Effect: entry?.side_effect ?? "write",
-      Availability: "online",
+      // 专用会话按需拉起，最近拉起失败才标离线；其余会话服务不在就如实标离线。任务仍可入队，不改走直跑（标准 §9 herdr 语境）。
+      Availability: herdr && !this.herdrAvailable(entry) ? "offline" : "online",
       Dispatchable: "Yes",
       Daemon_Version: DAEMON_VERSION,
       Receive_Mode: receiveMode,
@@ -716,6 +721,7 @@ export class Kernel {
       Metadata: JSON.stringify({
         kind: this.cfg.kind || "host",
         mode: entry?.mode || "agent",
+        ...(herdr ? { context: "herdr" } : {}),
         a2a: {
           skill_name: skillName,
           zone: this.cfg.zone ?? "",
@@ -909,7 +915,7 @@ export class Kernel {
           const inboxList = readInbox(this.cfg.configDir);
           const item = inboxList.find((x) => x.task_id === taskId);
           // waiting-auth 时任务往往还停在 working（总线还没写成 auth-required）。这时回收会把已请求的批准丢掉。
-          const isPendingOrAcked = item && (item.status === "pending" || item.status === "acked" || item.status === "waiting-answer" || item.status === "waiting-auth");
+          const isPendingOrAcked = item && (item.status === "pending" || item.status === "dispatching" || item.status === "acked" || item.status === "waiting-answer" || item.status === "waiting-auth");
           if (isPendingOrAcked) {
             const timeoutSec = Number(item.inbox_timeout_sec) || Number(entry.inbox_timeout_sec) || 86400;
             const claimedTime = item.claimed_at ? (typeof item.claimed_at === "number" ? item.claimed_at : Date.parse(item.claimed_at)) : Date.now();
@@ -923,10 +929,14 @@ export class Kernel {
               if (ok) this.clearRetry(taskId);
               markInboxStatus(this.cfg.configDir, taskId, "failed", { reason: "timeout" });
               log(`inbox task timed out and marked failed: ${taskId}`);
-            } else if (this.heartbeatDue(current)) {
-              // 未超时才保活，避免 20 分钟租约回收。不够最小间隔就不写，否则每轮扫表都叫醒全网。
-              await this.bus.updateRecord(this.T.tasks, current.record_id, { Heartbeat_At: nowStr() });
-              log(`inbox heartbeat refreshed: ${taskId}`);
+            } else {
+              // herdr 窗格：Agent 没了、结束本轮却没回执，在这里追问或判失败；判了就不再续心跳。
+              if (isHerdrEntry(entry) && (await this.herdrWatch(current, entry, item))) continue;
+              if (this.heartbeatDue(current)) {
+                // 未超时才保活，避免 20 分钟租约回收。不够最小间隔就不写，否则每轮扫表都叫醒全网。
+                await this.bus.updateRecord(this.T.tasks, current.record_id, { Heartbeat_At: nowStr() });
+                log(`inbox heartbeat refreshed: ${taskId}`);
+              }
             }
             continue;
           }
@@ -1079,6 +1089,7 @@ export class Kernel {
         const dialogue = await this.collectDialogue(task, extraAnswers);
         const fromNode = await this.initiatorOf(task);
         const title = String(f1(task, "Title") ?? "");
+        const herdr = isHerdrEntry(entry);
         enqueueOrUpdateInbox(this.cfg.configDir, {
           task_id: taskId,
           from_node: fromNode,
@@ -1088,7 +1099,11 @@ export class Kernel {
           turns: dialogue.turns,
           inbox_timeout_sec: Number(entry.inbox_timeout_sec) || 86400,
           claimed_at: Date.now(),
-        });
+        }, { status: herdr ? "dispatching" : "pending" });
+        if (herdr) {
+          await this.herdrDispatch(task, entry, { answers: extraAnswers });
+          return;
+        }
         log(`inbox queued ${taskId} for agent本尊 (mode: inbox)`);
         // 保持 working 状态，不起子进程，不结案，由 Agent 本尊通过 lah inbox 接收并回执
         return;
@@ -1269,12 +1284,12 @@ export class Kernel {
       log("rejected (control keys) " + taskId);
       return false;
     }
-    // context 只认 direct。旧配置里的 carrier 语境已移除，若静默按 direct 直跑，
+    // context 只认 direct 与 herdr。旧配置里的 carrier 语境已移除，若静默按 direct 直跑，
     // 会让原本要在用户终端语境里跑的命令换了环境执行；拼错的 context、mode 同理。
     // 取值非法一律拒收，把配置错误喊出来。
     const entryCtx = this.commands[skill]?.context;
     const entryMode = this.commands[skill]?.mode;
-    if ((entryCtx != null && entryCtx !== "direct")
+    if ((entryCtx != null && entryCtx !== "direct" && entryCtx !== "herdr")
       || (entryMode != null && !["agent", "json", "inbox"].includes(entryMode))) {
       const carrierHint = entryCtx === "carrier"
         ? "carrier 语境已在本版本移除，请把该能力改为 direct 或删除。" : "";
@@ -1283,6 +1298,15 @@ export class Kernel {
       if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (invalid commands.json context/mode) ${taskId}`);
+      return false;
+    }
+    const herdrProblem = herdrConfigProblem(this.commands[skill]);
+    if (herdrProblem) {
+      await this.writeMessage(task, "notice",
+        `拒收：本机 commands.json 中能力 ${skill} 的 herdr 配置不合法：${herdrProblem}。任务不执行，也不改走直跑；请修正配置（lah doctor 可检查）后重派。`);
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
+      this.clearRetry(taskId);
+      log(`rejected (invalid herdr config) ${taskId}`);
       return false;
     }
     const entryVerify = this.commands[skill]?.verify;
@@ -1329,6 +1353,7 @@ export class Kernel {
       log(`direct in flight (${this._directFlight.taskId}), skip claim ${queuedId}`);
       return;
     }
+    if (!(await this.herdrReady(task))) return;
     task = await this.taskForWrite(task, ["submitted"]);
     if (!task) return;
     // 已有完整 result 就关单；缺 Parts 则停手，等 outbox 补齐，不把空消息当成交付。
@@ -1367,6 +1392,7 @@ export class Kernel {
   async resumeAuthCheck(task) {
     if (f1(task, "Claimed_By") !== this.cfg.node) return;
     if (f1(task, "Status") !== "auth-required") return;
+    if (!(await this.herdrReady(task))) return;
     const statusMsg = String(f1(task, "Status_Msg") ?? "");
     const taskId = f1(task, "Task_ID");
     const msgs = await this.reloadMessages(taskId);
@@ -1381,10 +1407,10 @@ export class Kernel {
       if (!(await this.verifyApprovedAndUncanceled(check || task, statusMsg))) return;
       const current = await this.bus.getRecord(this.T.tasks, task.record_id);
       const request = msgs.find((m) => f1(m, "Msg_ID") === statusMsg);
+      const herdr = isHerdrEntry(entry);
       enqueueOrUpdateInbox(this.cfg.configDir, {
         task_id: taskId,
         from_node: await this.initiatorOf(current || task),
-        status: "pending",
         claimed_at: Date.now(),
         auth_decision: {
           status: "approved",
@@ -1393,8 +1419,9 @@ export class Kernel {
           decided_at: nowStr(),
         },
         approvals: await this.collectApprovedAuths(current || task),
-      });
+      }, { status: herdr ? "dispatching" : "pending" });
       log(`inbox auth resumed ${taskId}`);
+      if (herdr) await this.herdrDispatch(current || task, entry);
       return;
     }
     if (this._directFlight) {
@@ -1406,7 +1433,7 @@ export class Kernel {
 
   // 终态已经落在总线上时，本机收件箱和会话不能再被 pop 或续跑拿去执行。
   async cleanupTerminalLocals(tasks) {
-    const open = new Set(["pending", "acked", "waiting-answer", "waiting-auth"]);
+    const open = new Set(["pending", "dispatching", "acked", "waiting-answer", "waiting-auth"]);
     let inbox = null;
     for (const t of tasks) {
       const st = f1(t, "Status");
@@ -1420,6 +1447,7 @@ export class Kernel {
         markInboxStatus(this.cfg.configDir, taskId, st);
         item.status = st;
       }
+      if (item?.herdr) await this.herdrCleanupTerminal(item);
       const sessionFile = path.join(this.cfg.configDir, "runs", taskId, "session.json");
       if (fs.existsSync(sessionFile) || fs.existsSync(sessionFile + ".tmp")) this.dropSession(taskId);
     }
@@ -1437,6 +1465,7 @@ export class Kernel {
       if (f1(msgs[i], "Kind") === "answer") answers.push(await this.msgText(msgs[i]));
     }
     if (answers.length) {
+      if (!(await this.herdrReady(task))) return;
       log(`resuming ${f1(task, "Task_ID")} with ${answers.length} answer(s)`);
       const entry = this.commands[this.capKeyOf(task)] ?? {};
       // 续跑检查照常做完；真正要再拉起命令时，给已经在途的 direct 让路，避免两条一起写表。
@@ -1452,14 +1481,18 @@ export class Kernel {
           Status: "working", Heartbeat_At: nowStr(), Status_Msg: "",
         }, ["input-required"], true))) return;
         const dialogue = await this.collectDialogue(task, answers);
+        const herdr = isHerdrEntry(entry);
         enqueueOrUpdateInbox(this.cfg.configDir, {
           task_id: f1(task, "Task_ID"),
           from_node: await this.initiatorOf(task),
           turns: dialogue.turns,
           answers,
-          status: "pending",
-        });
-        log(`inbox task resumed and put back to pending: ${f1(task, "Task_ID")}`);
+        }, { status: herdr ? "dispatching" : "pending" });
+        log(`inbox task resumed and put back to ${herdr ? "herdr" : "pending"}: ${f1(task, "Task_ID")}`);
+        if (herdr) {
+          const fresh = await this.bus.getRecord(this.T.tasks, task.record_id);
+          await this.herdrDispatch(fresh || task, entry, { answers });
+        }
         return;
       }
 
@@ -1547,8 +1580,9 @@ export class Kernel {
     await this.serviceDirectFlight();
     await this.reclaimStale();
     const { changed } = this.loadCommands();
+    const herdrChanged = await this.refreshHerdrHealth();
     if (this._commandsEverLoaded) {
-      if (!this._capsReady || changed) {
+      if (!this._capsReady || changed || herdrChanged) {
         await this.reconcileCards();
         this._capsReady = true;
       }
@@ -1745,6 +1779,8 @@ export class Kernel {
       return;
     }
     if (due) this.pulseWake();
+    try { this.herdrProbe(); }
+    catch (e) { log("herdr probe failed: " + (e?.message ?? e)); }
   }
 }
 
@@ -1764,3 +1800,4 @@ defineProto(directMethods);
 defineProto(approvalMethods);
 defineProto(outboxMethods);
 defineProto(metadataMethods);
+defineProto(herdrMethods);

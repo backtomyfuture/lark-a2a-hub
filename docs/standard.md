@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，形态 B）
 
-> 现行标准，版本 v3.9。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.10。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -270,6 +270,14 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 ## 修订记录
 
+**v3.10（2026-11-15，节点适配器未发版；表结构不变）：herdr 执行语境**：
+- 动机：节点内多 Agent 编排要有一个看得见、能接手的执行面。herdr 是终端工作区管理器，能拉起并识别 claude / codex / droid 等交互式 Agent 的状态。把它作为 `context` 的第二个取值，Agent 在用户眼前的窗格里干活，机主随时可以进去看或接手。
+- 新增 `context: "herdr"`（§9「herdr 语境」）：只走 inbox 回执，条目写 `herdr_kind` 代替 `command`；认领后守护进程为该任务新建 herdr 工作区、拉起 Agent、发受信提示，结果只认窗格内执行的 `lah inbox done|ask|auth|fail`。不占 direct 槽，可并行。
+- 专用会话按需启停：`herdr_autostart`（缺省 true）时守护进程在认领或续跑前按需拉起它专用的 herdr 会话（未写 `herdr_session` 时为 `lah`，多个 herdr Worker 共用），以脱钩的无头服务运行，守护进程重启或退出都不停它；连续空闲 10 分钟（收件箱无该会话的未结束 herdr 条目、会话里也没有工作区）后关闭。守护进程从不启停用户的默认会话；`herdr_autostart=false` 恢复只探测不启动。
+- 失败要响：专用会话拉起失败（如本机没装 herdr）或非托管会话未运行时，名片 `Availability=offline`、任务原地等待，不拒收、不改走直跑；拉起失败后 5 分钟内不再重试。窗格关闭、Agent 退出或追问一次后仍无回执 → `failed` + notice；Agent 自己的对话框（blocked）不代按。
+- `herdr_kind` / `herdr_args` / `herdr_session` / `herdr_keep` / `herdr_autostart` 加入执行控制键，也加入只归 Worker 管的启动键。
+- 否决的做法：解析窗格屏幕文字当回执（与 §9「结构化回执，不猜自然语言」冲突）；herdr 不在时改走 direct 无头命令（静默降级）；所有任务共用一个长驻窗格（任务之间串上下文，撤单时也关不干净）。
+
 **v3.9（2026-11-15，对应节点适配器 0.9.0；表结构不变）：验收层 v1**：
 - 动机：`completed` 只表示执行方自报完成，巡检、日报、代码类任务都要发起方肉眼复核。新增 §11。
 - L1：`commands.json` 可配本机 `verify` 命令，direct 的 json / agent 在完成收口前跑；退出码非 0、超时或拉不起来一律 `failed` + notice（「验收未通过」），不计重试、不重跑。verify 作为在途账本第二阶段，守护重启后续接。
@@ -396,8 +404,18 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 ## 9. 附则：执行层与传输层修订（表结构不变）
 
 - **能力模型（v3.7：Node / Worker / Skill）**：守护进程为薄壳，不内嵌任何执行器；能力全部来自节点本地 `commands.json`，守护进程按配置自动登记 AgentCards，新增能力不改守护进程代码。定版命令见 [能力模板库](agent-templates.md)。
-  - **Worker** 写在根上的保留键 `workers` 里：`{"workers": {"<worker>": {command, resume_command?, mode?, context?, cwd?, timeout_sec?, approval_class?, name?, desc?}}}`。`command` 是这个 Agent CLI 的无头启动模板（如 `agy --dangerously-skip-permissions --print {prompt}`）。Worker 名只含字母、数字、`.`、`_`、`-`。Worker 的 `mode` 只取 `agent` 或 `json`。
+  - **Worker** 写在根上的保留键 `workers` 里：`{"workers": {"<worker>": {command, resume_command?, mode?, context?, cwd?, timeout_sec?, approval_class?, name?, desc?}}}`。`command` 是这个 Agent CLI 的无头启动模板（如 `agy --dangerously-skip-permissions --print {prompt}`）。Worker 名只含字母、数字、`.`、`_`、`-`。Worker 的 `mode` 只取 `agent` 或 `json`；`context: "herdr"` 的 Worker 例外：不写 `command`，`mode` 为 `inbox`（可省略），见下文「herdr 语境」。
   - **Skill** 是根上的其余键。两种写法：自带 `command`（或 `mode: inbox`）的条目由节点本尊直接执行，Worker 为空（确定性脚本、独立 Agent 的收件箱）；写 `workers: ["<worker>", …]` 的条目是这些 Worker 的专长技能，启动方式取自 Worker，条目只提供 `name` / `desc` / `side_effect` / `approval_class` / `timeout_sec` 等技能属性。同一条目不得同时写 `command` 与 `workers`。
+  - **herdr 语境（v3.10）**：`context: "herdr"` 由本机 herdr 服务托管一个交互式 Agent 窗格，结果只走 inbox 回执通道（`mode` 省略即 `inbox`，写别的取值按配置非法拒收）。条目不写 `command`，改写 `herdr_kind`（`herdr agent start --kind` 的取值），可选 `herdr_args`（字符串数组，原样跟在 `--` 之后传给 Agent）、`herdr_session`（herdr 命名会话）、`herdr_autostart`（布尔，缺省 true，见下文「会话」）、`herdr_keep`（终态后保留工作区，缺省 false）、`cwd`、`inbox_timeout_sec`。这些键与 `command` 同一可信等级，只来自本机 `commands.json`；任务参数里出现即按执行控制键拒收。
+    - 会话：`herdr_autostart` 为 true（缺省）时，会话取 `herdr_session`，未写则为守护进程专用会话 `lah`（多个 herdr Worker 共用一个服务，每任务一个工作区）；为 false 时取 `herdr_session`，未写则为用户的默认会话。守护进程只启停 autostart 的命名会话（同一会话有任一条目写了 false 即不启停），永远不启停默认会话。
+      - 按需拉起：认领与续跑前探测会话；autostart 会话未运行就以 `herdr --session <会话> server` 无头启动，进程与守护进程的进程组脱钩，守护进程重启、升级或退出都不停它，重启后探测到在跑即复用；最多等约 10 秒就绪。拉起失败记日志写明原因，任务原地等待，5 分钟内不再重试。
+      - 空闲关闭：只在分钟定时器里对 autostart 会话判断，只做本机调用。收件箱中没有该会话未结束的 herdr 条目（`pending` / `dispatching` / `acked` / `waiting-answer` / `waiting-auth`），且 `herdr workspace list` 为空（`herdr_keep` 留下的或用户自己开的工作区都会挡住），连续满 600 秒才 `herdr server stop`；中途任一次不空闲重新计时。
+    - 认领：任务先写入 `agent_inbox.jsonl`，状态 `dispatching`（本尊的 `lah inbox --pop` 取不到），并按本节输入约定写 `input.json`。守护进程随后为该任务新建一个 herdr 工作区（不抢焦点，目录取 `cwd`，缺省配置目录），以 `lah-<任务号>` 为名拉起 Agent，再发一段受信提示：只含受信模板、`input.json` 绝对路径与回执命令，不拼任务正文。发出后收件箱条目转 `acked`。herdr 任务不占 direct 槽，可以并行。
+    - 回执：只认窗格里的 Agent 执行 `lah inbox done|ask|auth|fail --config <配置目录> --task <Task_ID>`，与 inbox 同一套提交与校验（含 `--check` 自检）。聊天输出不算回执，守护进程不解析窗格屏幕。
+    - 守护：扫表时用 `herdr agent get` 查看窗格。服务已停、窗格被关或 Agent 退出 → `failed` + notice。Agent 回到 idle / done 且完成计数比发提示时增加、但没有回执 → 用受信模板追问一次；再结束一轮仍无回执 → `failed` + notice。`blocked`（Agent 自己的权限或问题对话框）只记日志，不代按、不放行。保活心跳与 `inbox_timeout_sec` 超时同 inbox。分钟定时器只做本机 herdr 查询，有需要处理的情况才叫醒扫表，不增加总线调用。
+    - 续跑：`input-required` 收到 answer、或执行中审批获批后，原 Agent 仍在且空闲就在同一窗格发「数据已更新」的受信提示；Agent 正忙则下一轮再发；已不在则新开工作区重新拉起。
+    - 失败要响：名片 `Availability` 在会话服务在线、或 autostart 会话最近 5 分钟内没有拉起失败时为 `online`，否则 `offline`。会话不可用（非 autostart 会话未运行，或 autostart 会话拉起失败）时，`submitted` 任务不认领、原地入队，中断态任务不续跑，均不写状态、不改走直跑。在途任务的服务中途不在了按上文「守护」判 `failed`，不靠重新拉起假装任务还活着。拉起 Agent 或发提示失败 → `failed` + notice，不计重试。
+    - 收尾：任务进入终态（含发起方撤单的 `canceled`）后，守护进程关闭它为该任务建的工作区（`herdr_keep=true` 时保留）；只关自己建的，不碰用户的其他工作区。
   - **Worker 名片与通用执行**：每个 Worker 自动登记一张 Worker 名片（`Skill_ID=agent`），代表它在册并按自然语言指令现场发挥，无须另写条目。名片的名称与说明取 Worker 条目的 `name` / `desc`。显式写 `agent` 条目只用来调整这项通用执行的属性（审批下限、超时等）。独立 Agent 节点的 `agent`（inbox）就是本尊的 Worker 名片，只是 Worker 为空。
   - **默认 Worker**：任务未指定 Worker 时的取法见 §2 Worker_Hint。专长技能按其 `workers` 数组的顺序，通用执行（Worker 名片）按 `workers` 对象里的书写顺序。
   - 条目引用了未定义的 Worker、Worker 缺 `command`、同时写了 `command` 与 `workers`、或 Cap_ID 重复时，该项能力不登记并记日志，其余能力照常；`lah doctor` 报出同样的问题。
@@ -497,7 +515,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
   - 文件恢复后，下一轮扫表自动接回：内容有变则先对账名片，再恢复派发。
   - 启动期没有有效 `commands.json`：只记日志，进主循环每轮重试；能力名片登记成功前不处理任务（§9、DESIGN §4 常驻韧性）。
 - `node.json` **只在启动时读一次**（含 hub 的 `ownerOpenId`），运行期改动（改好或改坏）都要重启才生效，在跑的进程不受影响。启动期 `node.json` 无效时，守护进程记一条错误、退避（默认 5 秒）后以非零状态退出，由 launchd / systemd 的保活拉起重试；修好前不会接单。
-- 条目级字段不合法时：未知 `mode` / `context` 在认领预检阶段直接拒收（`rejected` + notice 说明是本机配置取值非法），不再静默按 `agent` / `direct` 处理；已移除的 `carrier` 同样按非法取值拒收，notice 写明该语境已移除（不改走直跑）；非法 `timeout_sec` 仍回退 600 秒，重复 Cap_ID 时后一项不登记并记日志（同 §9）。这类问题同时由 `lah doctor` 提前拦截：检查两份文件可解析、必填字段齐全，`mode ∈ {agent, json, inbox}`、`context` 只能是 `direct`（可省略）、`timeout_sec` 为正数，Cap_ID（`cap_id` 或 `CAP-<capPrefix>-<能力名>`；Worker 的能力为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`）不重复，`workers` 里每个 Worker 有 `command`，技能条目引用的 Worker 都已定义；对旧平表中由节点本尊执行的 agent 型条目给出迁到 `workers` 的提示（info，不计入问题）；不打印任何凭据。
+- 条目级字段不合法时：未知 `mode` / `context` 在认领预检阶段直接拒收（`rejected` + notice 说明是本机配置取值非法），不再静默按 `agent` / `direct` 处理；已移除的 `carrier` 同样按非法取值拒收，notice 写明该语境已移除（不改走直跑）；非法 `timeout_sec` 仍回退 600 秒，重复 Cap_ID 时后一项不登记并记日志（同 §9）。这类问题同时由 `lah doctor` 提前拦截：检查两份文件可解析、必填字段齐全，`mode ∈ {agent, json, inbox}`、`context` 只能是 `direct`（可省略）或 `herdr`（须有合法 `herdr_kind`、不写 `command`，并报告各会话是否在运行、是否由守护进程按需拉起；本机找不到 herdr 可执行文件计为问题）、`timeout_sec` 为正数，Cap_ID（`cap_id` 或 `CAP-<capPrefix>-<能力名>`；Worker 的能力为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`）不重复，`workers` 里每个非 herdr Worker 有 `command`，技能条目引用的 Worker 都已定义；对旧平表中由节点本尊执行的 agent 型条目给出迁到 `workers` 的提示（info，不计入问题）；不打印任何凭据。
 
 **建议（尚未实现，落地前先改本节）**：
 
