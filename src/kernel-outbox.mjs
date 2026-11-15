@@ -2,8 +2,25 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { acceptanceLine } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { TERMINAL_STATUSES, annotateElapsed, log, nowStr } from "./kernel-util.mjs";
+
+function verifyFailedNoticeText(box) {
+  const head = acceptanceLine(box.acceptance) || "验收未通过：verify 执行失败";
+  const tail = String(box.verifyEvidence ?? "").trim();
+  const tailBlock = tail ? `verify 输出：\n${tail}` : "";
+  const rawSummary = String(box.res?.summary ?? "").trim();
+  if (!rawSummary) {
+    return [head, tailBlock].filter(Boolean).join("\n\n").slice(0, 4000);
+  }
+  // 保留首行与 verify 输出尾部，避免超长摘要把失败证据挤掉。
+  const fixedLen = head.length + (tailBlock ? tailBlock.length + 4 : 0) + 12;
+  const summaryBudget = Math.max(0, 4000 - fixedLen);
+  const summary = rawSummary.length > summaryBudget ? rawSummary.slice(0, summaryBudget) : rawSummary;
+  const summaryBlock = summary ? `执行方摘要：\n${summary}` : "";
+  return [head, summaryBlock, tailBlock].filter(Boolean).join("\n\n").slice(0, 4000);
+}
 
 export const outboxMethods = {
 
@@ -38,9 +55,10 @@ export const outboxMethods = {
     catch (e) { if (e.code !== "ENOENT") throw e; }
   },
 
-  async closeSettledOutbox(task, box) {
+  async closeSettledOutbox(task, box, { dropped = false } = {}) {
     await this.noteUsageOnce(task, box);
     await this.noteLaterOnce(task, box);
+    if (!dropped) await this.noteAcceptanceOnce(task, box);
     this.dropSession(box.taskId);
     this.deleteOutbox(box.taskId);
     this.clearRetry(box.taskId);
@@ -48,6 +66,9 @@ export const outboxMethods = {
 
   // 命令已经跑完就先落盘。之后任何写表失败都靠这份文件补齐，不再执行一次。
   beginOutbox(task, info) {
+    if (info.outcome !== "succeeded" && info.res?.later) {
+      log("later 在 failed 上忽略");
+    }
     const box = {
       taskId: f1(task, "Task_ID"),
       outcome: info.outcome,
@@ -66,12 +87,16 @@ export const outboxMethods = {
         ? { at: info.res.later.at, about: info.res.later.about }
         : null,
       later_noted: false,
+      acceptance: info.acceptance ?? null,
+      acceptance_noted: false,
+      verifyEvidence: info.verifyEvidence ?? "",
       tokens: {
         artifact: randomUUID(),
         artifactPart: randomUUID(),
         run: randomUUID(),
         message: randomUUID(),
         partText: randomUUID(),
+        partData: randomUUID(),
       },
     };
     this.saveOutbox(box);
@@ -92,7 +117,7 @@ export const outboxMethods = {
   async ensurePlan(task, box) {
     box.tokens ??= {};
     let dirty = false;
-    for (const k of ["artifact", "artifactPart", "run", "message", "partText"]) {
+    for (const k of ["artifact", "artifactPart", "run", "message", "partText", "partData"]) {
       if (!box.tokens[k]) {
         box.tokens[k] = randomUUID();
         dirty = true;
@@ -131,7 +156,7 @@ export const outboxMethods = {
       await this.bus.createRecord(this.T.artifacts, {
         Artifact_ID: box.artId, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
         Name: name, Description: String(box.res?.summary ?? "").slice(0, 500),
-        Is_Final: "Yes", Created_By: this.cfg.node, Created_At: nowStr(),
+        Is_Final: box.outcome === "succeeded" ? "Yes" : "No", Created_By: this.cfg.node, Created_At: nowStr(),
       }, box.tokens.artifact);
     }
     await this.createPart(box.artId, "artifact", 1, "file", {
@@ -143,7 +168,15 @@ export const outboxMethods = {
     const finished = nowStr();
     const failed = box.outcome !== "succeeded";
     const outcome = failed ? "failed" : "succeeded";
-    const error = failed ? `回执无效：${box.error || ""}；原始输出：${box.raw || ""}` : "";
+    let error = "";
+    if (box.outcome === "verify_failed") {
+      const v = box.acceptance?.verify;
+      const verdict = v?.verdict || "fail";
+      const codePart = v?.exit_code == null ? "" : ` 退出码 ${v.exit_code}`;
+      error = `验收未通过：verify ${verdict}${codePart}`;
+    } else if (failed) {
+      error = `回执无效：${box.error || ""}；原始输出：${box.raw || ""}`;
+    }
     const errorLog = annotateElapsed(error, box.started, finished);
     const row = await this.findBy(this.T.runs, "Run_ID", box.runId);
     if (row) {
@@ -167,9 +200,11 @@ export const outboxMethods = {
 
   async ensureResultMessage(task, box) {
     const failed = box.outcome !== "succeeded";
-    const content = failed
-      ? `回执无法解析，任务终止且不重试。原因：${box.error || "未知"}${box.raw ? "\n原始输出：" + box.raw : ""}`.slice(0, 4000)
-      : String(box.res?.summary ?? "").slice(0, 4000);
+    const content = box.outcome === "verify_failed"
+      ? verifyFailedNoticeText(box)
+      : failed
+        ? `回执无法解析，任务终止且不重试。原因：${box.error || "未知"}${box.raw ? "\n原始输出：" + box.raw : ""}`.slice(0, 4000)
+        : String(box.res?.summary ?? "").slice(0, 4000);
     if (!(await this.findBy(this.T.messages, "Msg_ID", box.msgId))) {
       const fields = {
         Msg_ID: box.msgId, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
@@ -183,6 +218,11 @@ export const outboxMethods = {
     if (content) {
       await this.createPart(box.msgId, "message", 1, "text", { text: content }, box.tokens.partText);
     }
+    if (box.acceptance) {
+      await this.createPart(box.msgId, "message", 2, "data", {
+        data: JSON.stringify({ acceptance: box.acceptance }),
+      }, box.tokens.partData);
+    }
   },
 
   // Artifacts → Runs → Messages/Parts → Tasks。任一步失败都留着 outbox，下次只补缺的。
@@ -194,7 +234,7 @@ export const outboxMethods = {
     const want = box.outcome === "succeeded" ? "completed" : "failed";
     if (TERMINAL_STATUSES.has(st) && st !== want) {
       log(`outbox drop ${box.taskId}: terminal ${st}`);
-      await this.closeSettledOutbox(current, box);
+      await this.closeSettledOutbox(current, box, { dropped: true });
       return;
     }
     await this.ensureArtifact(current, box);
@@ -218,7 +258,7 @@ export const outboxMethods = {
       }
       if (TERMINAL_STATUSES.has(st2)) {
         log(`outbox drop ${box.taskId}: terminal ${st2}`);
-        await this.closeSettledOutbox(again, box);
+        await this.closeSettledOutbox(again, box, { dropped: true });
         return;
       }
       throw new Error(`状态未写入（当前 ${st2 || "missing"}），保留 outbox`);

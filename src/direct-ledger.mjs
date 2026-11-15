@@ -75,6 +75,18 @@ export function commandEnv(extra) {
   return env;
 }
 
+// 退出码先写临时文件再改名，扫表不会读到半截数字。最后的 `:` 保证包装自己退出，
+// 而不是被前面的 mv 替换掉、来不及把退出码留下。
+const WRAP_SCRIPT = [
+  "umask 077",
+  '/bin/sh -c "$LAH_CMD" <"$LAH_STDIN" >"$LAH_OUT" 2>"$LAH_ERR"',
+  "code=$?",
+  'echo "$code" >"$LAH_EXIT.tmp"',
+  'mv "$LAH_EXIT.tmp" "$LAH_EXIT"',
+  ":",
+  "",
+].join("\n");
+
 // spawn 之前调用。此时还没有 pid；进程若没起来，重启后能看出「没启动」而不是「丢了账本」。
 export function beginLaunchEntry({
   configDir, taskId, attempt, startedAt, startedMs, timeoutSec, mode, runId, stdinText,
@@ -93,18 +105,7 @@ export function beginLaunchEntry({
   }
   fs.writeFileSync(stdinPath, stdinText ?? "", { mode: 0o600 });
   fs.chmodSync(stdinPath, 0o600);
-  // 退出码先写临时文件再改名，扫表不会读到半截数字。最后的 `:` 保证包装自己退出，
-  // 而不是被前面的 mv 替换掉、来不及把退出码留下。
-  const script = [
-    "umask 077",
-    '/bin/sh -c "$LAH_CMD" <"$LAH_STDIN" >"$LAH_OUT" 2>"$LAH_ERR"',
-    "code=$?",
-    'echo "$code" >"$LAH_EXIT.tmp"',
-    'mv "$LAH_EXIT.tmp" "$LAH_EXIT"',
-    ":",
-    "",
-  ].join("\n");
-  fs.writeFileSync(wrapPath, script, { mode: 0o700 });
+  fs.writeFileSync(wrapPath, WRAP_SCRIPT, { mode: 0o700 });
   fs.chmodSync(wrapPath, 0o700);
   const entry = {
     task_id: safeTaskId(taskId),
@@ -140,6 +141,74 @@ export function spawnWrapped(entry, command, cwd) {
       LAH_OUT: entry.stdout_path,
       LAH_ERR: entry.stderr_path,
       LAH_EXIT: entry.exit_path,
+    }),
+    detached: true,
+    stdio: "ignore",
+  });
+}
+
+// 账本第二阶段：verify 与主命令共用进程组包装机制，但文件名独立，不覆盖主命令 stdout.txt。
+export function beginVerifyLaunch({ configDir, entry, receipt, timeoutSec }) {
+  const dir = runDir(configDir, entry.task_id);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* 同上 */ }
+  const stdinPath = path.join(dir, "verify-stdin.txt");
+  const stdoutPath = path.join(dir, "verify-stdout.txt");
+  const stderrPath = path.join(dir, "verify-stderr.txt");
+  const exitPath = path.join(dir, "verify-exit");
+  const wrapPath = path.join(dir, "verify-wrap.sh");
+  for (const stale of [stdoutPath, stderrPath, exitPath, `${exitPath}.tmp`]) {
+    try { fs.unlinkSync(stale); } catch { /* 第一次没有这些文件 */ }
+  }
+  const stdinLine = JSON.stringify({
+    task_id: entry.task_id,
+    summary: String(receipt?.summary ?? ""),
+    artifact: String(receipt?.artifact ?? ""),
+    artifact_name: String(receipt?.artifact_name ?? ""),
+    checks: receipt?.checks ?? {},
+  }) + "\n";
+  fs.writeFileSync(stdinPath, stdinLine, { mode: 0o600 });
+  fs.chmodSync(stdinPath, 0o600);
+  fs.writeFileSync(wrapPath, WRAP_SCRIPT, { mode: 0o700 });
+  fs.chmodSync(wrapPath, 0o700);
+  entry.state = "verifying";
+  entry.receipt = receipt;
+  entry.stop_at_ms = null;
+  entry.verify = {
+    launches: (Number(entry.verify?.launches) || 0) + 1,
+    started_ms: Date.now(),
+    timeout_sec: timeoutSec,
+    stdin_path: stdinPath,
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
+    exit_path: exitPath,
+    wrap_path: wrapPath,
+    pid: null,
+    pgid: null,
+    proc_start_ms: null,
+    stop_at_ms: null,
+    timed_out: false,
+    disposition: null,
+    fail_error: null,
+  };
+  saveEntry(configDir, entry);
+  return entry;
+}
+
+export function spawnVerifyWrapped(configDir, entry, command, cwd) {
+  const v = entry.verify;
+  return spawn("/bin/sh", [v.wrap_path], {
+    cwd: cwd || os.homedir(),
+    env: commandEnv({
+      LAH_CMD: command,
+      LAH_STDIN: v.stdin_path,
+      LAH_OUT: v.stdout_path,
+      LAH_ERR: v.stderr_path,
+      LAH_EXIT: v.exit_path,
+      LAH_TASK_ID: entry.task_id,
+      LAH_ARTIFACT: String(entry.receipt?.artifact ?? ""),
+      LAH_RUN_DIR: runDir(configDir, entry.task_id),
+      LAH_MAIN_STDOUT: entry.stdout_path || "",
     }),
     detached: true,
     stdio: "ignore",
@@ -263,20 +332,22 @@ function rebound(found) {
 // pid 对不上时先按包装脚本路径再找一次，避免把复用后的无关进程当成我们的，或把还在跑的包装漏掉。
 export function classifyEntry(entry) {
   if (!entry || entry.broken) return { kind: "uncertain" };
-  if (entry.disposition === "fail") return { kind: "fail" };
-  if (entry.exit_path && fs.existsSync(entry.exit_path)) return { kind: "exited" };
-  const ident = identityOf(entry);
+  const target = entry.state === "verifying" ? entry.verify : entry;
+  if (!target || typeof target !== "object") return { kind: "fail" };
+  if (target.disposition === "fail") return { kind: "fail" };
+  if (target.exit_path && fs.existsSync(target.exit_path)) return { kind: "exited" };
+  const ident = identityOf(target);
   if (ident === "nopid" || ident === "mismatch") {
-    const found = findWrapProcess(entry.wrap_path);
+    const found = findWrapProcess(target.wrap_path);
     if (found.status === "unknown") return { kind: "uncertain" };
     if (found.status === "found") return rebound(found);
     return { kind: "dead" };
   }
-  const group = groupAlive(entry.pgid || entry.pid);
+  const group = groupAlive(target.pgid || target.pid);
   if (group === true && ident === "match") return { kind: "alive" };
   if (group === true && ident === "unknown") return { kind: "uncertain" };
   if (group === false) {
-    const found = findWrapProcess(entry.wrap_path);
+    const found = findWrapProcess(target.wrap_path);
     if (found.status === "found") return rebound(found);
     if (found.status === "unknown") return { kind: "uncertain" };
     return { kind: "dead" };
@@ -342,6 +413,18 @@ export function cleanupRunFiles(configDir, entry) {
     entry.stdin_path,
     entry.wrap_path,
     entry.exit_path ? `${entry.exit_path}.tmp` : "",
+    entry.verify?.stdout_path,
+    entry.verify?.stderr_path,
+    entry.verify?.exit_path,
+    entry.verify?.stdin_path,
+    entry.verify?.wrap_path,
+    entry.verify?.exit_path ? `${entry.verify.exit_path}.tmp` : "",
+    path.join(dir, "verify-stdout.txt"),
+    path.join(dir, "verify-stderr.txt"),
+    path.join(dir, "verify-exit"),
+    path.join(dir, "verify-exit.tmp"),
+    path.join(dir, "verify-stdin.txt"),
+    path.join(dir, "verify-wrap.sh"),
     path.join(dir, "entry.json"),
     path.join(dir, "entry.json.tmp"),
   ];

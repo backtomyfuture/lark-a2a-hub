@@ -102,6 +102,8 @@ Worker 条目与节点本尊的技能条目可用的字段：
 | `mode` | `agent`（默认）纯文本输出＋结构化回执；`json` 脚本类，stdin 收信封、stdout 最后一行出结果；`inbox` 交给本尊收件箱 |
 | `context` | 只有 `direct`（默认，可省略，守护进程直接拉起）。取值非法时任务直接 `rejected`，不静默降级。旧配置写了 `carrier` 的能力已移除，需改为 `direct` 或删除 |
 | `timeout_sec` | 单次执行上限，默认 600 |
+| `verify` | 可选。一条本机 shell 命令，与 `command` 同一可信等级，原样执行，不做 `{prompt}` / `{session}` 替换。只支持 `context=direct` 的 `json` / `agent`。Skill 条目优先，Skill 未写时用其 Worker 条目的值。`mode=inbox` 写了是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。命令必须只读、可重复。执行者的数据不拼进命令，只经两条通道：stdin 一行 JSON `{"task_id","summary","artifact","artifact_name","checks"}`，以及环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`、`LAH_RUN_DIR`、`LAH_MAIN_STDOUT` |
+| `verify_timeout_sec` | 可选正数，缺省 120，夹紧到 1–1800。继承规则同 `verify` |
 | `cwd` | 工作目录，默认配置目录 |
 | `side_effect` | 副作用等级，写进名片，如 `read` / `write` |
 | `approval_class` | 本机审批下限，只收紧不放宽。设为 `approve` 的能力执行前必走机主审批 |
@@ -109,7 +111,7 @@ Worker 条目与节点本尊的技能条目可用的字段：
 | `cap_id` `name` `desc` | 登记到 AgentCards 的名片信息。`cap_id` 只对节点本尊的条目有效，可省，缺省为 `CAP-<capPrefix>-<能力名>`（`capPrefix` 缺省取 `node`）；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`。计划里的 `cap` 按这个口径匹配。迁到 Worker 时删掉 `cap_id`，Worker 能力不接受显式 Cap_ID。 |
 | `workers` | 仅专长技能条目：能跑这项技能的 Worker 名数组。写了它就不能写 `command` / `mode` / `context` / `cwd` / `resume_command`，这些取自 Worker |
 
-命令、目录、语境只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
+命令、目录、语境、`verify` 只来自这个文件。任务参数里带 `command` / `cwd` / `context` / `agent` / `worker` / `verify` / `verify_timeout_sec` 等执行控制键，会被直接拒收，不会被当作指令。任务行上的 Worker 与技能名只是在这个文件已登记的能力里按名字选一项，选不中就拒收。
 
 热更新与降级：
 
@@ -123,9 +125,21 @@ Worker 条目与节点本尊的技能条目可用的字段：
 
 内核只认结构，不猜自然语言。完整语法见标准 §9。
 
-- **agent 模式**：最后一个完整围栏若是 ```` ```agent-ask ````，表示提问（任务转 `input-required`）；若是 ```` ```agent-auth ````，表示执行中请求批准（块内写明动作、对象与风险，任务转 `auth-required`）。二者只认最后一个，空的 `agent-auth` 是无效回执。围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` 分别表示产物、用量、会话、预约复查。围栏内伪造的行不生效。`agent-auth` 在进程退出后才解析，拦不住已经做完的副作用；要在动作前停住，用 `lah inbox auth`。
-- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`。`need_input` 与 `need_auth` 不能同时出现。未知顶层键忽略并记日志。
+- **agent 模式**：最后一个完整围栏若是 ```` ```agent-ask ````，表示提问（任务转 `input-required`）；若是 ```` ```agent-auth ````，表示执行中请求批准（块内写明动作、对象与风险，任务转 `auth-required`）。二者只认最后一个，空的 `agent-auth` 是无效回执。围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` / `CHECK:` 分别表示产物、用量、会话、预约复查、清单自检。`CHECK: <id> <pass|fail|blocked>[ | <证据>]` 只在回执收口为完成时收下；提问、审批和无效回执上的自检忽略并记日志。同一 `id` 多行取最后一行。围栏内伪造的行不生效。`agent-auth` 在进程退出后才解析，拦不住已经做完的副作用；要在动作前停住，用 `lah inbox auth`。
+- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`、`checks`。`checks` 形如 `{"<id>":{"verdict":"pass|fail|blocked","evidence":"…"}}`，值也可以直接是判定字符串。`need_input` 与 `need_auth` 不能同时出现。未知顶层键忽略并记日志。提问、审批和无效回执上的 `checks` 忽略并记日志。
 - `usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线；`later` 在任务完成时生效，由 hub 到点在同一 `Context_ID` 新建复查任务。
+
+### 验收
+
+验收判「做得对不对」，不代替审批。审批仍只认机主签名。
+
+L1 是本机 `verify`，只覆盖 direct 的 json / agent。主命令退出码为 0 且回执是完成之后、写表之前跑。退出码 0 才 `completed`；`fail` / `timeout` / `error` 一律 `failed` + notice，不计重试、不回 `submitted`、不自动重跑。证据由守护进程捕获，是唯一能改状态的验收证据。没配 `verify`（含 inbox）显示「未配置执行式验收」，不得显示为通过。
+
+L2 是建单时冻在首条 instruction DataPart 的 `acceptance.criteria`（`lah task create --criteria`）。执行方用 `CHECK:` 行、json `checks` 或 `lah inbox done --check` 自检。v1 只记录和展示，不改任务状态：自检里有 `fail` 仍是 `completed`。
+
+既没有 verify 也没有清单时不写验收记录，行为与原来一致。有记录时，权威在回执消息 Seq 2 的 DataPart；`Tasks.Metadata.acceptance` 只是去掉证据正文的索引。
+
+`lah task why`（文本与 `--json`）和 `lah present` 正文都能看到摘要。验收未通过的 `failed` 在呈递标题上带「验收未通过」，与执行失败区分。
 
 ### 旧平表迁到 workers
 
@@ -279,10 +293,10 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 | `lah update [--check] [--skip-skill]` | 自更新程序本体：git pull、依赖重装、入口与 Skill 补齐；不碰配置目录。`--check` 只看远端有没有新版本。tarball 安装请重跑 install.sh（Windows 为 install.ps1） |
 | `lah reconcile` | 单次回表认领与对账后退出 |
 | `lah inventory` | 只读盘点本节点名片与任务 |
-| `lah task create --to <node> [--worker <worker>] [--cap <cap_id 或技能名>] [--text …] [--params <json 或 @文件>] [--idempotency-key <键>] [--from <node>]` | 派单。写表前按 AgentCards 名册校验 `--to` 与 `--cap` |
+| `lah task create --to <node> [--worker <worker>] [--cap <cap_id 或技能名>] [--text …] [--params <json 或 @文件>] [--criteria <json 或 @文件>] [--idempotency-key <键>] [--from <node>]` | 派单。写表前按 AgentCards 名册校验 `--to` 与 `--cap`。`--criteria` 写入首条 instruction 的验收清单 |
 | `lah task reply --task <id> --text …` | 答复 `input-required` 的追问，原任务续跑 |
 | `lah task show <id>` | 看状态与产物 |
-| `lah task why <id> [--json]` | 只读时间线：任务行、消息、Runs、Artifacts、本机待补交状态、调度幂等来源 |
+| `lah task why <id> [--json]` | 只读时间线：任务行、消息、Runs、Artifacts、本机待补交状态、调度幂等来源、验收 |
 | `lah task cancel --task <id> [--text …]` | 撤单。发起方只撤自己的单，hub 可撤任意单；终态报错且不改状态 |
 | `lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <指令>]` | Agent 类自带时钟到点触发建单（经 submitted 入总线由本节点认领；`--text` 缺省为「定时任务 <id>」） |
 | `lah schedule ls [--config <dir>] [--json]` | 列出本机定时调度计划 |
@@ -292,7 +306,7 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 | `lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>]` | 登记 Agent 观察镜像（不写本机计划） |
 | `lah present [--pop] [--task <Task_ID>] [--wait <秒>]` | 读取本机发起任务的回执队列。`--wait` 阻塞到出现匹配回执（超时退出码 2）；`--pop` 只移除本次输出的条目 |
 | `lah inbox [--pop] [--json]` | `kind=agent` 接单 |
-| `lah inbox done\|ask\|fail\|auth --task <id> --text …` | 完单（可带 `--artifact`）、追问、失败、执行中请求审批回执 |
+| `lah inbox done\|ask\|fail\|auth --task <id> --text …` | 完单（可带 `--artifact`，可重复 `--check <id>=<pass\|fail\|blocked>[:证据]`）、追问、失败、执行中请求审批回执 |
 
 回执队列 `present_queue.jsonl` 旁边的 `present_bell` 仍会在有新回执落盘时刷新 mtime，供想低成本感知的 Hook 使用。`lah present --wait` 不依赖门铃，直接轮询队列文件。
 

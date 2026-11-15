@@ -5,6 +5,7 @@
 
 ## [未发布]
 
+- **验收层 v1（标准 §11 草案）**：交付时把「自称完成」和「做得对不对」分开。L1 是 `commands.json` 的 `verify`（只覆盖 direct 的 json/agent）：主命令成功且回执是完成之后跑，非 0、超时或无法执行一律 `failed` + notice，不计重试、不回 `submitted`。L2 是建单时冻结在首条 instruction 里的清单，执行方用 `CHECK:` 行、json `checks` 或 `lah inbox done --check` 自检；v1 只记录和展示，不改任务状态。`lah task why` 与呈递正文展示摘要，权威在回执 DataPart，`Tasks.Metadata.acceptance` 是去掉证据的索引；验收未通过的 `failed` 与执行失败在呈递标题上可区分。不做自动改写配置、不代批审批、不新增表或列。表结构不变，版本号未动。
 - **移除 carrier 执行语境（破坏性变更）**：删除 `context: "carrier"`、`lah host`、`lah doctor --probe` 与 `src/carrier.mjs`；direct 路径复用的进程工具迁到 `src/proc.mjs`，行为不变。仍写 `context: "carrier"` 的能力会在认领时 `rejected` + notice（写明已移除），`lah doctor` 同样报错，不会静默改直跑；升级前请把这类能力改为 direct 或删除。`node.json` 里残留的 `carrierSocket` 被忽略。动机：生产从未使用，本机实测长驻进程局域网访问不可靠（DESIGN §9 注记④）。标准修订记录同步。
 - **挂起任务短间隔复查**：执行中批准只写 `auth_decision`、任务行不变，事件一漏原节点就要等 900 秒对账（生产实测 12 分 18 秒）。现在节点名下有 `input-required` 或 `auth-required` 任务时，扫表间隔按挂起时长缩短：前 10 分钟不超过 60 秒，60 分钟内不超过 180 秒，之后回到原周期。node 与 hub 角色同一口径。唤醒器 `wait()` 新增只缩不涨的 `capMs`。标准 §10.3 新增「挂起复查」。
 - **呈递覆盖 `canceled`**：hub 审批驳回写的 `canceled` 现在会落入发起方本机队列，正文取驳回 notice，`lah present --wait --task` 能等到终态。升级后首轮对已有 `canceled` 补一次水位线（`present_state.json` 记 `canceledBaseline`），不倒历史撤单。标准 §8.5 同步。

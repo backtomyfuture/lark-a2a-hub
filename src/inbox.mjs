@@ -8,7 +8,18 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  acceptanceIndex,
+  buildAcceptance,
+  CHECK_VERDICTS,
+  CRITERION_ID,
+  judgeChecks,
+  MAX_EVIDENCE,
+  parseCheckFlag,
+  parseCriteria,
+} from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
+import { log, readTaskMeta } from "./kernel-util.mjs";
 
 export function inboxFilePath(configDir) {
   return path.join(configDir, "agent_inbox.jsonl");
@@ -221,7 +232,64 @@ async function loadTask(bus, taskId) {
   return task;
 }
 
-async function buildPlan({ bus, node, task, text, artifact, op }) {
+function msgTail(id) {
+  const m = String(id ?? "").match(/-(\d+)$/);
+  return m ? Number(m[1]) : -1;
+}
+
+function normalizeFlagChecks(checks) {
+  if (checks == null) return { reported: {}, hasCheckFlags: false };
+  if (!Array.isArray(checks)) throw new Error("checks 必须是数组");
+  if (checks.length === 0) return { reported: {}, hasCheckFlags: false };
+  const reported = {};
+  for (const item of checks) {
+    if (typeof item === "string") {
+      const parsed = parseCheckFlag(item);
+      reported[parsed.id] = { verdict: parsed.verdict, evidence: parsed.evidence };
+    } else if (item && typeof item === "object" && !Array.isArray(item)) {
+      const id = String(item.id ?? "").trim();
+      const verdict = String(item.verdict ?? "").trim().toLowerCase();
+      if (!CRITERION_ID.test(id)) throw new Error(`--check 的 id 不合法：${id.slice(0, 40)}`);
+      if (!CHECK_VERDICTS.has(verdict)) throw new Error(`--check 的判定只能是 pass / fail / blocked：${verdict.slice(0, 20)}`);
+      const ev = String(item.evidence ?? "").trim();
+      reported[id] = { verdict, evidence: ev.length > MAX_EVIDENCE ? ev.slice(0, MAX_EVIDENCE) : ev };
+    } else {
+      throw new Error("--check 参数格式非法");
+    }
+  }
+  return { reported, hasCheckFlags: true };
+}
+
+// 清单只认首条 instruction 消息的 DataPart 合并（标准 §11.2），不认 Tasks.Metadata。
+async function instructionCriteria(bus, taskMsgs, logFn = log) {
+  const sorted = taskMsgs.slice().sort((a, b) => msgTail(f1(a, "Msg_ID")) - msgTail(f1(b, "Msg_ID")));
+  const instr = sorted.find((m) => f1(m, "Kind") === "instruction");
+  if (!instr) return { criteriaRef: "", criteria: [] };
+  const criteriaRef = String(f1(instr, "Msg_ID") ?? "");
+  if (!bus.tables.parts || !criteriaRef) return { criteriaRef, criteria: [] };
+  const allParts = await bus.listRecords(bus.tables.parts);
+  const instrParts = allParts
+    .filter((p) => String(f1(p, "Parent_ID") ?? "") === criteriaRef)
+    .sort((a, b) => (Number(f1(a, "Seq")) || 0) - (Number(f1(b, "Seq")) || 0));
+  const params = {};
+  for (const p of instrParts) {
+    if (f1(p, "Kind") !== "data") continue;
+    const raw = f1(p, "Data");
+    if (!raw) continue;
+    try {
+      const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) Object.assign(params, obj);
+    } catch { /* 坏数据跳过 */ }
+  }
+  const parsed = parseCriteria(params);
+  if (!parsed.ok) {
+    logFn("instruction 清单不合法，按无清单处理：" + parsed.error);
+    return { criteriaRef, criteria: [] };
+  }
+  return { criteriaRef, criteria: parsed.criteria };
+}
+
+async function buildPlan({ bus, node, task, text, artifact, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
   const spec = OP_SPEC[op];
   const taskId = f1(task, "Task_ID");
   const messages = await bus.listRecords(bus.tables.messages);
@@ -230,6 +298,18 @@ async function buildPlan({ bus, node, task, text, artifact, op }) {
   const msgId = `MSG-${taskId.replace(/^TASK-/, "")}-${String(seq).padStart(2, "0")}`;
   const createdAt = nowIso();
   const body = String(text ?? "");
+
+  let acceptance = null;
+  if (op === "done") {
+    const { criteriaRef, criteria } = await instructionCriteria(bus, taskMsgs, logFn);
+    if (hasCheckFlags && criteria.length === 0) {
+      throw new Error(`任务 ${taskId} 没有验收清单`);
+    }
+    if (criteria.length > 0) {
+      const checked = judgeChecks(criteria, reportedChecks, logFn);
+      acceptance = buildAcceptance({ verify: null, criteriaRef, checks: checked });
+    }
+  }
 
   let artId = "";
   let artName = "";
@@ -279,8 +359,9 @@ async function buildPlan({ bus, node, task, text, artifact, op }) {
     createdAt,
     msgId,
     msgPartId: `${msgId}-P1`,
-    msgDataPartId: op === "auth" ? `${msgId}-P2` : "",
+    msgDataPartId: (op === "auth" || (op === "done" && acceptance)) ? `${msgId}-P2` : "",
     msgKind: spec.msgKind,
+    acceptance,
     artId,
     artPartId: artId ? `${artId}-P1` : "",
     artName,
@@ -404,6 +485,15 @@ async function ensureMessage(bus, plan, node) {
       Kind: "data",
       Data: JSON.stringify({ scope: "dynamic", run_id: plan.runId }),
     }, plan.tokens.partData);
+  } else if (plan.op === "done" && plan.acceptance && plan.msgDataPartId) {
+    await ensureCreate(bus, bus.tables.parts, "Part_ID", plan.msgDataPartId, {
+      Part_ID: plan.msgDataPartId,
+      Parent_ID: plan.msgId,
+      Parent_Type: "message",
+      Seq: 2,
+      Kind: "data",
+      Data: JSON.stringify({ acceptance: plan.acceptance }),
+    }, plan.tokens.partData);
   }
 }
 
@@ -425,9 +515,31 @@ async function ensureTask(bus, plan, node) {
   const task = await loadTask(bus, plan.taskId);
   assertOwner(task, node);
   const st = f1(task, "Status");
-  if (st === plan.taskStatus) return;
+  if (st === plan.taskStatus) return task.record_id;
   if (st !== "working") throw new Error(`任务当前状态是 ${st}，无法补齐为 ${plan.taskStatus}`);
   await bus.updateRecord(bus.tables.tasks, task.record_id, taskFieldsOf(plan));
+  return task.record_id;
+}
+
+// Metadata 只是索引，权威记录已经在 result 的 DataPart 落表；先读后合并，写失败只记日志不影响回执。
+async function ensureAcceptanceMeta(bus, plan, recordId, logFn = log) {
+  try {
+    const fresh = bus.getRecord && recordId
+      ? await bus.getRecord(bus.tables.tasks, recordId)
+      : await loadTask(bus, plan.taskId);
+    if (!fresh) return;
+    const read = readTaskMeta(f1(fresh, "Metadata"));
+    if (!read.ok) {
+      logFn("Tasks.Metadata 无法合并，跳过 acceptance（不影响回执）");
+      return;
+    }
+    read.meta.acceptance = acceptanceIndex(plan.acceptance, plan.msgId);
+    await bus.updateRecord(bus.tables.tasks, fresh.record_id, {
+      Metadata: JSON.stringify(read.meta),
+    });
+  } catch (e) {
+    logFn("Tasks.Metadata.acceptance 写失败（不影响回执）：" + (e?.message ?? e));
+  }
 }
 
 function rememberLocal(configDir, plan) {
@@ -454,12 +566,18 @@ function rememberLocal(configDir, plan) {
 
 function receiptOf(plan) {
   const base = { taskId: plan.taskId, msgId: plan.msgId, recipient: plan.recipient };
-  if (plan.op === "done") return { ...base, artifactId: plan.artId || "" };
+  if (plan.op === "done") {
+    return {
+      ...base,
+      artifactId: plan.artId || "",
+      ...(plan.acceptance ? { acceptance: plan.acceptance } : {}),
+    };
+  }
   return base;
 }
 
 // 顺序对齐内核：Artifacts → Runs → Messages/Parts → Tasks。任一步失败都留着计划，下次只补缺。
-async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op }) {
+async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
   const existing = readInboxOutbox(configDir, taskId);
   if (existing && existing.op !== op) {
     throw new Error(`任务 ${taskId} 有未完成的 inbox ${existing.op} 提交，请重试同一命令补齐`);
@@ -483,21 +601,28 @@ async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact
   }
 
   // 第一笔总线写之前先落盘。重试复用这份计划，不再按当前行数重新编号。
-  const plan = existing ?? await buildPlan({ bus, node, task, text, artifact, op });
+  const plan = existing ?? await buildPlan({ bus, node, task, text, artifact, op, reportedChecks, hasCheckFlags, logFn });
   if (!existing) saveInboxOutbox(configDir, plan);
 
   await ensureArtifact(bus, plan, node);
   await ensureRun(bus, plan, node);
   await ensureMessage(bus, plan, node);
-  await ensureTask(bus, plan, node);
+  const taskRecordId = await ensureTask(bus, plan, node);
+  if (plan.op === "done" && plan.acceptance) {
+    await ensureAcceptanceMeta(bus, plan, taskRecordId, logFn);
+  }
 
   rememberLocal(configDir, plan);
   deleteInboxOutbox(configDir, taskId);
   return receiptOf(plan);
 }
 
-export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact }) {
-  return commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op: "done" });
+export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact, checks, log: logFn = log }) {
+  const { reported, hasCheckFlags } = normalizeFlagChecks(checks);
+  return commitInboxReceipt({
+    bus, configDir, node, taskId, text, artifact, op: "done",
+    reportedChecks: reported, hasCheckFlags, logFn,
+  });
 }
 
 export async function handleInboxAsk({ bus, configDir, node, taskId, text }) {

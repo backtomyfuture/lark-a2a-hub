@@ -1,5 +1,6 @@
 // 验收层（标准 §11）的纯函数：清单校验、自检归一、逐条判定、overall 与摘要文案。
 // 内核、inbox、建单、why 与呈递共用这一份，避免几处各写一套口径。不读写总线，不碰文件。
+import { f1 } from "./bus/feishu.mjs";
 import { log } from "./kernel-util.mjs";
 
 export const CRITERION_ID = /^[A-Za-z0-9._-]{1,32}$/;
@@ -193,4 +194,94 @@ export function clampVerifyTimeout(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return VERIFY_TIMEOUT_DEFAULT;
   return Math.min(Math.max(Math.round(n), 1), VERIFY_TIMEOUT_MAX);
+}
+
+function parsePartJson(raw) {
+  if (raw && typeof raw === "object") return raw;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  return JSON.parse(raw);
+}
+
+// 从一条消息的 Parts 里取出验收对象。权威记录是 Kind=data 且 Data.acceptance 存在的那块（约定 Seq 2）。
+// 坏 JSON 返回 null：半截数据不能当成「没有验收」以外的任何结论。多条时优先 Seq 2。
+export function acceptanceFromParts(parts) {
+  let best = null;
+  let bestRank = -1;
+  for (const p of parts ?? []) {
+    if (f1(p, "Kind") !== "data") continue;
+    const raw = f1(p, "Data");
+    if (raw == null || raw === "") continue;
+    let obj;
+    try {
+      obj = parsePartJson(raw);
+    } catch {
+      return null;
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
+    const acc = obj.acceptance;
+    if (!acc || typeof acc !== "object" || Array.isArray(acc)) continue;
+    const seq = Number(f1(p, "Seq")) || 0;
+    const rank = seq === 2 ? 1_000_000 + seq : seq;
+    if (rank >= bestRank) {
+      best = acc;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+function metaAcceptance(metadata) {
+  let meta = metadata;
+  if (typeof meta === "string") {
+    const text = meta.trim();
+    if (!text) return null;
+    try {
+      meta = JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const acc = meta.acceptance;
+  if (!acc || typeof acc !== "object" || Array.isArray(acc)) return null;
+  return acc;
+}
+
+function msgTail(id) {
+  const matched = String(id ?? "").match(/-(\d+)$/);
+  return matched ? Number(matched[1]) : -1;
+}
+
+// why 与呈递共用：result/notice 上的 DataPart 是权威，没有再退回 Metadata 索引。调用方传入已经读好的行，这里不再扫表。
+export function acceptanceForTask(messages, parts, taskId, metadata) {
+  const id = String(taskId ?? "");
+  const msgs = (messages ?? []).filter((m) => {
+    if (String(f1(m, "Task_ID") ?? "") !== id) return false;
+    const kind = f1(m, "Kind");
+    return kind === "result" || kind === "notice";
+  });
+  msgs.sort((a, b) => {
+    const ds = msgTail(f1(a, "Msg_ID")) - msgTail(f1(b, "Msg_ID"));
+    if (ds !== 0) return ds;
+    const ca = String(f1(a, "Created_At") ?? "");
+    const cb = String(f1(b, "Created_At") ?? "");
+    if (ca < cb) return -1;
+    if (ca > cb) return 1;
+    return String(f1(a, "Msg_ID") ?? "").localeCompare(String(f1(b, "Msg_ID") ?? ""));
+  });
+  let found = null;
+  let msgId = "";
+  for (const m of msgs) {
+    const mid = String(f1(m, "Msg_ID") ?? "");
+    const mine = (parts ?? []).filter((p) => String(f1(p, "Parent_ID") ?? "") === mid);
+    const acc = acceptanceFromParts(mine);
+    if (acc) {
+      found = acc;
+      msgId = mid;
+    }
+  }
+  if (found) return { acceptance: found, msgId };
+  const indexed = metaAcceptance(metadata);
+  if (!indexed) return { acceptance: null, msgId: "" };
+  return { acceptance: indexed, msgId: String(indexed.msg_id ?? "") };
 }

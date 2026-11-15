@@ -282,9 +282,15 @@ if (cmd === "setup") {
   const sub = rest[0];
   if (sub === "create") {
     try {
-      const { parseCreateArgv, parseParams, createTask } = await import("../src/hub/create.mjs");
+      const { parseCreateArgv, parseParams, parseCriteriaInput, createTask } = await import("../src/hub/create.mjs");
       const args = parseCreateArgv(rest.slice(1));
-      parseParams(args.paramsRaw);
+      const parsedParams = parseParams(args.paramsRaw);
+      parseCriteriaInput(args.criteriaRaw);
+      if (parsedParams && Object.prototype.hasOwnProperty.call(parsedParams, "acceptance")) {
+        const { parseCriteria } = await import("../src/acceptance.mjs");
+        const check = parseCriteria(parsedParams);
+        if (!check.ok) throw new Error("拒绝建单：" + check.error);
+      }
       const cfg = loadConfig(args.configDir || configDirFrom(rest));
       const taskId = await createTask({
         bus: cfg.bus,
@@ -295,6 +301,7 @@ if (cmd === "setup") {
         worker: args.worker,
         text: args.text,
         params: args.paramsRaw,
+        criteria: args.criteriaRaw,
         context: args.context,
         ref: args.ref,
         approval: args.approval,
@@ -520,22 +527,26 @@ if (cmd === "setup") {
     let text = "";
     let artifact = "";
     let cfgDir = "";
+    const rawChecks = [];
     for (let i = 0; i < argv.length; i++) {
       const flag = argv[i];
       if (flag === "--task") taskId = argv[++i] ?? "";
       else if (flag === "--text") text = argv[++i] ?? "";
       else if (flag === "--artifact") artifact = argv[++i] ?? "";
       else if (flag === "--config") cfgDir = argv[++i] ?? "";
+      else if (flag === "--check") rawChecks.push(argv[++i] ?? "");
       else if (!flag.startsWith("--") && !taskId) taskId = flag;
     }
     if (!taskId) {
-      console.error("用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]");
+      console.error("用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]");
       process.exitCode = 1;
     } else {
       try {
+        const { parseCheckFlag } = await import("../src/acceptance.mjs");
+        const checks = rawChecks.map((raw) => parseCheckFlag(raw));
         const { handleInboxDone } = await import("../src/inbox.mjs");
         const cfg = loadConfig(cfgDir || configDir);
-        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifact });
+        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifact, checks });
         console.log(`✓ 任务 ${taskId} 已完成并上报总线`);
       } catch (e) {
         console.error(e?.message ?? e);
@@ -665,11 +676,11 @@ if (cmd === "setup") {
   lah service [--config <dir>] [--role node|hub]  注册开机自启（--remove 卸载）
   lah update  [--check] [--skip-skill] [--config <dir>]  自更新程序本体（git pull + 依赖重装 + 软链/Skill 补齐）
   lah inbox   [--pop] [--json]    读取专属 Agent 收件箱（--pop 提取并标为 acked）
-  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]
+  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]
   lah inbox ask  --task <Task_ID> --text <补充提问>
   lah inbox fail --task <Task_ID> --text <失败原因>
   lah inbox auth --task <Task_ID> --text <具体动作、对象与风险>
-  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--idempotency-key <键>]
+  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--criteria <json 数组或 @文件>] [--idempotency-key <键>]
   lah task reply  --task <Task_ID> --text <答复内容>
   lah task show   <Task_ID>
   lah task why    <Task_ID> [--config <dir>] [--json]

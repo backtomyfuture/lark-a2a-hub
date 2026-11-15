@@ -15,7 +15,8 @@
   "desc": "每日早报：天气、热点、本机状态汇总",
   "mode": "json",
   "name": "每日早报",
-  "side_effect": "read"
+  "side_effect": "read",
+  "verify": "test -n \"$LAH_TASK_ID\""
  },
  "ops-check": {
   "workers": [

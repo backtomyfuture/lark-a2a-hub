@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { buildAcceptance, judgeChecks, parseCriteria } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { createWaker } from "./transport/index.mjs";
 import { runDetachedCommand } from "./proc.mjs";
@@ -306,6 +307,19 @@ export class Kernel {
     return {};
   }
 
+  // 清单只从首条 instruction 消息的 DataPart 读取，与 getParams 同源（标准 §11.2）。
+  async getAcceptanceCriteria(task) {
+    for (const m of await this.listMessages(f1(task, "Task_ID"))) {
+      if (f1(m, "Kind") === "instruction") {
+        const params = await this.msgData(m);
+        const parsed = parseCriteria(params);
+        if (!parsed.ok || !parsed.criteria.length) return { criteria: [], criteriaRef: "" };
+        return { criteria: parsed.criteria, criteriaRef: String(f1(m, "Msg_ID") ?? "") };
+      }
+    }
+    return { criteria: [], criteriaRef: "" };
+  }
+
   async createPart(parentId, parentType, seq, kind, { text = "", fileUri = "", fileName = "", mime = "", data = "" } = {}, clientToken) {
     const partId = `${parentId}-P${seq}`;
     // Parts 只追加。补齐提交时按 Part_ID 跳过已落地的块，避免响应丢失后再插一行。
@@ -537,8 +551,18 @@ export class Kernel {
   }
 
   // entry 是本机能力表里的条目。专长技能的名字与说明取自它，属于受信模板，不取自任务。
-  buildPrompt(inputPath, entry = null) {
+  buildPrompt(inputPath, entry = null, hasCriteria = null) {
     const file = String(inputPath ?? "");
+    let withCriteria = hasCriteria;
+    if (withCriteria == null && file) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+        const parsed = parseCriteria(raw?.params);
+        withCriteria = parsed.ok && parsed.criteria.length > 0;
+      } catch {
+        withCriteria = false;
+      }
+    }
     const skillLine = entry?.worker && entry.skill && entry.skill !== "agent"
       ? [`本次任务使用技能：${entry.skill}（${entry.name || entry.skill}）。${entry.desc || ""}`.trim()]
       : [];
@@ -559,6 +583,9 @@ export class Kernel {
       "7. 可选：围栏外整行 USAGE: input=<n> output=<n> cached=<n> cost=<x>（键可省略；不写表示未上报）。",
       "8. 可选：围栏外整行 SESSION: <id>，只含字母数字和 . _ : -，供本机续接。",
       "9. 可选：仅当本轮完成时，在围栏外单独整行写 LATER: <带时区偏移的 ISO8601 时刻> | <复查说明>。提问、审批、失败或围栏内的同形文字不会预约。",
+      ...(withCriteria ? [
+        "10. 本任务任务数据文件 params.acceptance.criteria 带有验收清单：仅当本轮完成时，对照清单逐条在围栏外单独整行自检，格式 CHECK: <id> <pass|fail|blocked> | <证据>（每条一行，同一 id 以最后一行有效；围栏内无效）。",
+      ] : []),
     ].join("\n");
   }
 
@@ -601,7 +628,8 @@ export class Kernel {
       };
     }
     const inputPath = await this.writeAgentInput(task, params, extraAnswers);
-    const prompt = this.buildPrompt(inputPath, entry);
+    const hasCriteria = parseCriteria(params).criteria.length > 0;
+    const prompt = this.buildPrompt(inputPath, entry, hasCriteria);
     const wantsPrompt = command.includes("{prompt}");
     command = substituteCommand(command, {
       prompt: wantsPrompt ? prompt : undefined,
@@ -1069,8 +1097,14 @@ export class Kernel {
       const res = await this.runCommand(skill, task, params, extraAnswers, resume);
       // 回执已经拿到。先落 outbox，再停心跳、再写表；写表失败不许落到下面的重试。
       // 这条路径不是 direct 账本，不写 session.json。用量仍随收口记到 Metadata。
+      const { criteria, criteriaRef } = await this.getAcceptanceCriteria(task);
+      const acceptance = buildAcceptance({
+        verify: null,
+        criteriaRef,
+        checks: judgeChecks(criteria, res?.checks),
+      });
       const box = this.beginOutbox(task, {
-        outcome: "succeeded", res, started, runId: openRunId, usage: res?.usage ?? null,
+        outcome: "succeeded", res, started, runId: openRunId, usage: res?.usage ?? null, acceptance,
       });
       await stopHeartbeat();
       try { await this.submitOutbox(task, box); }
@@ -1225,7 +1259,8 @@ export class Kernel {
       log("rejected (no capability) " + taskId);
       return false;
     }
-    const bad = controlKeysIn(await this.getParams(task));
+    const params = await this.getParams(task);
+    const bad = controlKeysIn(params);
     if (bad.length) {
       await this.writeMessage(task, "notice",
         `拒收：任务参数含执行控制键（${bad.join(", ")}）。要执行的命令、目录、语境、Agent 与权限只来自本机 commands.json；唯一例外是 timeout_sec。`);
@@ -1248,6 +1283,25 @@ export class Kernel {
       if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (invalid commands.json context/mode) ${taskId}`);
+      return false;
+    }
+    const entryVerify = this.commands[skill]?.verify;
+    const hasVerify = typeof entryVerify === "string" ? entryVerify.trim().length > 0 : Boolean(entryVerify);
+    if (entryMode === "inbox" && hasVerify) {
+      await this.writeMessage(task, "notice",
+        `拒收：本机 commands.json 中能力 ${skill} 为 mode=inbox，不支持执行式验收（verify）。请移除 verify 或改用 direct 语境（lah doctor 可检查）后重派。`);
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
+      this.clearRetry(taskId);
+      log(`rejected (inbox with verify) ${taskId}`);
+      return false;
+    }
+    const criteriaRes = parseCriteria(params);
+    if (!criteriaRes.ok) {
+      await this.writeMessage(task, "notice",
+        `拒收：任务验收清单（acceptance）不合法：${criteriaRes.error}`);
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
+      this.clearRetry(taskId);
+      log(`rejected (invalid acceptance criteria) ${taskId}: ${criteriaRes.error}`);
       return false;
     }
     return true;

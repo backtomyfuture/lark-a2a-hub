@@ -123,6 +123,10 @@ function readAgyPermissionsAllow() {
 const COMMAND_MODES = new Set(["agent", "json", "inbox"]);
 const COMMAND_CONTEXTS = new Set(["direct"]);
 
+function hasVerify(entry) {
+  return typeof entry?.verify === "string" && entry.verify.trim().length > 0;
+}
+
 // commands.json 条目的字段校验。内核对这几类错误都不报错：未知 mode 按 agent 跑、
 // 未知 context 按 direct 直跑、非法 timeout_sec 回退 600、
 // 重复 Cap_ID 后一条覆盖前一条名片——运行期全是静默降级，只能在自检里拦下（失败要响）。
@@ -162,6 +166,24 @@ function auditCommandsShape(cmds, capPrefix) {
       const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() ? Number(v) : NaN);
       if (!Number.isFinite(n) || n <= 0) {
         bad(`能力 ${name}：timeout_sec=${JSON.stringify(v)} 非法（须为正数秒；内核会静默回退 600）`);
+        problems++;
+      }
+    }
+    if (entry.verify != null) {
+      if (typeof entry.verify !== "string" || !entry.verify.trim()) {
+        bad(`能力 ${name}：verify 必须是非空字符串`);
+        problems++;
+      }
+      if (mode === "inbox") {
+        bad(`能力 ${name}：mode=inbox 不支持执行式验收（verify），认领时内核会拒收`);
+        problems++;
+      }
+    }
+    if (entry.verify_timeout_sec != null) {
+      const v = entry.verify_timeout_sec;
+      const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() ? Number(v) : NaN);
+      if (!Number.isFinite(n) || n <= 0) {
+        bad(`能力 ${name}：verify_timeout_sec=${JSON.stringify(v)} 非法（须为正数秒；内核会夹紧到 1–1800 并默认 120）`);
         problems++;
       }
     }
@@ -466,12 +488,13 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
     const rawName = wObj?.name != null ? String(wObj.name).trim() : "";
     const namePart = rawName ? `（${rawName}）` : "";
     const capId = capIdOf("agent", agentEntry, capPrefix);
+    const agentVerify = hasVerify(agentEntry) ? "（已配 verify）" : "";
 
     // 专长技能：该 Worker 名下除 agent 之外的技能
     const specials = [];
     for (const entry of Object.values(flat)) {
       if (entry?.worker === wName && entry.skill !== "agent") {
-        specials.push(entry.skill);
+        specials.push(hasVerify(entry) ? `${entry.skill}（已配 verify）` : entry.skill);
       }
     }
 
@@ -479,7 +502,7 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
       ? `；专长技能 ${specials.join(", ")}`
       : "；无专长技能";
 
-    layout.push(`Worker ${wName}${namePart}：通用执行 ${capId}${skillsPart}`);
+    layout.push(`Worker ${wName}${namePart}：通用执行 ${capId}${agentVerify}${skillsPart}`);
   }
 
   // 3. 节点本尊的 agent 条目（flat 里键为 agent、没有 worker 的那项，独立 Agent 节点就是这种）
@@ -487,14 +510,15 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
   if (selfAgent && typeof selfAgent === "object" && !selfAgent.worker) {
     const capId = capIdOf("agent", selfAgent, capPrefix);
     const mode = selfAgent.mode ?? "agent";
-    layout.push(`本尊即 Worker：agent（${capId}，mode ${mode}）`);
+    const verifyMark = hasVerify(selfAgent) ? "，已配 verify" : "";
+    layout.push(`本尊即 Worker：agent（${capId}，mode ${mode}${verifyMark}）`);
   }
 
   // 4. 其余没有 worker 的本尊条目合成一行：节点本尊技能（非 Worker）：k1, k2
   const selfSkills = [];
   for (const [key, entry] of Object.entries(flat)) {
     if ((!entry || typeof entry !== "object" || !entry.worker) && key !== "agent") {
-      selfSkills.push(key);
+      selfSkills.push(hasVerify(entry) ? `${key}（已配 verify）` : key);
     }
   }
   if (selfSkills.length > 0) {
@@ -708,7 +732,7 @@ export async function doctor(configDir, appDir, opts = {}) {
         info("commands.json 为空：本节点不登记任何能力，不会认领任务");
       }
       const shapeProblems = layerProblems + auditCommandsShape(flat, capPrefix);
-      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec 取值合法，cap_id 无重复）");
+      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec / verify 取值合法，cap_id 无重复）");
       problems += shapeProblems;
       // 模板只查一遍：节点本尊的条目加上每个 Worker 自己的启动模板。
       const templates = {};
