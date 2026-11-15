@@ -53,7 +53,7 @@ export {
 export { readSessionId } from "./session-store.mjs";
 export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 
-export const DAEMON_VERSION = "node-0.8.1";
+export const DAEMON_VERSION = "node-0.9.0";
 const HOP_LIMIT = 8;
 
 // 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。

@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，形态 B）
 
-> 现行标准，版本 v3.8（§11 验收为 v3.9 草案，未发布）。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.9。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -270,7 +270,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 ## 修订记录
 
-**未发布（v3.9）：验收层 v1（表结构不变）**：
+**v3.9（2026-11-15，对应节点适配器 0.9.0；表结构不变）：验收层 v1**：
 - 动机：`completed` 只表示执行方自报完成，巡检、日报、代码类任务都要发起方肉眼复核。新增 §11。
 - L1：`commands.json` 可配本机 `verify` 命令，direct 的 json / agent 在完成收口前跑；退出码非 0、超时或拉不起来一律 `failed` + notice（「验收未通过」），不计重试、不重跑。verify 作为在途账本第二阶段，守护重启后续接。
 - L2：建单时可在 instruction DataPart 写 `acceptance.criteria`，执行方用 `CHECK:` 行、json `checks` 或 `lah inbox done --check` 逐条自检；v1 只记录展示，不改状态。
@@ -280,13 +280,13 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
   - 验收失败仍置 `completed`、只在 Metadata 标红。Metadata 写失败只记日志，判定会无声丢失；发起方脚本只看 Status 也会漏判。
   - 验收失败占用 `Retry_Count` 自动重跑。确定性命令重跑大多得到同样的错，还会再触发一次副作用。
   - 清单写在 `Tasks.Metadata`。任何节点都能改，做不到冻结。
-**未发布：移除 carrier 执行语境（表结构不变）**：
+**v3.9 同版（2026-11-15）：移除 carrier 执行语境（表结构不变）**：
 - 动机：carrier（用户终端里常驻的 `lah host`，经本机 unix socket 代跑需要局域网的命令）在生产中从未启用；DESIGN §9 实测在本机长驻进程的局域网访问同样不可靠，它带来的协议面（Availability 随探活翻转、同步代跑路径、socket 例外）却要每个新特性都单独照顾。
 - `context` 只剩 `direct`（可省略）。配置里残留 `context: "carrier"` 的能力在认领预检按非法取值 `rejected` + notice，并由 `lah doctor` 报出；绝不静默改走直跑。
 - 删除 `lah host` 与 `lah doctor --probe`；节点不再监听任何本机 socket，§0 第 3 条「只出不进」没有例外。
 - 历史修订记录里对 carrier 的描述保留原样，作为当时的口径。
 
-**未发布：挂起复查与 canceled 呈递（表结构不变）**：
+**v3.9 同版（2026-11-15）：挂起复查与 canceled 呈递（表结构不变）**：
 - 动机：生产测试中，执行中批准后原节点 12 分钟才续跑。批准只落 Messages、任务行不变，事件一漏就只能等 900 秒对账。hub 审批驳回写的 `canceled` 不在呈递范围里，发起方用 `lah present --wait` 等不到终态。
 - §10.3 新增「挂起复查」：节点名下有挂起任务时按挂起时长缩短扫表间隔（60 秒、180 秒两档，超过 60 分钟回到原周期）。
 - §8.5 呈递状态加入 `canceled`。升级后首轮对已有的 `canceled` 补一次水位线，不倒历史撤单。
@@ -294,7 +294,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
   - 批准时 hub 顺手改一下任务行来触发事件。仍然依赖事件送达，且给执行中的任务行加一次与执行节点并发的写。
   - 挂起期间一律按 pollSec 扫表。一张没人批的单会整夜按分钟扫表，耗月度调用量。
 
-**未发布：执行中动态审批**：停用 hub 在 submitted 阶段代写 auth_request。认领前静态门仍由目标节点执行。新增 working→auth-required：执行方按实际动作写带 `scope=dynamic` 的 auth_request，`client_token` 按本次 `run_id` 稳定派生。批准后按 `Claimed_By` 分流：为空回 submitted，非空保持 auth-required 并由原节点 `resume=true` 续跑（含 input-required 上触发的静态门）。同一任务可多次动态请求。新增 `lah inbox auth`。`agent-auth` / `need_auth` 为退出后解析的软约定。表结构不变。
+**v3.9 同版（2026-11-15）：执行中动态审批**：停用 hub 在 submitted 阶段代写 auth_request。认领前静态门仍由目标节点执行。新增 working→auth-required：执行方按实际动作写带 `scope=dynamic` 的 auth_request，`client_token` 按本次 `run_id` 稳定派生。批准后按 `Claimed_By` 分流：为空回 submitted，非空保持 auth-required 并由原节点 `resume=true` 续跑（含 input-required 上触发的静态门）。同一任务可多次动态请求。新增 `lah inbox auth`。`agent-auth` / `need_auth` 为退出后解析的软约定。表结构不变。
 
 **v3.8 补订（2026-11-12，表结构不变）**：
 - 动机：扫表路径若每轮无条件写 `Heartbeat_At`，写操作会触发记录变更事件，形成「写 → 事件 → 扫表 → 再写」；结果落进本机队列后没有东西通知正在等待的会话；日志里看不见每轮扫表打了多少飞书请求、耗时多少、有没有退避。
