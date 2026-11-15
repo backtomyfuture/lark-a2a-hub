@@ -88,7 +88,6 @@ async function setup(dir, commandEntry) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
   });
   return { mock, kernel };

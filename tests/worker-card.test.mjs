@@ -37,7 +37,7 @@ function setup(dir, commands, extra = {}) {
   const mock = new MockFeishuBus({ tables: TABLES });
   const kernel = new Kernel({
     node: "node-a", role: "node", kind: extra.kind || "host", zone: "test", capPrefix: "test",
-    events: false, configDir: dir, carrierSocket: path.join(dir, "missing.sock"), bus: mock,
+    events: false, configDir: dir, bus: mock,
     // 误配字段。现在的内核不应读取它。
     workerName: extra.workerName,
   });

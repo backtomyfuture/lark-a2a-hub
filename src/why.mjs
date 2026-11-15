@@ -8,9 +8,11 @@
 // 5. 本地重试感知：只读检查配置目录下 outbox / inbox-outbox 是否存在该任务的待补交文件。
 // 6. 用量：只读 Tasks.Metadata.usage，算出未上报轮数。没有这格就不估算。
 // 7. 复查：只读 Tasks.Metadata.later / later_fired，显示待触发、已触发或跳数熔断。
+// 8. 验收：result/notice 的 DataPart 是权威；没有则退回 Tasks.Metadata.acceptance；都没有为 null。
 
 import path from "node:path";
 import fs from "node:fs";
+import { acceptanceForTask, acceptanceLine } from "./acceptance.mjs";
 import { pickSignedDecision } from "./approval-sign.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { readInbox } from "./inbox.mjs";
@@ -153,6 +155,26 @@ function laterLine(later) {
   if (later.status === "skipped") return "复查预约: 已跳过（跳数超限，未建复查任务）";
   const about = later.about ? ` ${later.about}` : "";
   return `复查预约: 待触发 ${later.at}${about}`;
+}
+
+// 证据正文只在文本里截短展示。captured 与 self 必须分开标，避免把执行方自述看成守护进程捕获。
+function acceptanceLines(acc) {
+  if (!acc) return ["验收: 未配置"];
+  const lines = [];
+  const head = acceptanceLine(acc);
+  if (head) lines.push(head);
+  if (acc.verify) {
+    const code = acc.verify.exit_code == null || acc.verify.exit_code === "" ? "" : `，退出码 ${acc.verify.exit_code}`;
+    lines.push(`执行式验收: ${acc.verify.verdict}${code}（证据：守护进程捕获）`);
+  } else {
+    lines.push("执行式验收: 未配置");
+  }
+  for (const c of acc.checks ?? []) {
+    if (!c || typeof c !== "object") continue;
+    const ev = String(c.evidence ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+    lines.push(`自检 ${c.id}: ${c.verdict}${ev ? " " + ev : ""}（执行方自述）`);
+  }
+  return lines;
 }
 
 // 事件类型在同一时刻下的自然逻辑顺序权重，保证时间戳相同时展示合理
@@ -325,6 +347,8 @@ export async function getTaskWhy({ bus, configDir, taskId }) {
   const allMessages = await bus.listRecords(bus.tables.messages);
   const rawMessages = allMessages.filter((m) => f1(m, "Task_ID") === id);
   const allParts = await bus.listRecords(bus.tables.parts);
+  const acceptance = acceptanceForTask(rawMessages, allParts, id, rawMeta).acceptance;
+  task.acceptance = acceptance;
 
   // 按 Created_At 排序，相同者按 Msg_ID 编号顺序
   rawMessages.sort((a, b) => {
@@ -534,6 +558,7 @@ export async function getTaskWhy({ bus, configDir, taskId }) {
     task,
     usage,
     later,
+    acceptance,
     timeline,
     messages,
     runs,
@@ -564,6 +589,7 @@ export function formatWhyText(data) {
   lines.push(`认领节点: ${task.claimed_by || "(未认领)"}`);
   lines.push(`重试次数: ${task.retry_count}`);
   lines.push(usageLine(data.usage ?? task.usage));
+  lines.push(...acceptanceLines(data.acceptance ?? task.acceptance));
   const laterText = laterLine(data.later ?? task.later);
   if (laterText) lines.push(laterText);
   lines.push(`提问/待批: ${task.status_msg || "(无)"}`);

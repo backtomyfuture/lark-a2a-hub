@@ -9,11 +9,8 @@
 //   doctor   本机自检：配置、凭据、总线连通、能力登记、自启状态（M3）
 //   inventory 只读盘点本节点名片与任务，不写入
 //   reconcile 单次回表认领/对账后退出（webhook 或 15 分钟兜底；不停派手工名片）
-//            --probe <host:port> 经在线 carrier 做一次只读 TCP 探测
 //   service  注册/卸载开机自启：macOS launchd / Linux systemd / Windows 任务计划程序（均用户级，无需管理员）
 //   update   自更新程序本体：git pull + 依赖重装 + 软链/Skill 补齐；--check 只看有没有新版本
-//   host     carrier 语境进程：在用户终端里常驻，替守护进程代跑需要
-//            特殊语境（如 macOS 局域网权限）的命令（设计 §9，M4）
 // 配置目录：--config <dir>，或环境变量 HUB_NODE_HOME，默认 ~/.hub-node。
 // 配置目录内含 node.json（节点身份与总线参数）与 commands.json（能力 -> 命令模板）。
 
@@ -65,12 +62,6 @@ function roleForTool(argv) {
     if (raw.role === "hub" || raw.role === "node") return raw.role;
   } catch { /* 读不到配置就按 node，doctor 会再报配置失败 */ }
   return "node";
-}
-
-function probeTargetFrom(argv) {
-  const i = argv.indexOf("--probe");
-  if (i < 0) return undefined;
-  return argv[i + 1] ?? "";
 }
 
 // launchd KeepAlive 会在进程一退出就拉起。配置错误若立刻退出，会毫秒级刷屏。
@@ -263,7 +254,7 @@ if (cmd === "setup") {
   }
   if (role) {
     const { doctor } = await import("../src/doctor.mjs");
-    let code = await doctor(configDirFrom(rest), APP_DIR, { probe: probeTargetFrom(rest), role });
+    let code = await doctor(configDirFrom(rest), APP_DIR, { role });
     if (role === "hub") {
       const { hubDoctor } = await import("../src/hub/index.mjs");
       const extra = await hubDoctor(configDirFrom(rest));
@@ -272,8 +263,9 @@ if (cmd === "setup") {
     process.exitCode = code;
   }
 } else if (cmd === "host") {
-  const { startCarrier } = await import("../src/carrier.mjs");
-  process.exitCode = await startCarrier(configDirFrom(rest));
+  // 不落成「未知命令」：老用户可能还在终端里跑它，要明确告知是被移除而不是拼错。
+  console.error("lah host 已移除：carrier 执行语境不再支持。请把 commands.json 里 context=\"carrier\" 的能力改为 direct 或删除。");
+  process.exitCode = 1;
 } else if (cmd === "service") {
   let role;
   try {
@@ -290,9 +282,15 @@ if (cmd === "setup") {
   const sub = rest[0];
   if (sub === "create") {
     try {
-      const { parseCreateArgv, parseParams, createTask } = await import("../src/hub/create.mjs");
+      const { parseCreateArgv, parseParams, parseCriteriaInput, createTask } = await import("../src/hub/create.mjs");
       const args = parseCreateArgv(rest.slice(1));
-      parseParams(args.paramsRaw);
+      const parsedParams = parseParams(args.paramsRaw);
+      parseCriteriaInput(args.criteriaRaw);
+      if (parsedParams && Object.prototype.hasOwnProperty.call(parsedParams, "acceptance")) {
+        const { parseCriteria } = await import("../src/acceptance.mjs");
+        const check = parseCriteria(parsedParams);
+        if (!check.ok) throw new Error("拒绝建单：" + check.error);
+      }
       const cfg = loadConfig(args.configDir || configDirFrom(rest));
       const taskId = await createTask({
         bus: cfg.bus,
@@ -303,6 +301,7 @@ if (cmd === "setup") {
         worker: args.worker,
         text: args.text,
         params: args.paramsRaw,
+        criteria: args.criteriaRaw,
         context: args.context,
         ref: args.ref,
         approval: args.approval,
@@ -528,22 +527,26 @@ if (cmd === "setup") {
     let text = "";
     let artifact = "";
     let cfgDir = "";
+    const rawChecks = [];
     for (let i = 0; i < argv.length; i++) {
       const flag = argv[i];
       if (flag === "--task") taskId = argv[++i] ?? "";
       else if (flag === "--text") text = argv[++i] ?? "";
       else if (flag === "--artifact") artifact = argv[++i] ?? "";
       else if (flag === "--config") cfgDir = argv[++i] ?? "";
+      else if (flag === "--check") rawChecks.push(argv[++i] ?? "");
       else if (!flag.startsWith("--") && !taskId) taskId = flag;
     }
     if (!taskId) {
-      console.error("用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]");
+      console.error("用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]");
       process.exitCode = 1;
     } else {
       try {
+        const { parseCheckFlag } = await import("../src/acceptance.mjs");
+        const checks = rawChecks.map((raw) => parseCheckFlag(raw));
         const { handleInboxDone } = await import("../src/inbox.mjs");
         const cfg = loadConfig(cfgDir || configDir);
-        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifact });
+        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifact, checks });
         console.log(`✓ 任务 ${taskId} 已完成并上报总线`);
       } catch (e) {
         console.error(e?.message ?? e);
@@ -669,16 +672,15 @@ if (cmd === "setup") {
   lah daemon  [--config <dir>] [--role node|hub]  常驻守护进程（省略 --role 时读 node.json，缺省 node）
   lah reconcile [--config <dir>]  单次回表认领/对账后退出（不长驻；不停派、不改写命令表外的手工名片）
   lah inventory [--config <dir>]  只读盘点本节点名片与任务，不写入
-  lah doctor  [--config <dir>] [--role node|hub] [--probe <host:port>]  本机自检
+  lah doctor  [--config <dir>] [--role node|hub]  本机自检
   lah service [--config <dir>] [--role node|hub]  注册开机自启（--remove 卸载）
   lah update  [--check] [--skip-skill] [--config <dir>]  自更新程序本体（git pull + 依赖重装 + 软链/Skill 补齐）
-  lah host    [--config <dir>]    carrier 语境进程（在终端里常驻代跑）
   lah inbox   [--pop] [--json]    读取专属 Agent 收件箱（--pop 提取并标为 acked）
-  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>]
+  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]
   lah inbox ask  --task <Task_ID> --text <补充提问>
   lah inbox fail --task <Task_ID> --text <失败原因>
   lah inbox auth --task <Task_ID> --text <具体动作、对象与风险>
-  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--idempotency-key <键>]
+  lah task create --to <node> [--cap/--skill <cap_id>] [--text <指令>] [--from <node>] [--params <json 或 @文件>] [--criteria <json 数组或 @文件>] [--idempotency-key <键>]
   lah task reply  --task <Task_ID> --text <答复内容>
   lah task show   <Task_ID>
   lah task why    <Task_ID> [--config <dir>] [--json]

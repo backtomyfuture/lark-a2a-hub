@@ -34,7 +34,6 @@ function kernelCfg(dir, mock, node, role) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
   };
 }

@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，形态 B）
 
-> 现行标准，版本 v3.8。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.9。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -121,7 +121,7 @@
   - 回执无效（无法按 §9 回执约定解析）：直接 Status=failed＋notice 说明原因（附原始输出摘要），Runs 记 failed；
   - 提交失败（向总线登记产物、写 Runs、写消息或改状态中途失败）：只补齐未完成的提交，已写入的行按其 ID 查重、不重复追加；补齐完成后按原回执进入应有状态；
   - 独立 Agent 宣告失败（`lah inbox fail`，见 §10.4）：由 Agent 本尊明确做出无法完成的判断，直接 Status=failed＋notice，Runs 记 failed，不重试、不回 submitted。
-- **在途执行账本与单并发（不是协议字段；只覆盖 `context=direct` 的 json/agent 命令）**：carrier 语境与 inbox 模式不在此列，仍按各自现行路径执行（carrier 同步代跑、inbox 只入队）。direct 命令在 spawn 之前把账本写到执行节点配置目录 `runs/<Task_ID>/entry.json`（权限 0600，先写临时文件再改名）。账本只记任务号、尝试次数（当时的 Retry_Count）、状态（`launching` / `running` / `exited`）、pid / 进程组、启动时间、超时秒数、stdout / stderr / 退出码文件路径，以及用于辨别 pid 复用的进程启动时间戳；取不到启动时间戳就记 null。账本不进总线、不加列、不写 Metadata，也不放凭据或指令正文。子进程的标准输出与标准错误写入该目录下的文件，由一层包装在进程结束时把退出码原子写入退出码文件，避免守护进程消失后管道断裂把子进程打死。读取输出时仍只保留头部 64KiB 与尾部 1MiB。超时从账本里的启动时间接着算，到点由守护进程向该进程组先发 SIGTERM，宽限后再 SIGKILL，不因守护重启把超时重新算满。
+- **在途执行账本与单并发（不是协议字段；只覆盖 `context=direct` 的 json/agent 命令）**：inbox 模式不在此列，仍按现行路径只入队。direct 命令在 spawn 之前把账本写到执行节点配置目录 `runs/<Task_ID>/entry.json`（权限 0600，先写临时文件再改名）。账本只记任务号、尝试次数（当时的 Retry_Count）、状态（`launching` / `running` / `exited`）、pid / 进程组、启动时间、超时秒数、stdout / stderr / 退出码文件路径，以及用于辨别 pid 复用的进程启动时间戳；取不到启动时间戳就记 null。账本不进总线、不加列、不写 Metadata，也不放凭据或指令正文。子进程的标准输出与标准错误写入该目录下的文件，由一层包装在进程结束时把退出码原子写入退出码文件，避免守护进程消失后管道断裂把子进程打死。读取输出时仍只保留头部 64KiB 与尾部 1MiB。超时从账本里的启动时间接着算，到点由守护进程向该进程组先发 SIGTERM，宽限后再 SIGKILL，不因守护重启把超时重新算满。
   - 同一节点同一时刻只跑一条 direct 命令。已有在途命令时，本轮不再认领新任务；inbox 心跳、续跑检查和 hub 的审批、呈递、陈旧回收、定时建单照常进行。命令的结果（outbox、Artifacts、Runs、Messages/Parts、Tasks 状态）只在扫表的收口阶段串行写入。
   - 重启或下一轮扫表时，对本节点 `Claimed_By` 且仍为 working 的任务：账本在且进程组仍存活，只续 `Heartbeat_At`，不第二次 spawn，不加 Retry_Count，结束后按 §9 解析回执并提交；账本在、进程已结束且退出码文件在，直接读输出提交，不重跑；账本在、进程已确认死亡且没有退出码文件，按执行失败处理（计入 Retry_Count 与重试水位，达上限则 failed＋notice），不得当成成功；无法确认进程组是否已死时，不得认定死亡后重跑，保持 working 并继续续心跳，直到按账本启动时间走到超时，由超时机制收口；没有账本的旧 working 任务仍按 §8.4 心跳回收。有存活在途账本的任务，心跳回收不得把它送回 submitted。成功落总线之后删掉该任务账本目录里的输出文件，`input.json` 仍按 §9 保留。
   - **局限**：pid 在进程退出后可能被系统复用。账本用进程启动时间戳区分；对不上就不当作仍在跑的那一次，也不向复用后的新进程发信号。启动时间戳取不到（记 null）时无法做这层区分，宁可继续当作在途并等到超时，也不在无法确认时重跑。超时信号仍发往账本记录的进程组；若该组号已被无关进程占用，存在误伤可能，此情况下不得改成重跑。
@@ -233,7 +233,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 - **生效审批级别**＝任务行 Approval_Class 与节点本地下限中更严格者（auto < notify < approve）。节点可在本机 commands.json 的能力条目用 `approval_class` 声明下限；v3.7 起 Worker 条目与 Skill 条目都可以声明，本地下限取二者中更严者（不同 Worker 的无头权限差别很大，Worker 的下限不能被 Skill 放松）；本地下限只收紧、不放宽，任务行未标或标得更松时按下限办。本地下限只存在于执行节点本机。hub 不在 submitted 阶段代写 auth_request：行级 `Approval_Class=approve` 与本机下限都由目标节点在认领前拦截。`later` 复查与节点本地定时计划仍按既有规则把 `approve` 写进行，不因停掉抢跑而放宽。
 - **认领前静态门**：生效级别为 approve 时，执行方在认领前（任务仍为 submitted，或问答续跑时仍为 input-required）写一条不带 `scope=dynamic` 的 auth_request（`client_token` 只由 Task_ID 派生；To_Node=`hub`，From_Node=目标节点名），Status 置 auth-required，Status_Msg 指向该消息，然后停手。`Claimed_By` 为空时尚未进入 working。已有静态请求时不另写：已有有效 approve 则继续认领，尚无决定则停在 auth-required。动态请求不参与这条匹配，一次动态批准不能代替静态下限，一次动态驳回也不能把静态门卡死。
-- **执行中动态审批**：任务已是 working 且 `Claimed_By` 为本节点时，执行方可以按实际待执行动作再写 auth_request。正文是具体动作、对象与风险，另附 DataPart `{"scope":"dynamic","run_id":"<本次执行段 id>"}`。`client_token` 由 Task_ID 与该 `run_id` 派生，仍是 UUID 形状；同一次执行段重试必须用同一个 `run_id`，不得随机换一把。direct 账本在启动时就把 `run_id` 写入 `entry.json`，收口重试读回同一把。carrier 与 inbox 没有这本账：carrier 用本次已打开的 Run；若在写成 auth-required 之前进程崩溃，与提问一样整段重跑。inbox 用 `lah inbox auth`，`run_id` 在第一次生成 outbox 计划时固化。状态改为 auth-required 时保留 `Claimed_By`、清空心跳，Runs 记 paused。同一任务可以多次动态请求。
+- **执行中动态审批**：任务已是 working 且 `Claimed_By` 为本节点时，执行方可以按实际待执行动作再写 auth_request。正文是具体动作、对象与风险，另附 DataPart `{"scope":"dynamic","run_id":"<本次执行段 id>"}`。`client_token` 由 Task_ID 与该 `run_id` 派生，仍是 UUID 形状；同一次执行段重试必须用同一个 `run_id`，不得随机换一把。direct 账本在启动时就把 `run_id` 写入 `entry.json`，收口重试读回同一把。inbox 没有这本账，用 `lah inbox auth`，`run_id` 在第一次生成 outbox 计划时固化。状态改为 auth-required 时保留 `Claimed_By`、清空心跳，Runs 记 paused。同一任务可以多次动态请求。
 - **host 无头 CLI 的软约束**：`agent-auth` / `need_auth` 在命令进程退出后才解析。已经配成自动放行的 CLI 可能在写出围栏之前就做完副作用。这条回执是停手约定，不是执行前的硬拦截。真正要在动作之前停住的，用 inbox 的 `lah inbox auth`：它在写总线之前就把本地条目标成 `waiting-auth`，批准后才回到收件箱。
 - **input-required 上的静态门**：问答续跑时若静态门把任务改成 auth-required，此时 `Claimed_By` 已经非空。批准后不回 submitted，由原节点以 `resume=true` 续跑（与执行中动态审批同一条恢复路径），避免把已经问过的轮次整段重跑。
 - 枢纽（hub 角色，§10.1）只给已经是 auth-required 且 Status_Msg 非空的任务发卡。机主点击后，枢纽写 auth_decision（决定值放其 DataPart：{"decision": "approve"} 或 {"decision": "reject"}，In_Reply_To 指向所批的 auth_request）。`Claimed_By` 为空则批准后把 Status 置回 submitted，并保留 Status_Msg。`Claimed_By` 非空则不改 Status、不改 Status_Msg，由原节点核验后自己切回 working。驳回仍写 auth_decision、notice，并把 Status 置为 canceled。同一 Status_Msg 下已有一条验签通过的决定（批准或驳回）时，再次点击不再写第二条、也不改任务行。未通过验签的行不算已处理。
@@ -270,7 +270,23 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 ## 修订记录
 
-**未发布：挂起复查与 canceled 呈递（表结构不变）**：
+**v3.9（2026-11-15，对应节点适配器 0.9.0；表结构不变）：验收层 v1**：
+- 动机：`completed` 只表示执行方自报完成，巡检、日报、代码类任务都要发起方肉眼复核。新增 §11。
+- L1：`commands.json` 可配本机 `verify` 命令，direct 的 json / agent 在完成收口前跑；退出码非 0、超时或拉不起来一律 `failed` + notice（「验收未通过」），不计重试、不重跑。verify 作为在途账本第二阶段，守护重启后续接。
+- L2：建单时可在 instruction DataPart 写 `acceptance.criteria`，执行方用 `CHECK:` 行、json `checks` 或 `lah inbox done --check` 逐条自检；v1 只记录展示，不改状态。
+- 结果写在回执消息的 DataPart（权威）并索引到 `Tasks.Metadata.acceptance`；`why` 与呈递分开标注守护进程捕获的证据与执行方自述。
+- `verify` / `verify_timeout_sec` 加入执行控制键。
+- 否决的做法：
+  - 验收失败仍置 `completed`、只在 Metadata 标红。Metadata 写失败只记日志，判定会无声丢失；发起方脚本只看 Status 也会漏判。
+  - 验收失败占用 `Retry_Count` 自动重跑。确定性命令重跑大多得到同样的错，还会再触发一次副作用。
+  - 清单写在 `Tasks.Metadata`。任何节点都能改，做不到冻结。
+**v3.9 同版（2026-11-15）：移除 carrier 执行语境（表结构不变）**：
+- 动机：carrier（用户终端里常驻的 `lah host`，经本机 unix socket 代跑需要局域网的命令）在生产中从未启用；DESIGN §9 实测在本机长驻进程的局域网访问同样不可靠，它带来的协议面（Availability 随探活翻转、同步代跑路径、socket 例外）却要每个新特性都单独照顾。
+- `context` 只剩 `direct`（可省略）。配置里残留 `context: "carrier"` 的能力在认领预检按非法取值 `rejected` + notice，并由 `lah doctor` 报出；绝不静默改走直跑。
+- 删除 `lah host` 与 `lah doctor --probe`；节点不再监听任何本机 socket，§0 第 3 条「只出不进」没有例外。
+- 历史修订记录里对 carrier 的描述保留原样，作为当时的口径。
+
+**v3.9 同版（2026-11-15）：挂起复查与 canceled 呈递（表结构不变）**：
 - 动机：生产测试中，执行中批准后原节点 12 分钟才续跑。批准只落 Messages、任务行不变，事件一漏就只能等 900 秒对账。hub 审批驳回写的 `canceled` 不在呈递范围里，发起方用 `lah present --wait` 等不到终态。
 - §10.3 新增「挂起复查」：节点名下有挂起任务时按挂起时长缩短扫表间隔（60 秒、180 秒两档，超过 60 分钟回到原周期）。
 - §8.5 呈递状态加入 `canceled`。升级后首轮对已有的 `canceled` 补一次水位线，不倒历史撤单。
@@ -278,7 +294,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
   - 批准时 hub 顺手改一下任务行来触发事件。仍然依赖事件送达，且给执行中的任务行加一次与执行节点并发的写。
   - 挂起期间一律按 pollSec 扫表。一张没人批的单会整夜按分钟扫表，耗月度调用量。
 
-**未发布：执行中动态审批**：停用 hub 在 submitted 阶段代写 auth_request。认领前静态门仍由目标节点执行。新增 working→auth-required：执行方按实际动作写带 `scope=dynamic` 的 auth_request，`client_token` 按本次 `run_id` 稳定派生。批准后按 `Claimed_By` 分流：为空回 submitted，非空保持 auth-required 并由原节点 `resume=true` 续跑（含 input-required 上触发的静态门）。同一任务可多次动态请求。新增 `lah inbox auth`。`agent-auth` / `need_auth` 为退出后解析的软约定。表结构不变。
+**v3.9 同版（2026-11-15）：执行中动态审批**：停用 hub 在 submitted 阶段代写 auth_request。认领前静态门仍由目标节点执行。新增 working→auth-required：执行方按实际动作写带 `scope=dynamic` 的 auth_request，`client_token` 按本次 `run_id` 稳定派生。批准后按 `Claimed_By` 分流：为空回 submitted，非空保持 auth-required 并由原节点 `resume=true` 续跑（含 input-required 上触发的静态门）。同一任务可多次动态请求。新增 `lah inbox auth`。`agent-auth` / `need_auth` 为退出后解析的软约定。表结构不变。
 
 **v3.8 补订（2026-11-12，表结构不变）**：
 - 动机：扫表路径若每轮无条件写 `Heartbeat_At`，写操作会触发记录变更事件，形成「写 → 事件 → 扫表 → 再写」；结果落进本机队列后没有东西通知正在等待的会话；日志里看不见每轮扫表打了多少飞书请求、耗时多少、有没有退避。
@@ -395,7 +411,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - **回执约定（agent 型模板）**：围栏之外的正文即摘要。产物只认围栏之外、整行匹配的 `ARTIFACT: <路径或URL>`，名称只认同样位于围栏之外的整行 `ARTIFACT_NAME: <名称>`；写在围栏里面的同形文字无效。提问与执行中审批只认整段输出里最后一个完整围栏：语言标记是 `agent-ask` 时块内为问题，任务置 input-required；语言标记是 `agent-auth` 时块内为审批说明（trim 后为空则回执无效），任务置 auth-required。二者取最后一个，更早的围栏一律忽略。围栏之外没有摘要则回执无效，直接 failed，不重试（§4）。可选的 `USAGE:`、`SESSION:` 与 `LATER:` 也只认围栏之外的整行，规则见下面几条；围栏里的同形文字无效。`LATER:` 在提问或审批上忽略。
 - **回执约定（json 型模板）**：只认 stdout 最后一个非空行，且必须是 JSON 对象。决定任务走向的顶层键有 `summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`。`need_input` 与 `need_auth` 不能同时非空，否则回执无效。`need_auth` 转成字符串后 trim 非空才转入 auth-required，空白不算。可选键 `usage`、`session` 与 `later` 只按下面几条吸收，不参与执行控制。其余顶层键忽略，并记一条日志，不拿去执行。摘要进入总线前仍截断到 4000 字，不按键打码。`later` 在 `need_auth` 上忽略。
 - **可选用量（usage）**：agent 与 json 都可以带用量。没有这条就视为本轮未上报，节点不得估算或补猜。agent 在围栏之外单独整行 `USAGE: input=<n> output=<n> cached=<n> cost=<x>`，四个键都可省略、顺序不限，键之间用空白分开。json 在末行对象上加可选对象 `usage`，键同为 `input` / `output` / `cached` / `cost`，都可省略。三项 token 必须是有限非负数，写入前向零取整；`cost` 必须是有限非负数，保留至多 6 位小数。任一项大于 `1e12`、不是有限非负数，或整行 / 整对象无法按此解析，则忽略这一整条用量并记日志，回执其余部分仍然有效。用量不进 Runs（该表没有 Metadata，也不为此加列），由执行节点累加到 `Tasks.Metadata.usage`：`{input,output,cached,cost,runs,reported}`。同一任务上的重试与问答续跑都累加。`runs` 是已收口的执行轮数，`reported` 是其中带了合法用量的轮数，二者之差就是未上报轮数。写入沿用先读后合并，不覆盖 Metadata 里的其它键（如 `presented_keys`）。写在该轮任务收口的那次 Tasks 更新之后；Metadata 写失败只记日志，不得使回执提交失败。`lah task why` 的文本与 `--json` 都显示这份汇总和未上报轮数。
-- **可选会话（session）与问答续接**：只覆盖 `context=direct` 的 json / agent。carrier 与 inbox 不保存 session，也不读 `resume_command`。agent 在围栏之外单独整行 `SESSION: <id>`；json 末行对象可选字符串 `session`。`id` 必须匹配 `^[A-Za-z0-9._:-]{1,128}$`，否则整条忽略并记日志，不影响回执是否有效。这是执行者自报的数据，只写执行节点配置目录 `runs/<Task_ID>/session.json`（权限 0600），不进总线，不写 Tasks.Metadata。任务进入终态后与在途账本的输出文件一起删掉；`input.json` 仍按上面的输入约定保留。`commands.json` 条目可以另写可选 `resume_command`，可信等级与 `command` 相同，只来自本机文件，不得从任务参数、消息正文或总线读取。仅当三件同时成立时，用 `resume_command` 替换 `command`：（1）本次是续跑（同一任务从 input-required 收到 answer 后再次执行，或从执行中审批的 auth-required 批准后续跑）；（2）本机已存有该任务的 session id；（3）条目配置了 `resume_command`。首次执行、执行失败后的重试、心跳回收后的重跑，都不用 `resume_command`。`{session}` 与 `{prompt}` 都只替换一轮，替换值用单引号包裹并转义其中的单引号，避免二次展开。agent 的 `resume_command` 使用 `{prompt}` 与 `{session}`；json 只需 `{session}`。续接不改输入约定：agent 仍把全量指令、参数与问答写入 `input.json`，json 仍经标准输入交付完整信封。`lah doctor` 在配置了 `resume_command` 但其中没有 `{session}` 时报问题。
+- **可选会话（session）与问答续接**：只覆盖 `context=direct` 的 json / agent。inbox 不保存 session，也不读 `resume_command`。agent 在围栏之外单独整行 `SESSION: <id>`；json 末行对象可选字符串 `session`。`id` 必须匹配 `^[A-Za-z0-9._:-]{1,128}$`，否则整条忽略并记日志，不影响回执是否有效。这是执行者自报的数据，只写执行节点配置目录 `runs/<Task_ID>/session.json`（权限 0600），不进总线，不写 Tasks.Metadata。任务进入终态后与在途账本的输出文件一起删掉；`input.json` 仍按上面的输入约定保留。`commands.json` 条目可以另写可选 `resume_command`，可信等级与 `command` 相同，只来自本机文件，不得从任务参数、消息正文或总线读取。仅当三件同时成立时，用 `resume_command` 替换 `command`：（1）本次是续跑（同一任务从 input-required 收到 answer 后再次执行，或从执行中审批的 auth-required 批准后续跑）；（2）本机已存有该任务的 session id；（3）条目配置了 `resume_command`。首次执行、执行失败后的重试、心跳回收后的重跑，都不用 `resume_command`。`{session}` 与 `{prompt}` 都只替换一轮，替换值用单引号包裹并转义其中的单引号，避免二次展开。agent 的 `resume_command` 使用 `{prompt}` 与 `{session}`；json 只需 `{session}`。续接不改输入约定：agent 仍把全量指令、参数与问答写入 `input.json`，json 仍经标准输入交付完整信封。`lah doctor` 在配置了 `resume_command` 但其中没有 `{session}` 时报问题。
 - **可选复查（later）**：终态任务不可重启。agent 在围栏之外单独整行 `LATER: <ISO8601 时刻> | <about>`；json 在末行对象上加可选对象 `later`，形如 `{at, about}`。每次回执最多一条，多条只取最后一条并记日志；围栏里的同形文字无效。`at` 必须是真实日历时间（含闰年与每月天数），并带 `Z` 或数字时区偏移（`±HH:MM` 或 `±HHMM`）；不带时区、日期不存在（如 `2027-02-29`）、早于「现在加 1 分钟」或晚于「现在加 30 天」都整条忽略。`about` 是纯文本，含控制字符或超过 200 字则整条忽略，不删字符后收下，也不截断。不合法只记日志，回执其余部分仍然有效。只有本轮收口为 completed（result）才把 `{at, about}` 读-合并-写进该任务 `Tasks.Metadata.later`，不覆盖其它键，不加列；写失败只记日志，任务仍为 completed。failed（含执行失败与回执无效）、input-required 与 auth-required 上的 later 忽略并记日志，不写入。到点建单只由 hub 的时钟做（§10.1 第 7 条）。`lah task why` 显示待触发，或已触发及新任务 ID。
 - **编排型 CLI 的默认执行主体**：编排型命令（如 Paseo、Orca）的模板必须显式带上默认执行主体。用户在 `lah setup` 交互里的选择优先；未选时写入该模板的默认值（Paseo 默认 `--provider antigravity`）。模型 slug 只钉在节点本地 `commands.json`，不进总线。详见 [能力模板库](agent-templates.md)。
 - **agent 型 CLI 的无头权限**：agent 型无头模板必须显式处理权限，不能依赖有人在终端里点确认。软拒绝型（agy / gemini / claude）、沙箱档位型（codex / droid）与全批准开关型（amp / opencode）的定版写法见 [能力模板库](agent-templates.md)。`agent-auth` 围栏是进程退出后的软约定：模板若在写出围栏前就会自己做完高风险动作，这条回执拦不住，应改走 inbox 的 `lah inbox auth`（§8.3、§10.4）。
@@ -481,11 +497,46 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
   - 文件恢复后，下一轮扫表自动接回：内容有变则先对账名片，再恢复派发。
   - 启动期没有有效 `commands.json`：只记日志，进主循环每轮重试；能力名片登记成功前不处理任务（§9、DESIGN §4 常驻韧性）。
 - `node.json` **只在启动时读一次**（含 hub 的 `ownerOpenId`），运行期改动（改好或改坏）都要重启才生效，在跑的进程不受影响。启动期 `node.json` 无效时，守护进程记一条错误、退避（默认 5 秒）后以非零状态退出，由 launchd / systemd 的保活拉起重试；修好前不会接单。
-- 条目级字段不合法时：未知 `mode` / `context` 在认领预检阶段直接拒收（`rejected` + notice 说明是本机配置取值非法），不再静默按 `agent` / `direct` 处理，以免拼错的 `carrier` 绕过离线拒收；非法 `timeout_sec` 仍回退 600 秒，重复 Cap_ID 时后一项不登记并记日志（同 §9）。这类问题同时由 `lah doctor` 提前拦截：检查两份文件可解析、必填字段齐全，`mode ∈ {agent, json, inbox}`、`context ∈ {direct, carrier}`、`timeout_sec` 为正数，Cap_ID（`cap_id` 或 `CAP-<capPrefix>-<能力名>`；Worker 的能力为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`）不重复，`workers` 里每个 Worker 有 `command`，技能条目引用的 Worker 都已定义；对旧平表中由节点本尊执行的 agent 型条目给出迁到 `workers` 的提示（info，不计入问题）；不打印任何凭据。
+- 条目级字段不合法时：未知 `mode` / `context` 在认领预检阶段直接拒收（`rejected` + notice 说明是本机配置取值非法），不再静默按 `agent` / `direct` 处理；已移除的 `carrier` 同样按非法取值拒收，notice 写明该语境已移除（不改走直跑）；非法 `timeout_sec` 仍回退 600 秒，重复 Cap_ID 时后一项不登记并记日志（同 §9）。这类问题同时由 `lah doctor` 提前拦截：检查两份文件可解析、必填字段齐全，`mode ∈ {agent, json, inbox}`、`context` 只能是 `direct`（可省略）、`timeout_sec` 为正数，Cap_ID（`cap_id` 或 `CAP-<capPrefix>-<能力名>`；Worker 的能力为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`）不重复，`workers` 里每个 Worker 有 `command`，技能条目引用的 Worker 都已定义；对旧平表中由节点本尊执行的 agent 型条目给出迁到 `workers` 的提示（info，不计入问题）；不打印任何凭据。
 
 **建议（尚未实现，落地前先改本节）**：
 
 - 运行期 `commands.json` 解析失败时，继续用内存中的上一份有效能力表接单，只记一条错误日志并在恢复时记一条恢复日志，不必每轮重复刷屏；能力名片不动。这与现状「暂停接新单」相比，可用性更好，代价是操作者编辑到一半的意图无从得知；采纳与否由负责人定。
 - 条目级非法值改为在内核加载时逐条校验：非法条目不登记名片（或标 `Availability=offline`）并记错误日志，使任务在路由阶段就看得到该能力不可用，而不是等认领后才被拒收。
 - 启动期 `node.json` 无效时改为进程内退避重试、不退出，与 `commands.json` 的启动期语义对齐，不依赖外部保活。
+
+## 11. 附则：验收（v3.9，表结构不变）
+
+本节定义任务交付时的独立校验。动机：§2 的 `completed` 只表示「执行方自称完成并给出了回执」，不表示活干对了。验收层把「对不对」分成两层：能用退出码判定的交给本机校验命令（L1），只能由人或模型判断的写成建单时冻结的清单、由执行方逐条自检（L2）。验收与审批（§8.3）是两回事：审批判「准不准做」，只认机主签名；验收判「做得对不对」，任何验收结果都不得替代、绕过或生成 `auth_decision`。
+
+### 11.1 L1 执行式验收（verify 命令）
+
+- **配置**：`commands.json` 的 Skill 条目或 Worker 条目可写可选 `verify`（字符串，一条本机 shell 命令）与 `verify_timeout_sec`（正数，缺省 120，夹紧到 `[1, 1800]`）。Skill 条目上的值优先，Skill 未写时取其 Worker 条目的值。`verify` 与 `command` 同一可信等级，只来自本机文件；任务参数里出现 `verify` / `verify_timeout_sec` 按执行控制键拒收（§9）。`verify` 原样执行，不做 `{prompt}` / `{session}` 等任何占位符替换。
+- **覆盖范围**：只覆盖 `context=direct` 的 json / agent 命令。`mode=inbox` 的条目写了 `verify` 是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。协议接入型节点与 inbox 节点没有节点侧 L1，只能走 L2 或发起方侧复核；`lah task why` 与呈递如实显示「未配置执行式验收」，不得显示为通过。
+- **何时跑**：主命令退出码为 0、且回执按 §9 解析为完成（不是提问、审批或回执无效）之后，在收口写表之前。提问、审批、回执无效、执行失败都不跑 verify。同一任务每次收口为完成前都要跑一次（问答续跑或审批续跑后的完成同样要跑）。
+- **怎么跑**：与主命令同一 cwd、同一进程组纪律（独立进程组，超时先 SIGTERM，宽限后 SIGKILL）。执行者上报的数据只经两条数据通道交给 verify，绝不拼进命令：标准输入是一行 JSON `{"task_id","summary","artifact","artifact_name","checks"}`；环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`、`LAH_RUN_DIR`（本次 `runs/<Task_ID>` 目录）、`LAH_MAIN_STDOUT`（主命令 stdout 文件路径）。verify 必须是只读、可重复执行的检查。
+- **在途账本**：verify 是在途账本的第二阶段（§4）。主命令收口解析成功后，账本记下解析后的回执与 `state=verifying`，再拉起 verify；verify 的 pid、启动时间、退出码与输出文件同样落盘，守护重启后续接，不重跑主命令。重启后无法确认 verify 是否结束时，重跑 verify（只读，可重复）；同一任务 verify 最多拉起 3 次，仍拿不到结果判为 `error`。verify 期间照常续心跳，占用唯一的 direct 执行槽。
+- **判定**：退出码 0 为 `pass`；非 0 为 `fail`；到 `verify_timeout_sec` 未结束为 `timeout`；拉不起来或 3 次仍无结果为 `error`。
+- **落态**：`pass` 照常 `completed` + result。`fail` / `timeout` / `error` 一律置 `failed` + notice，notice 正文第一行以「验收未通过」开头并写明判定与退出码，随后附执行方摘要与 verify 输出尾部（stdout 与 stderr 合并，至多 2000 字）。Runs 记 `Outcome=failed`，`Error_Log` 写判定与退出码。执行方给了产物的照常登记 Artifacts，但 `Is_Final=No`。验收失败**不计入 `Retry_Count`、不回 `submitted`、不自动重跑**，并清除退避水位。返工须在同一 `Context_ID` 新建任务（§2 终态不可变）。
+- **证据等级**：verify 结果由守护进程亲自捕获，等级为 `captured`，是唯一能改变任务状态的验收证据。
+
+### 11.2 L2 声明式验收（criteria 清单）
+
+- **建单**：发起方在首条 instruction 消息的 DataPart 里写 `acceptance`：`{"acceptance":{"criteria":[{"id","text","evidence_required"?}]}}`。`criteria` 为 1–20 条；`id` 匹配 `^[A-Za-z0-9._-]{1,32}$` 且不重复；`text` trim 后 1–500 字、不含除换行与制表符以外的控制字符；`evidence_required` 可选布尔。不合法时 `lah task create` 写表前拒绝；节点认领预检遇到不合法的清单 `rejected` + notice。
+- **冻结**：清单只从首条 instruction 的 DataPart 读取。Messages / Parts 只追加，清单天然不可改；`Tasks.Metadata` 里任何同名键都不认。
+- **执行方自检**：只在回执收口为完成时收；提问、审批、失败上的自检忽略并记日志。
+  - agent：围栏之外整行 `CHECK: <id> <pass|fail|blocked>[ | <证据>]`。同一 `id` 多行取最后一行；围栏里的同形文字无效；这些行从摘要里拿掉。受信 prompt 模板在 `input.json` 带清单时说明这条语法。
+  - json：末行对象可选键 `checks`，形如 `{"<id>":{"verdict":"pass|fail|blocked","evidence":"…"}}`，值也可以直接是判定字符串。
+  - inbox：`lah inbox done` 可重复传 `--check <id>=<pass|fail|blocked>[:<证据>]`。
+  - 证据是纯文本，超过 500 字截断。清单外的 `id` 与不合法的判定整条忽略并记日志，回执其余部分仍然有效。
+- **逐条判定**：每条清单项得到一个判定：执行方报了就是 `pass` / `fail` / `blocked`；`evidence_required=true` 却报 `pass` 而没给证据，降为 `uncertain`；没报为 `missing`。来源标 `self`（执行方自述，等级最低）。
+- **v1 不改状态**：L2 只记录和展示，不改变任务状态。自检里有 `fail` 的任务仍是 `completed`，由呈递与 `lah task why` 标出。独立评审（把清单交给另一个 Worker 或节点判读）留待后续版本。
+
+### 11.3 验收记录
+
+- **DataPart**：result 或 notice 消息在 TextPart 之后追加一个 DataPart（`Seq` 2）：`{"acceptance":{"version":1,"verify":{…}|null,"criteria_ref":"<instruction Msg_ID>"|"","checks":[…],"overall":"pass|fail|uncertain"}}`。`verify` 为 `{"verdict","exit_code","duration_ms","evidence":"captured"}`；`checks` 每项为 `{"id","verdict","evidence","source":"self"}`。这是验收结果的权威记录，与回执同一条 outbox 补齐链落表，不会因 Metadata 写失败而丢失。
+- **overall**：verify 不是 `pass` 为 `fail`；否则自检里有 `fail` 为 `fail`；否则有 `blocked` / `uncertain` / `missing` 为 `uncertain`；否则为 `pass`。既没有 verify 也没有清单的任务不写这个 DataPart，行为与现状一致。
+- **Metadata**：执行节点在回执收口那次 Tasks 更新之后，把同一对象去掉证据正文后读-合并-写进 `Tasks.Metadata.acceptance`，另加 `msg_id` 指回该消息。照 `usage` 的先例：不覆盖其它键，写失败只记日志。读取方以 DataPart 为准，Metadata 只是索引。
+- **展示**：`lah task why` 的文本与 `--json` 显示 verify 判定、退出码、逐条自检与 overall，并分开标注 `captured` 与 `self`。呈递队列条目新增 `acceptance` 字段（同上对象，去掉证据正文），正文多一行验收摘要；验收未通过的 `failed` 与执行失败的 `failed` 必须一眼可分。
+- **不做**：不自动改写 `commands.json`、规则或流程；不由模型代批审批；不新增 Tasks 列或新表。
 

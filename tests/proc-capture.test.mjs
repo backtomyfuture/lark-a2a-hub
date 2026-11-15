@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createBoundedCapture, runDetachedCommand } from "../src/carrier.mjs";
+import { createBoundedCapture, runDetachedCommand } from "../src/proc.mjs";
 
 // 红线：中间日志不留。省略标记本身不含反引号，内核才能从这一行之后认回执。
 test("createBoundedCapture 超限时插入省略标记", () => {

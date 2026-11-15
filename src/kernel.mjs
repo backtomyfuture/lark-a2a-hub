@@ -6,9 +6,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { buildAcceptance, judgeChecks, parseCriteria } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { createWaker } from "./transport/index.mjs";
-import { execViaCarrier, pingCarrier, runDetachedCommand } from "./carrier.mjs";
+import { runDetachedCommand } from "./proc.mjs";
 import { createTask } from "./hub/create.mjs";
 import { PresentService } from "./hub/present.mjs";
 import { enqueueOrUpdateInbox, readInbox, markInboxStatus } from "./inbox.mjs";
@@ -52,7 +53,7 @@ export {
 export { readSessionId } from "./session-store.mjs";
 export { clampTimeoutSec, controlKeysIn, loadConfig, receiveModeOf } from "./config.mjs";
 
-export const DAEMON_VERSION = "node-0.8.1";
+export const DAEMON_VERSION = "node-0.9.0";
 const HOP_LIMIT = 8;
 
 // 对齐到下一整分钟。正好卡在整分时再等满一分钟，避免 0 延迟把回调打成紧循环。
@@ -111,7 +112,6 @@ export class Kernel {
     this._wsUp = false;
     // 名片缓存只在整轮写表成功之后更新。失败时保持 null / 空表，下一轮会再校准。
     this.registeredCards = new Map();
-    this.carrierAvailability = null;
     this._commandsStamp = null;
     this._commandsHash = null;
     this._syncedCommandsHash = null;
@@ -305,6 +305,19 @@ export class Kernel {
       if (f1(m, "Kind") === "instruction") return this.msgData(m);
     }
     return {};
+  }
+
+  // 清单只从首条 instruction 消息的 DataPart 读取，与 getParams 同源（标准 §11.2）。
+  async getAcceptanceCriteria(task) {
+    for (const m of await this.listMessages(f1(task, "Task_ID"))) {
+      if (f1(m, "Kind") === "instruction") {
+        const params = await this.msgData(m);
+        const parsed = parseCriteria(params);
+        if (!parsed.ok || !parsed.criteria.length) return { criteria: [], criteriaRef: "" };
+        return { criteria: parsed.criteria, criteriaRef: String(f1(m, "Msg_ID") ?? "") };
+      }
+    }
+    return { criteria: [], criteriaRef: "" };
   }
 
   async createPart(parentId, parentType, seq, kind, { text = "", fileUri = "", fileName = "", mime = "", data = "" } = {}, clientToken) {
@@ -538,8 +551,18 @@ export class Kernel {
   }
 
   // entry 是本机能力表里的条目。专长技能的名字与说明取自它，属于受信模板，不取自任务。
-  buildPrompt(inputPath, entry = null) {
+  buildPrompt(inputPath, entry = null, hasCriteria = null) {
     const file = String(inputPath ?? "");
+    let withCriteria = hasCriteria;
+    if (withCriteria == null && file) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+        const parsed = parseCriteria(raw?.params);
+        withCriteria = parsed.ok && parsed.criteria.length > 0;
+      } catch {
+        withCriteria = false;
+      }
+    }
     const skillLine = entry?.worker && entry.skill && entry.skill !== "agent"
       ? [`本次任务使用技能：${entry.skill}（${entry.name || entry.skill}）。${entry.desc || ""}`.trim()]
       : [];
@@ -560,23 +583,14 @@ export class Kernel {
       "7. 可选：围栏外整行 USAGE: input=<n> output=<n> cached=<n> cost=<x>（键可省略；不写表示未上报）。",
       "8. 可选：围栏外整行 SESSION: <id>，只含字母数字和 . _ : -，供本机续接。",
       "9. 可选：仅当本轮完成时，在围栏外单独整行写 LATER: <带时区偏移的 ISO8601 时刻> | <复查说明>。提问、审批、失败或围栏内的同形文字不会预约。",
+      ...(withCriteria ? [
+        "10. 本任务任务数据文件 params.acceptance.criteria 带有验收清单：仅当本轮完成时，对照清单逐条在围栏外单独整行自检，格式 CHECK: <id> <pass|fail|blocked> | <证据>（每条一行，同一 id 以最后一行有效；围栏内无效）。",
+      ] : []),
     ].join("\n");
   }
 
-  // 执行分流（executor × context）：默认 direct 在本进程直跑；
-  // 条目标了 context: "carrier" 时经本地 socket 交给用户终端里的 carrier
-  // 代跑（设计 §9），执行语义与直跑一致，只是换了进程语境。
-  async execFor(entry, command, stdinText, timeoutSec, cwd) {
-    if (entry?.context === "carrier") {
-      return execViaCarrier(this.cfg.carrierSocket, {
-        command, cwd, input: stdinText, timeoutSec,
-      });
-    }
-    return this.runShell(command, stdinText, timeoutSec, cwd);
-  }
-
   runShell(command, stdinText, timeoutSec, cwd) {
-    // 与 carrier 共用独立进程组：超时先 TERM 整组，宽限后再 KILL，避免孙进程残留。
+    // 独立进程组：超时先 TERM 整组，宽限后再 KILL，避免孙进程残留。
     return runDetachedCommand(command, stdinText, timeoutSec, cwd);
   }
 
@@ -584,7 +598,7 @@ export class Kernel {
     return parseAgentReceipt(out);
   }
 
-  // direct 账本与 carrier 代跑共用这一份准备结果，避免两条路径拼出来的 stdin 不一样。
+  // direct 账本与同步路径共用这一份准备结果，避免两条路径拼出来的 stdin 不一样。
   // resume 在问答续跑或执行中审批续跑时为 true。失败重试和第一次执行都不许把旧会话当成还能接着用。
   async prepareCommand(skill, task, params, extraAnswers, resume = false) {
     const entry = this.commands[skill] ?? {};
@@ -614,7 +628,8 @@ export class Kernel {
       };
     }
     const inputPath = await this.writeAgentInput(task, params, extraAnswers);
-    const prompt = this.buildPrompt(inputPath, entry);
+    const hasCriteria = parseCriteria(params).criteria.length > 0;
+    const prompt = this.buildPrompt(inputPath, entry, hasCriteria);
     const wantsPrompt = command.includes("{prompt}");
     command = substituteCommand(command, {
       prompt: wantsPrompt ? prompt : undefined,
@@ -652,7 +667,7 @@ export class Kernel {
   async runCommand(skill, task, params, extraAnswers, resume = false) {
     const entry = this.commands[skill] ?? {};
     const prep = await this.prepareCommand(skill, task, params, extraAnswers, resume);
-    const p = await this.execFor(entry, prep.command, prep.stdinText, prep.timeout, prep.cwd);
+    const p = await this.runShell(prep.command, prep.stdinText, prep.timeout, prep.cwd);
     return this.interpretCommandResult(prep.mode, p);
   }
 
@@ -673,7 +688,7 @@ export class Kernel {
     return capIdOf(skill, entry, this.cfg.capPrefix);
   }
 
-  desiredCard(skill, entry, carrierUp) {
+  desiredCard(skill, entry) {
     const receiveMode = receiveModeOf(this.cfg);
     const isInbox = entry?.mode === "inbox";
     const desc = isInbox ? (entry?.desc || `${this.cfg.node} 独立 Agent 本尊`) : (entry?.desc ?? "");
@@ -688,8 +703,7 @@ export class Kernel {
       // 留空＝节点本尊直接执行（标准 §6）。
       Worker: entry?.worker || "",
       Side_Effect: entry?.side_effect ?? "write",
-      // carrier 离线只改名片，不把任务悄悄改成直跑。
-      Availability: entry?.context === "carrier" && !carrierUp ? "offline" : "online",
+      Availability: "online",
       Dispatchable: "Yes",
       Daemon_Version: DAEMON_VERSION,
       Receive_Mode: receiveMode,
@@ -715,14 +729,14 @@ export class Kernel {
     };
   }
 
-  // 串行对账名片。registeredCards / carrierAvailability 必须等全部写成功再换，
+  // 串行对账名片。registeredCards 必须等全部写成功再换，
   // 否则写失败会被当成“已经同步”，下一轮不再补。
-  async reconcileCards(carrierUp) {
+  async reconcileCards() {
     const rows = await this.bus.listRecords(this.T.agentCards);
     const wanted = new Map();
     for (const [skill, entry] of Object.entries(this.commands)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const fields = this.desiredCard(skill, entry, carrierUp);
+      const fields = this.desiredCard(skill, entry);
       if (wanted.has(fields.Cap_ID)) {
         log(`Cap_ID 重复，能力 ${skill} 不登记（${fields.Cap_ID} 已被占用）`);
         continue;
@@ -766,7 +780,6 @@ export class Kernel {
     const next = new Map();
     for (const [capId, fields] of wanted) next.set(capId, { ...fields });
     this.registeredCards = next;
-    this.carrierAvailability = !!carrierUp;
     this._syncedCommandsHash = this._commandsHash;
   }
 
@@ -1084,8 +1097,14 @@ export class Kernel {
       const res = await this.runCommand(skill, task, params, extraAnswers, resume);
       // 回执已经拿到。先落 outbox，再停心跳、再写表；写表失败不许落到下面的重试。
       // 这条路径不是 direct 账本，不写 session.json。用量仍随收口记到 Metadata。
+      const { criteria, criteriaRef } = await this.getAcceptanceCriteria(task);
+      const acceptance = buildAcceptance({
+        verify: null,
+        criteriaRef,
+        checks: judgeChecks(criteria, res?.checks),
+      });
       const box = this.beginOutbox(task, {
-        outcome: "succeeded", res, started, runId: openRunId, usage: res?.usage ?? null,
+        outcome: "succeeded", res, started, runId: openRunId, usage: res?.usage ?? null, acceptance,
       });
       await stopHeartbeat();
       try { await this.submitOutbox(task, box); }
@@ -1240,7 +1259,8 @@ export class Kernel {
       log("rejected (no capability) " + taskId);
       return false;
     }
-    const bad = controlKeysIn(await this.getParams(task));
+    const params = await this.getParams(task);
+    const bad = controlKeysIn(params);
     if (bad.length) {
       await this.writeMessage(task, "notice",
         `拒收：任务参数含执行控制键（${bad.join(", ")}）。要执行的命令、目录、语境、Agent 与权限只来自本机 commands.json；唯一例外是 timeout_sec。`);
@@ -1249,25 +1269,39 @@ export class Kernel {
       log("rejected (control keys) " + taskId);
       return false;
     }
-    // context 拼错（如 carier）若静默按 direct 直跑，就绕过了 carrier 离线拒收这条红线；
-    // mode 拼错同理会悄悄变成 agent。取值非法一律拒收，把配置错误喊出来。
+    // context 只认 direct。旧配置里的 carrier 语境已移除，若静默按 direct 直跑，
+    // 会让原本要在用户终端语境里跑的命令换了环境执行；拼错的 context、mode 同理。
+    // 取值非法一律拒收，把配置错误喊出来。
     const entryCtx = this.commands[skill]?.context;
     const entryMode = this.commands[skill]?.mode;
-    if ((entryCtx != null && !["direct", "carrier"].includes(entryCtx))
+    if ((entryCtx != null && entryCtx !== "direct")
       || (entryMode != null && !["agent", "json", "inbox"].includes(entryMode))) {
+      const carrierHint = entryCtx === "carrier"
+        ? "carrier 语境已在本版本移除，请把该能力改为 direct 或删除。" : "";
       await this.writeMessage(task, "notice",
-        `拒收：本机 commands.json 中能力 ${skill} 的 context/mode 取值非法（context=${String(entryCtx)}，mode=${String(entryMode)}）。为避免静默改走别的执行路径，任务不执行；请修正配置（lah doctor 可检查）后重派。`);
+        `${carrierHint}拒收：本机 commands.json 中能力 ${skill} 的 context/mode 取值非法（context=${String(entryCtx)}，mode=${String(entryMode)}）。为避免静默改走别的执行路径，任务不执行；请修正配置（lah doctor 可检查）后重派。`);
       if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
       log(`rejected (invalid commands.json context/mode) ${taskId}`);
       return false;
     }
-    if (this.commands[skill]?.context === "carrier" && !(await pingCarrier(this.cfg.carrierSocket))) {
+    const entryVerify = this.commands[skill]?.verify;
+    const hasVerify = typeof entryVerify === "string" ? entryVerify.trim().length > 0 : Boolean(entryVerify);
+    if (entryMode === "inbox" && hasVerify) {
       await this.writeMessage(task, "notice",
-        "拒收：本能力的执行语境为 carrier（用户终端代跑），但 carrier 当前离线；按规矩不静默改走直跑，请先在终端启动 hub-node host 后重派。");
+        `拒收：本机 commands.json 中能力 ${skill} 为 mode=inbox，不支持执行式验收（verify）。请移除 verify 或改用 direct 语境（lah doctor 可检查）后重派。`);
       if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
       this.clearRetry(taskId);
-      log("rejected (carrier offline) " + taskId);
+      log(`rejected (inbox with verify) ${taskId}`);
+      return false;
+    }
+    const criteriaRes = parseCriteria(params);
+    if (!criteriaRes.ok) {
+      await this.writeMessage(task, "notice",
+        `拒收：任务验收清单（acceptance）不合法：${criteriaRes.error}`);
+      if (!(await this.updateTaskState(task, { Status: "rejected" }, gate))) return false;
+      this.clearRetry(taskId);
+      log(`rejected (invalid acceptance criteria) ${taskId}: ${criteriaRes.error}`);
       return false;
     }
     return true;
@@ -1410,7 +1444,7 @@ export class Kernel {
         log(`defer resume ${f1(task, "Task_ID")}: direct command in flight`);
         return;
       }
-      // 暂停期间能力被撤、跳数被改、本地下限收紧或 carrier 离线，都要在续跑前再拦一次。
+      // 暂停期间能力被撤、跳数被改、本地下限收紧或配置被改坏，都要在续跑前再拦一次。
       if (!(await this.preflight(task))) return;
 
       if (entry.mode === "inbox") {
@@ -1514,10 +1548,8 @@ export class Kernel {
     await this.reclaimStale();
     const { changed } = this.loadCommands();
     if (this._commandsEverLoaded) {
-      const carrierUp = await pingCarrier(this.cfg.carrierSocket);
-      const needCards = !this._capsReady || changed || carrierUp !== this.carrierAvailability;
-      if (needCards) {
-        await this.reconcileCards(carrierUp);
+      if (!this._capsReady || changed) {
+        await this.reconcileCards();
         this._capsReady = true;
       }
     }

@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { acceptanceForTask, acceptanceIndex, acceptanceLine } from "../acceptance.mjs";
 import { f1 } from "../bus/feishu.mjs";
 import { appendQueueItem } from "../present-queue.mjs";
 import { messageText } from "./cards.mjs";
@@ -124,9 +125,12 @@ function runOf(runs, task) {
   return mine.length ? mine[mine.length - 1] : null;
 }
 
-export function presentBody({ taskId, title, status, statusMsg, target, message, outcome, error }) {
+export function presentBody({ taskId, title, status, statusMsg, target, message, outcome, error, acceptance }) {
+  // 验收失败与执行失败都是 failed。标题前缀只在 verify 本身未通过时加上，L2 自检失败不改状态、也不换这个标题。
+  const verifyFailed = status === "failed" && acceptance?.overall === "fail" && acceptance?.verify;
+  const label = STATUS_LABEL[status] || status;
   const lines = [
-    `【任务${STATUS_LABEL[status] || status}】`,
+    verifyFailed ? `【验收未通过】【任务${label}】` : `【任务${label}】`,
     `任务：${title || "-"}`,
     `编号：${taskId}`,
     `状态：${status}`,
@@ -135,6 +139,9 @@ export function presentBody({ taskId, title, status, statusMsg, target, message,
   if (statusMsg) lines.push(`状态消息：${statusMsg}`);
   if (message) lines.push("", clip(message, 2000));
   if (outcome) lines.push("", "执行结果：" + clip(outcome, 500));
+  const accLine = acceptanceLine(acceptance);
+  if (accLine) lines.push(accLine);
+  if (acceptance && !acceptance.verify) lines.push("未配置执行式验收");
   if (error) lines.push("错误：" + clip(error, 500));
   return lines.join("\n").slice(0, 3500);
 }
@@ -290,6 +297,10 @@ export class PresentService {
       const source = String(f1(item.task, "Source") ?? "");
       const artifactRef = msg ? String(f1(msg, "Artifact_Ref") ?? "") : "";
 
+      // parts 已在本轮读过，按回执消息取 DataPart，不再额外扫表。
+      const read = acceptanceForTask(messages, parts, item.taskId, f1(item.task, "Metadata"));
+      const acceptance = acceptanceIndex(read.acceptance, read.msgId);
+
       const text = presentBody({
         taskId: item.taskId,
         title,
@@ -299,6 +310,7 @@ export class PresentService {
         message: msgBody,
         outcome,
         error,
+        acceptance: read.acceptance,
       });
 
       const queueItem = {
@@ -316,6 +328,7 @@ export class PresentService {
         artifact_ref: artifactRef,
         outcome,
         error,
+        acceptance,
         text,
       };
 

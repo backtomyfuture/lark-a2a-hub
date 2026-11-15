@@ -14,51 +14,11 @@ import { isHubPublicKey, readHubPublicKey } from "./approval-sign.mjs";
 import { resolveScheduleTz } from "./hub/schedule.mjs";
 import { LocalScheduleService } from "./local-schedule.mjs";
 import { f1 } from "./bus/feishu.mjs";
-import { execViaCarrier, pingCarrier } from "./carrier.mjs";
 
 const ok = (msg) => console.log("  ✓ " + msg);
 const bad = (msg) => console.log("  ✗ " + msg);
 const info = (msg) => console.log("  · " + msg);
 const execFileAsync = promisify(execFile);
-
-// ping 只证明本机 unix socket 上有 carrier 在听。DESIGN §9 注记④：长驻进程的
-// 局域网裸 TCP 仍可能失败，所以默认报告必须把「socket 在线」和「目标可达」拆开。
-const SOCKET_ONLINE = "carrier socket 在线（局域网目标可达性未验证，可加 --probe <host:port> 探测）";
-
-function parseProbeTarget(raw) {
-  const s = String(raw ?? "").trim();
-  let host, portText;
-  const bracket = s.match(/^\[([^\]]+)\]:(\d+)$/);
-  if (bracket) {
-    host = bracket[1];
-    portText = bracket[2];
-  } else {
-    const i = s.lastIndexOf(":");
-    if (i <= 0 || i === s.length - 1) return null;
-    host = s.slice(0, i);
-    portText = s.slice(i + 1);
-  }
-  if (!host || host.length > 253 || host.startsWith("-")) return null;
-  if (!/^[A-Za-z0-9._:-]+$/.test(host)) return null;
-  if (!/^\d+$/.test(portText)) return null;
-  const port = Number(portText);
-  if (port < 1 || port > 65535) return null;
-  return { host, port };
-}
-
-// 经 carrier 做一次只读 TCP 握手。目标只作为已校验的 argv 传入，不进 shell 元字符。
-async function probeLan(socketPath, host, port) {
-  const script = 'const n=require("net");const h=process.argv[1];const p=Number(process.argv[2]);const s=n.createConnection({host:h,port:p});s.setTimeout(5000,()=>{s.destroy();process.exit(2)});s.on("error",()=>process.exit(1));s.on("connect",()=>{s.end();process.exit(0)})';
-  const command = `node -e '${script}' -- ${host} ${port}`;
-  try {
-    const r = await execViaCarrier(socketPath, { command, timeoutSec: 8 });
-    if (r.code === 0) return { ok: true, detail: "" };
-    const extra = (r.stderr || r.stdout || "").trim().replace(/\s+/g, " ").slice(0, 160);
-    return { ok: false, detail: `退出码 ${r.code ?? "null"}${extra ? " " + extra : ""}` };
-  } catch (e) {
-    return { ok: false, detail: e.message };
-  }
-}
 
 function richPath() {
   // 优先尊重外部传入的 PATH（允许测试通过 PATH 模拟缺少 lark-cli）；若未设置则兜底常用路径
@@ -161,10 +121,14 @@ function readAgyPermissionsAllow() {
 }
 
 const COMMAND_MODES = new Set(["agent", "json", "inbox"]);
-const COMMAND_CONTEXTS = new Set(["direct", "carrier"]);
+const COMMAND_CONTEXTS = new Set(["direct"]);
+
+function hasVerify(entry) {
+  return typeof entry?.verify === "string" && entry.verify.trim().length > 0;
+}
 
 // commands.json 条目的字段校验。内核对这几类错误都不报错：未知 mode 按 agent 跑、
-// 未知 context 按 direct 直跑（拼错 carrier 就绕过了离线纪律）、非法 timeout_sec 回退 600、
+// 未知 context 按 direct 直跑、非法 timeout_sec 回退 600、
 // 重复 Cap_ID 后一条覆盖前一条名片——运行期全是静默降级，只能在自检里拦下（失败要响）。
 // Cap_ID 推导与内核 capIdFor 同口径（config.mjs 的 capIdOf）。
 // 传进来的是归一后的平表：Worker 的能力键形如 <worker>/<skill>。
@@ -193,7 +157,8 @@ function auditCommandsShape(cmds, capPrefix) {
       }
     }
     if (entry.context != null && !COMMAND_CONTEXTS.has(entry.context)) {
-      bad(`能力 ${name}：context=${JSON.stringify(entry.context)} 非法（只认 direct / carrier；认领时内核会拒收该能力的任务，不会静默直跑）`);
+      const hint = entry.context === "carrier" ? "carrier 语境已在本版本移除，请把该能力改为 direct 或删除；" : "";
+      bad(`能力 ${name}：context=${JSON.stringify(entry.context)} 非法（${hint}只认 direct；认领时内核会拒收该能力的任务，不会静默直跑）`);
       problems++;
     }
     if (entry.timeout_sec != null) {
@@ -201,6 +166,24 @@ function auditCommandsShape(cmds, capPrefix) {
       const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() ? Number(v) : NaN);
       if (!Number.isFinite(n) || n <= 0) {
         bad(`能力 ${name}：timeout_sec=${JSON.stringify(v)} 非法（须为正数秒；内核会静默回退 600）`);
+        problems++;
+      }
+    }
+    if (entry.verify != null) {
+      if (typeof entry.verify !== "string" || !entry.verify.trim()) {
+        bad(`能力 ${name}：verify 必须是非空字符串`);
+        problems++;
+      }
+      if (mode === "inbox") {
+        bad(`能力 ${name}：mode=inbox 不支持执行式验收（verify），认领时内核会拒收`);
+        problems++;
+      }
+    }
+    if (entry.verify_timeout_sec != null) {
+      const v = entry.verify_timeout_sec;
+      const n = typeof v === "number" ? v : (typeof v === "string" && v.trim() ? Number(v) : NaN);
+      if (!Number.isFinite(n) || n <= 0) {
+        bad(`能力 ${name}：verify_timeout_sec=${JSON.stringify(v)} 非法（须为正数秒；内核会夹紧到 1–1800 并默认 120）`);
         problems++;
       }
     }
@@ -505,12 +488,13 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
     const rawName = wObj?.name != null ? String(wObj.name).trim() : "";
     const namePart = rawName ? `（${rawName}）` : "";
     const capId = capIdOf("agent", agentEntry, capPrefix);
+    const agentVerify = hasVerify(agentEntry) ? "（已配 verify）" : "";
 
     // 专长技能：该 Worker 名下除 agent 之外的技能
     const specials = [];
     for (const entry of Object.values(flat)) {
       if (entry?.worker === wName && entry.skill !== "agent") {
-        specials.push(entry.skill);
+        specials.push(hasVerify(entry) ? `${entry.skill}（已配 verify）` : entry.skill);
       }
     }
 
@@ -518,7 +502,7 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
       ? `；专长技能 ${specials.join(", ")}`
       : "；无专长技能";
 
-    layout.push(`Worker ${wName}${namePart}：通用执行 ${capId}${skillsPart}`);
+    layout.push(`Worker ${wName}${namePart}：通用执行 ${capId}${agentVerify}${skillsPart}`);
   }
 
   // 3. 节点本尊的 agent 条目（flat 里键为 agent、没有 worker 的那项，独立 Agent 节点就是这种）
@@ -526,14 +510,15 @@ export function describeCommands(cmds, flat, capPrefix, kind) {
   if (selfAgent && typeof selfAgent === "object" && !selfAgent.worker) {
     const capId = capIdOf("agent", selfAgent, capPrefix);
     const mode = selfAgent.mode ?? "agent";
-    layout.push(`本尊即 Worker：agent（${capId}，mode ${mode}）`);
+    const verifyMark = hasVerify(selfAgent) ? "，已配 verify" : "";
+    layout.push(`本尊即 Worker：agent（${capId}，mode ${mode}${verifyMark}）`);
   }
 
   // 4. 其余没有 worker 的本尊条目合成一行：节点本尊技能（非 Worker）：k1, k2
   const selfSkills = [];
   for (const [key, entry] of Object.entries(flat)) {
     if ((!entry || typeof entry !== "object" || !entry.worker) && key !== "agent") {
-      selfSkills.push(key);
+      selfSkills.push(hasVerify(entry) ? `${key}（已配 verify）` : key);
     }
   }
   if (selfSkills.length > 0) {
@@ -644,8 +629,6 @@ function roleFrom(argv, opts, raw) {
 
 export async function doctor(configDir, appDir, opts = {}) {
   let problems = 0;
-  const probeProvided = opts.probe != null;
-  const probe = probeProvided ? parseProbeTarget(opts.probe) : null;
 
   // 读取配置以辅助判断角色（若 CLI 或 opts 未显式给出）
   const nodeJsonPath = path.join(configDir, "node.json");
@@ -669,10 +652,6 @@ export async function doctor(configDir, appDir, opts = {}) {
   console.log(`role: ${role}`);
   console.log(`kind: ${kind}`);
   console.log(`config dir: ${configDir}`);
-  if (probeProvided && !probe) {
-    bad(`--probe 需要 <host:port>（例如 192.168.1.10:22），收到：${opts.probe === "" ? "(空)" : opts.probe}`);
-    problems++;
-  }
 
   // 1. Node 版本（package.json engines: >=24）
   const major = Number(process.versions.node.split(".")[0]);
@@ -753,7 +732,7 @@ export async function doctor(configDir, appDir, opts = {}) {
         info("commands.json 为空：本节点不登记任何能力，不会认领任务");
       }
       const shapeProblems = layerProblems + auditCommandsShape(flat, capPrefix);
-      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec 取值合法，cap_id 无重复）");
+      if (!shapeProblems && names.length) ok("commands.json 字段校验通过（Worker 引用、mode / context / timeout_sec / verify 取值合法，cap_id 无重复）");
       problems += shapeProblems;
       // 模板只查一遍：节点本尊的条目加上每个 Worker 自己的启动模板。
       const templates = {};
@@ -936,55 +915,6 @@ export async function doctor(configDir, appDir, opts = {}) {
     } else {
       info(`唤醒方式：轮询（poll）${cfg.pollSec}s（事件订阅已关）`);
     }
-    // carrier 语境（设计 §9）：有 context=carrier 的能力，或显式 --probe 时才检查。
-    // socket 探活成功只说明本机 carrier 在听，不宣称局域网可达。
-    if (role !== "hub") {
-      try {
-        const cmds = normalizeCommands(JSON.parse(fs.readFileSync(path.join(configDir, "commands.json"), "utf8")));
-        const carrierCaps = Object.entries(cmds).filter(([, e]) => e?.context === "carrier").map(([k]) => k);
-        if (carrierCaps.length || probe) {
-          const online = await pingCarrier(cfg.carrierSocket);
-          if (!online) {
-            const caps = carrierCaps.length ? `能力 ${carrierCaps.join(", ")} 将标离线；` : "";
-            const via = probe ? `无法探测 ${probe.host}:${probe.port}；` : "";
-            bad(`carrier 离线：${caps}${via}请在终端里跑 lah host`);
-            problems++;
-          } else if (!probe) {
-            ok(SOCKET_ONLINE);
-            if (carrierCaps.length) info(`carrier 能力：${carrierCaps.join(", ")}`);
-          } else {
-            ok("carrier socket 在线，经其执行只读 TCP 探测");
-            if (carrierCaps.length) info(`carrier 能力：${carrierCaps.join(", ")}`);
-            const reached = await probeLan(cfg.carrierSocket, probe.host, probe.port);
-            const target = `${probe.host}:${probe.port}`;
-            if (reached.ok) ok(`局域网目标 ${target} 可达（经 carrier 只读 TCP 探测）`);
-            else {
-              bad(`局域网目标 ${target} 不可达（经 carrier 只读 TCP 探测）${reached.detail ? "：" + reached.detail : ""}`);
-              problems++;
-            }
-          }
-        }
-      } catch { /* commands.json 已在前面报过 */ }
-    } else if (probe) {
-      const online = await pingCarrier(cfg.carrierSocket);
-      if (!online) {
-        bad(`carrier 离线：无法探测 ${probe.host}:${probe.port}；请在终端里跑 lah host`);
-        problems++;
-      } else {
-        ok("carrier socket 在线，经其执行只读 TCP 探测");
-        const reached = await probeLan(cfg.carrierSocket, probe.host, probe.port);
-        const target = `${probe.host}:${probe.port}`;
-        if (reached.ok) ok(`局域网目标 ${target} 可达（经 carrier 只读 TCP 探测）`);
-        else {
-          bad(`局域网目标 ${target} 不可达（经 carrier 只读 TCP 探测）${reached.detail ? "：" + reached.detail : ""}`);
-          problems++;
-        }
-      }
-    }
-  }
-  if (probe && !cfg) {
-    bad(`无法探测 ${probe.host}:${probe.port}：配置未加载，不知道 carrier socket 路径`);
-    problems++;
   }
 
   // 7. 自启状态（只报告，不动手）

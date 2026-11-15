@@ -1,10 +1,19 @@
 // direct 在途命令编排。方法挂到 Kernel.prototype，this 仍是内核实例。
 // MAX_RETRIES 与 kernel.mjs 同值。不从 kernel.mjs 导入，避免循环依赖。
 import fs from "node:fs";
+import {
+  VERIFY_MAX_LAUNCHES,
+  buildAcceptance,
+  clampVerifyTimeout,
+  judgeChecks,
+  verifyEvidenceTail,
+  verifyVerdict,
+} from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
-import { KILL_GRACE_MS } from "./carrier.mjs";
+import { KILL_GRACE_MS } from "./proc.mjs";
 import {
   beginLaunchEntry,
+  beginVerifyLaunch,
   classifyEntry,
   cleanupRunFiles,
   readBoundedFile,
@@ -13,6 +22,7 @@ import {
   readProcStartMs,
   saveEntry,
   signalGroup,
+  spawnVerifyWrapped,
   spawnWrapped,
 } from "./direct-ledger.mjs";
 import { log, nowStr } from "./kernel-util.mjs";
@@ -22,7 +32,7 @@ const MAX_RETRIES = 2;
 
 export const directMethods = {
 
-  // 未写 context 时直跑就是 direct。inbox 与 carrier 不进账本，避免改变它们的同步语义。
+  // 未写 context 时直跑就是 direct。inbox 不进账本，避免改变它们的同步语义。
   usesDirectLedger(entry) {
     const ctx = entry?.context ?? "direct";
     const mode = entry?.mode ?? "agent";
@@ -86,20 +96,24 @@ export const directMethods = {
   },
 
   flightFrom(task, entry) {
+    const verifying = entry.state === "verifying" && !!entry.verify && typeof entry.verify === "object";
+    const v = verifying ? entry.verify : null;
     return {
       taskId: f1(task, "Task_ID"),
       recordId: task.record_id,
+      verifying,
+      timedOut: verifying ? Boolean(v.timed_out) : false,
       started: entry.started_at || nowStr(),
-      startedMs: Number(entry.started_ms) || Date.now(),
-      timeoutSec: Number(entry.timeout_sec) || 0,
+      startedMs: Number(verifying ? v.started_ms : entry.started_ms) || Date.now(),
+      timeoutSec: Number(verifying ? v.timeout_sec : entry.timeout_sec) || 0,
       runId: entry.run_id || "",
       mode: entry.mode || "agent",
-      exitPath: entry.exit_path || "",
-      stdoutPath: entry.stdout_path || "",
-      stderrPath: entry.stderr_path || "",
-      pid: entry.pid ?? null,
-      pgid: entry.pgid ?? entry.pid ?? null,
-      stopAt: Number(entry.stop_at_ms) || 0,
+      exitPath: (verifying ? v.exit_path : entry.exit_path) || "",
+      stdoutPath: (verifying ? v.stdout_path : entry.stdout_path) || "",
+      stderrPath: (verifying ? v.stderr_path : entry.stderr_path) || "",
+      pid: (verifying ? v.pid : entry.pid) ?? null,
+      pgid: (verifying ? (v.pgid ?? v.pid) : (entry.pgid ?? entry.pid)) ?? null,
+      stopAt: Number(verifying ? v.stop_at_ms : entry.stop_at_ms) || 0,
       uncertain: false,
       broken: false,
       localExited: false,
@@ -194,13 +208,14 @@ export const directMethods = {
 
   applyClass(flight, entry, cls) {
     if (!cls?.rebound) return entry;
-    entry.pid = cls.pid;
-    entry.pgid = cls.pgid;
-    entry.proc_start_ms = cls.procStartMs ?? null;
-    entry.state = "running";
+    const target = entry.state === "verifying" && entry.verify ? entry.verify : entry;
+    target.pid = cls.pid;
+    target.pgid = cls.pgid;
+    target.proc_start_ms = cls.procStartMs ?? null;
+    if (entry.state !== "verifying") entry.state = "running";
     this.rememberEntry(entry);
-    flight.pid = entry.pid;
-    flight.pgid = entry.pgid;
+    flight.pid = target.pid;
+    flight.pgid = target.pgid;
     return entry;
   },
 
@@ -277,6 +292,165 @@ export const directMethods = {
     }
   },
 
+  async settleVerify(task, flight, entry, { verdict, exit_code = null, duration_ms = 0, stdout = "", stderr = "" }) {
+    await this.stopFlightHeartbeat(flight);
+    const taskId = flight?.taskId || f1(task, "Task_ID");
+    if (this.readOutbox(taskId)) {
+      this.clearFlight(flight);
+      return;
+    }
+    const current = await this.taskForWrite(task, ["working"], true);
+    if (!current) {
+      this.clearFlight(flight);
+      return;
+    }
+    const res = entry?.receipt ?? { summary: "", artifact: "" };
+    const { criteria, criteriaRef } = await this.getAcceptanceCriteria(current);
+    const checks = judgeChecks(criteria, res.checks);
+    const acceptance = buildAcceptance({
+      verify: { verdict, exit_code, duration_ms, evidence: "captured" },
+      criteriaRef,
+      checks,
+    });
+    const outcome = verdict === "pass" ? "succeeded" : "verify_failed";
+    const verifyEvidence = verdict === "pass" ? "" : verifyEvidenceTail(stdout, stderr);
+    const box = this.beginOutbox(current, {
+      outcome,
+      res,
+      started: flight?.started || entry?.started_at || nowStr(),
+      runId: flight?.runId || entry?.run_id || "",
+      usage: res.usage ?? null,
+      acceptance,
+      verifyEvidence,
+    });
+    try { await this.submitOutbox(current, box); }
+    catch (err) { log(`verify submit failed, will reconcile ${taskId}: ${err.message}`); }
+    if (!this.readOutbox(taskId)) {
+      const latest = entry || (flight ? this.loadFlightEntry(flight) : null);
+      if (latest && !latest.broken) cleanupRunFiles(this.cfg.configDir, latest);
+    }
+    this.clearFlight(flight);
+  },
+
+  async launchVerify(task, entry, { flight = this._directFlight, capEntry = null, verifyCmd = "" } = {}) {
+    const taskId = f1(task, "Task_ID") || entry.task_id;
+    const skill = this.capKeyOf(task);
+    const resolvedCap = capEntry ?? (skill ? (this.commands[skill] ?? {}) : {});
+    const cmd = verifyCmd || (typeof resolvedCap.verify === "string" && resolvedCap.verify.trim() ? resolvedCap.verify : "");
+    const prevLaunches = Number(entry.verify?.launches) || 0;
+    if (prevLaunches >= VERIFY_MAX_LAUNCHES) {
+      await this.settleVerify(task, flight, entry, {
+        verdict: "error", exit_code: null, duration_ms: 0, stdout: "",
+        stderr: `verify 超过最大拉起次数（${VERIFY_MAX_LAUNCHES}）`,
+      });
+      return;
+    }
+    if (!cmd) {
+      await this.settleVerify(task, flight, entry, {
+        verdict: "error", exit_code: null, duration_ms: 0, stdout: "",
+        stderr: "verify 命令未配置或不可用",
+      });
+      return;
+    }
+    const timeoutSec = clampVerifyTimeout(resolvedCap.verify_timeout_sec);
+    beginVerifyLaunch({
+      configDir: this.cfg.configDir,
+      entry,
+      receipt: entry.receipt ?? { summary: "", artifact: "" },
+      timeoutSec,
+    });
+    const cwd = resolvedCap.cwd || this.cfg.configDir;
+    let child;
+    try {
+      child = spawnVerifyWrapped(this.cfg.configDir, entry, cmd, cwd);
+    } catch (e) {
+      await this.settleVerify(task, flight, entry, {
+        verdict: "error", exit_code: null, duration_ms: 0, stdout: "",
+        stderr: String(e?.message ?? e),
+      });
+      return;
+    }
+    if (!child?.pid) {
+      await this.settleVerify(task, flight, entry, {
+        verdict: "error", exit_code: null, duration_ms: 0, stdout: "",
+        stderr: "verify spawn 没有返回 pid",
+      });
+      return;
+    }
+    entry.verify.pid = child.pid;
+    entry.verify.pgid = child.pid;
+    entry.verify.proc_start_ms = readProcStartMs(child.pid);
+    this.rememberEntry(entry);
+    if (flight) {
+      await this.stopFlightHeartbeat(flight);
+      if (flight.timeoutTimer) clearTimeout(flight.timeoutTimer);
+      flight.timeoutTimer = null;
+    }
+    const nextFlight = this.flightFrom(task, entry);
+    nextFlight.child = child;
+    this._directFlight = nextFlight;
+    child.on("error", (err) => {
+      nextFlight.localExited = true;
+      nextFlight.localError = err;
+      log(`verify child error ${taskId}: ${err?.message ?? err}`);
+      this.nudge();
+    });
+    child.on("exit", () => {
+      nextFlight.localExited = true;
+      this.nudge();
+    });
+    child.unref();
+    this.startFlightHeartbeat(nextFlight);
+    this.armFlightTimer(nextFlight);
+    log(`verify started ${taskId} pid=${child.pid} launch=${entry.verify.launches}`);
+  },
+
+  async finishVerifyFromOutput(task, flight, entry = null) {
+    const loaded = entry || this.loadFlightEntry(flight);
+    const code = readExitCode(flight.exitPath);
+    const stdout = readBoundedFile(flight.stdoutPath);
+    const stderr = readBoundedFile(flight.stderrPath);
+    const timedOut = Boolean(loaded?.verify?.timed_out || flight.timedOut);
+    const verdict = verifyVerdict({ code, timedOut, error: !timedOut && code == null });
+    const durationMs = Math.max(0, Date.now() - (Number(loaded?.verify?.started_ms) || flight.startedMs || Date.now()));
+    await this.settleVerify(task, flight, loaded, {
+      verdict,
+      exit_code: code,
+      duration_ms: durationMs,
+      stdout,
+      stderr,
+    });
+  },
+
+  async relaunchOrFailVerify(task, flight, entry) {
+    const current = await this.taskForWrite(task, ["working"], true);
+    if (!current) {
+      await this.stopFlightHeartbeat(flight);
+      this.clearFlight(flight);
+      return;
+    }
+    if (entry?.verify?.timed_out || flight?.timedOut) {
+      const durationMs = Math.max(0, Date.now() - (Number(entry?.verify?.started_ms) || flight?.startedMs || Date.now()));
+      await this.settleVerify(current, flight, entry, {
+        verdict: "timeout",
+        exit_code: null,
+        duration_ms: durationMs,
+        stdout: readBoundedFile(flight?.stdoutPath || entry?.verify?.stdout_path || ""),
+        stderr: readBoundedFile(flight?.stderrPath || entry?.verify?.stderr_path || ""),
+      });
+      return;
+    }
+    if (!entry?.verify || typeof entry.verify !== "object") {
+      await this.settleVerify(current, flight, entry, {
+        verdict: "error", exit_code: null, duration_ms: 0, stdout: "",
+        stderr: "verify 账本状态缺失",
+      });
+      return;
+    }
+    log(`relaunch verify ${f1(current, "Task_ID")} (prev launches=${entry.verify.launches || 0})`);
+    await this.launchVerify(current, entry, { flight });
+  },
+
   async finishFlightFromOutput(task, flight) {
     await this.stopFlightHeartbeat(flight);
     const taskId = flight.taskId;
@@ -299,9 +473,32 @@ export const directMethods = {
     try {
       const res = this.interpretCommandResult(flight.mode, { code, stdout, stderr });
       this.persistSession(taskId, res.session);
+      const skill = this.capKeyOf(current);
+      const capEntry = this.commands[skill] ?? {};
+      const verifyCmd = typeof capEntry.verify === "string" && capEntry.verify.trim() ? capEntry.verify : "";
+      if (verifyCmd) {
+        const ledger = this.loadFlightEntry(flight) || {
+          task_id: taskId,
+          attempt: Number(f1(current, "Retry_Count")) || 0,
+          started_at: flight.started,
+          started_ms: flight.startedMs,
+          timeout_sec: flight.timeoutSec,
+          stdout_path: flight.stdoutPath,
+          stderr_path: flight.stderrPath,
+          exit_path: flight.exitPath,
+          run_id: flight.runId,
+          mode: flight.mode,
+        };
+        ledger.receipt = res;
+        await this.launchVerify(current, ledger, { flight, capEntry, verifyCmd });
+        return;
+      }
+      const { criteria, criteriaRef } = await this.getAcceptanceCriteria(current);
+      const checks = judgeChecks(criteria, res.checks);
+      const acceptance = buildAcceptance({ verify: null, criteriaRef, checks });
       const box = this.beginOutbox(current, {
         outcome: "succeeded", res, started: flight.started, runId: flight.runId,
-        usage: res.usage ?? null,
+        usage: res.usage ?? null, acceptance,
       });
       try { await this.submitOutbox(current, box); }
       catch (err) { log(`submit failed, will reconcile ${taskId}: ${err.message}`); }
@@ -381,16 +578,18 @@ export const directMethods = {
       await this.terminateUncertain(task, flight);
       return;
     }
+    const verifying = entry.state === "verifying" && !!entry.verify && typeof entry.verify === "object";
+    const target = verifying ? entry.verify : entry;
     const cls = classifyEntry(entry);
     this.applyClass(flight, entry, cls);
     if (cls.kind === "dead" || cls.kind === "fail") return;
     if (cls.kind === "exited") return;
     // 启动时间戳对不上时 classify 会改去找包装进程。仍不确定就不发信号，免得打死复用了 pid 的无关进程。
-    if (cls.kind === "uncertain" && entry.proc_start_ms != null && cls.rebound !== true) {
-      const identLive = readProcStartMs(entry.pid);
-      if (identLive != null && Math.abs(identLive - Number(entry.proc_start_ms)) > 5000) {
-        entry.disposition = "fail";
-        entry.fail_error = "pid 已复用，原进程不在，且没有退出码文件";
+    if (cls.kind === "uncertain" && target.proc_start_ms != null && cls.rebound !== true) {
+      const identLive = readProcStartMs(target.pid);
+      if (identLive != null && Math.abs(identLive - Number(target.proc_start_ms)) > 5000) {
+        target.disposition = "fail";
+        target.fail_error = "pid 已复用，原进程不在，且没有退出码文件";
         this.rememberEntry(entry);
         return;
       }
@@ -398,30 +597,35 @@ export const directMethods = {
     // 守护重启后接管的进程组，pid 可能已被系统复用给无关进程。没有本进程的 child 句柄、
     // 启动时间戳又对不上（或根本没记）时一律不发信号，宁可让超时收口去失败，也不误杀别人的进程。
     let canSignal = !!flight.child || cls.rebound === true;
-    if (!canSignal && entry.proc_start_ms != null) {
-      const liveStart = readProcStartMs(entry.pid);
-      canSignal = liveStart != null && Math.abs(liveStart - Number(entry.proc_start_ms)) <= 5000;
+    if (!canSignal && target.proc_start_ms != null) {
+      const liveStart = readProcStartMs(target.pid);
+      canSignal = liveStart != null && Math.abs(liveStart - Number(target.proc_start_ms)) <= 5000;
     }
     if (!canSignal) {
       if (!flight.signalSkipLogged) {
         flight.signalSkipLogged = true;
-        log(`direct timeout ${flight.taskId}: 无法确认进程身份，不向进程组发信号`);
+        log(`${verifying ? "verify" : "direct"} timeout ${flight.taskId}: 无法确认进程身份，不向进程组发信号`);
       }
     }
     const now = Date.now();
     if (!flight.stopAt) {
       const signaled = canSignal ? signalGroup(flight.pgid || flight.pid, "SIGTERM") : false;
       flight.stopAt = now;
-      entry.stop_at_ms = now;
-      entry.state = "running";
+      target.stop_at_ms = now;
+      if (verifying) {
+        target.timed_out = true;
+        flight.timedOut = true;
+      } else {
+        entry.state = "running";
+      }
       this.rememberEntry(entry);
       this.armFlightTimer(flight);
-      log(`direct timeout SIGTERM ${flight.taskId} signaled=${signaled}`);
+      log(`${verifying ? "verify" : "direct"} timeout SIGTERM ${flight.taskId} signaled=${signaled}`);
       return;
     }
     if (now - flight.stopAt >= KILL_GRACE_MS) {
       if (canSignal) signalGroup(flight.pgid || flight.pid, "SIGKILL");
-      log("direct timeout SIGKILL " + flight.taskId + (canSignal ? "" : "（未发信号）"));
+      log(`${verifying ? "verify" : "direct"} timeout SIGKILL ` + flight.taskId + (canSignal ? "" : "（未发信号）"));
     }
   },
 
@@ -445,13 +649,19 @@ export const directMethods = {
       else await this.touchHeartbeat(task);
       return;
     }
+    const verifying = entry.state === "verifying";
     const cls = classifyEntry(entry);
     this.applyClass(flight, entry, cls);
     if (cls.kind === "exited") {
-      await this.finishFlightFromOutput(task, flight);
+      if (verifying) await this.finishVerifyFromOutput(task, flight, entry);
+      else await this.finishFlightFromOutput(task, flight);
       return;
     }
     if (cls.kind === "dead" || cls.kind === "fail") {
+      if (verifying) {
+        await this.relaunchOrFailVerify(task, flight, entry);
+        return;
+      }
       const message = entry.fail_error || "在途进程已结束且没有退出码文件，按执行失败处理";
       await this.failExecution(task, flight, new Error(message));
       return;
@@ -463,14 +673,30 @@ export const directMethods = {
       const after = again && !again.broken ? classifyEntry(again) : { kind: "uncertain" };
       if (again && !again.broken) this.applyClass(flight, again, after);
       if (after.kind === "exited") {
-        await this.finishFlightFromOutput(task, flight);
+        if (verifying) await this.finishVerifyFromOutput(task, flight, again);
+        else await this.finishFlightFromOutput(task, flight);
         return;
       }
       if (after.kind === "dead" || after.kind === "fail") {
+        if (verifying) {
+          await this.relaunchOrFailVerify(task, flight, again);
+          return;
+        }
         await this.failExecution(task, flight, new Error(again?.fail_error || "在途命令超时后进程已结束且没有退出码文件，按执行失败处理"));
         return;
       }
       if (flight.stopAt && Date.now() - flight.stopAt >= KILL_GRACE_MS && after.kind === "uncertain") {
+        if (verifying) {
+          const durationMs = Math.max(0, Date.now() - (Number(again?.verify?.started_ms) || flight.startedMs || Date.now()));
+          await this.settleVerify(task, flight, again, {
+            verdict: (again?.verify?.timed_out || flight.timedOut) ? "timeout" : "error",
+            exit_code: null,
+            duration_ms: durationMs,
+            stdout: readBoundedFile(flight.stdoutPath),
+            stderr: readBoundedFile(flight.stderrPath),
+          });
+          return;
+        }
         await this.terminateUncertain(task, flight);
       }
       return;
@@ -511,16 +737,23 @@ export const directMethods = {
       log("ledger broken, hold without rerun " + taskId);
       return;
     }
+    const verifying = entry.state === "verifying";
     const flight = this.flightFrom(task, entry);
     const cls = classifyEntry(entry);
     this.applyClass(flight, entry, cls);
     this._directFlight = flight;
     if (cls.kind === "exited") {
-      log("adopt exited ledger " + taskId);
-      await this.finishFlightFromOutput(task, flight);
+      log(`adopt exited ${verifying ? "verify " : ""}ledger ` + taskId);
+      if (verifying) await this.finishVerifyFromOutput(task, flight, entry);
+      else await this.finishFlightFromOutput(task, flight);
       return;
     }
     if (cls.kind === "dead" || cls.kind === "fail") {
+      if (verifying) {
+        log("adopt dead verify ledger " + taskId);
+        await this.relaunchOrFailVerify(task, flight, entry);
+        return;
+      }
       log("adopt dead ledger " + taskId);
       await this.failExecution(task, flight, new Error(entry.fail_error || "在途进程已结束且没有退出码文件，按执行失败处理"));
       return;
@@ -529,7 +762,7 @@ export const directMethods = {
     await this.touchHeartbeat(task);
     this.startFlightHeartbeat(flight);
     this.armFlightTimer(flight);
-    log(`adopt live ledger ${taskId} pid=${flight.pid || "none"} uncertain=${flight.uncertain}`);
+    log(`adopt live ${verifying ? "verify " : ""}ledger ${taskId} pid=${flight.pid || "none"} uncertain=${flight.uncertain}`);
     if (this.timeoutDue(flight)) await this.pokeFlight(flight);
   },
 

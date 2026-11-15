@@ -101,7 +101,7 @@
 
 ## 会话续接（可选）
 
-只用于 `context=direct` 的 json / agent。carrier 与 inbox 不读 `resume_command`。
+只用于 `context=direct` 的 json / agent。inbox 不读 `resume_command`。
 
 同一任务从 input-required 收到 answer 再执行时，如果本机 `runs/<Task_ID>/session.json` 里已有执行者上次自报的 session id，并且该能力写了 `resume_command`，节点用它替换 `command`。第一次执行、失败重试、心跳回收后的重跑仍走原来的 `command`。session id 不进总线。
 

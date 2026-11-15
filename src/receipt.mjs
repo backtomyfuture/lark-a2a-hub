@@ -1,7 +1,8 @@
 // 回执解析与命令模板占位符。从内核拆出后行为不变；默认日志函数来自 kernel-util，避免和状态机循环引用。
+import { normalizeJsonChecks, parseCheckLine } from "./acceptance.mjs";
 import { log } from "./kernel-util.mjs";
 
-const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "need_input", "need_auth", "usage", "session", "later"]);
+const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "need_input", "need_auth", "usage", "session", "later", "checks"]);
 const USAGE_CAP = 1e12;
 export const SESSION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const USAGE_NUMBER = /^(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
@@ -326,6 +327,9 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   let sessionBody;
   let laterCount = 0;
   let laterLine;
+  let checkCount = 0;
+  const checks = {};
+  const invalidChecks = [];
   const keep = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -344,19 +348,29 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
         laterLine = line;
         continue;
       }
+      // 围栏外整行 CHECK 同样从摘要里拿掉；合法按 id 取最后一条，不合法只记日志不废整份回执。
+      const check = parseCheckLine(line);
+      if (check) {
+        checkCount += 1;
+        if (check.invalid) invalidChecks.push(check.raw);
+        else checks[check.id] = { verdict: check.verdict, evidence: check.evidence };
+        continue;
+      }
     }
     keep.push(line);
   }
   const usage = usageBody === undefined ? null : parseUsageValue(usageBody, logFn, true);
   const session = sessionBody === undefined ? null : parseSessionValue(sessionBody, logFn);
   if (laterCount > 1) logFn("later 多条，只取最后一条");
-  // 提问和无效回执都不是完成。预约留到完成再写，这里只记一笔，不把 later 挂到错误上。
+  // 提问和无效回执都不是完成。预约与自检留到完成再写，这里只记一笔，不挂到错误上。
   if (ask != null) {
     if (laterCount) logFn("later 在 input-required 上忽略");
+    if (checkCount) logFn("checks 在 input-required 上忽略");
     throw stampSide(new NeedInput(ask), usage, session);
   }
   if (authLang) {
     if (laterCount) logFn("later 在 auth-required 上忽略");
+    if (checkCount) logFn("checks 在 auth-required 上忽略");
     if (!authBody) {
       throw stampSide(new InvalidReceipt("agent-auth 缺少审批说明", text.slice(0, 500)), usage, session);
     }
@@ -366,12 +380,16 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   // 进程已经成功退出。没有摘要是回执无效，不是执行失败，不能按重试再跑一遍。
   if (!summary) {
     if (laterCount) logFn("later 在 failed 上忽略");
+    if (checkCount) logFn("checks 在 failed 上忽略");
     throw stampSide(new InvalidReceipt("agent produced no output", text.slice(0, 500)), usage, session);
+  }
+  for (const raw of invalidChecks) {
+    logFn(`checks 忽略非法行：${raw}`);
   }
   // 未截断时仍从开头留 4000，和原来的回执一致。截断后正文在尾部，从末尾留 4000，避免结论被日志挤掉。
   if (summary.length > 4000) summary = cut > 0 ? summary.slice(-4000) : summary.slice(0, 4000);
   const later = laterLine === undefined ? null : parseLaterLine(laterLine, logFn, now);
-  const r = { summary, artifact, usage, session, later };
+  const r = { summary, artifact, usage, session, later, checks };
   if (artName) r.artifact_name = artName;
   return r;
 }
@@ -391,25 +409,30 @@ export function parseJsonReceipt(res, logFn = log, now = Date.now()) {
     ? parseSessionValue(res.session, logFn)
     : null;
   const hasLater = Object.prototype.hasOwnProperty.call(res, "later");
+  const hasChecks = Object.prototype.hasOwnProperty.call(res, "checks") && res.checks != null;
   if (res.need_input && res.need_auth) {
     throw stampSide(new InvalidReceipt("need_input 与 need_auth 不能同时存在", ""), usage, session);
   }
   if (res.need_input) {
     if (hasLater) logFn("later 在 input-required 上忽略");
+    if (hasChecks) logFn("checks 在 input-required 上忽略");
     throw stampSide(new NeedInput(String(res.need_input)), usage, session);
   }
   const authText = res.need_auth == null ? "" : String(res.need_auth).trim();
   if (authText) {
     if (hasLater) logFn("later 在 auth-required 上忽略");
+    if (hasChecks) logFn("checks 在 auth-required 上忽略");
     throw stampSide(new NeedAuth(authText), usage, session);
   }
   const later = hasLater ? parseLaterValue(res.later, logFn, now) : null;
+  const checks = hasChecks ? normalizeJsonChecks(res.checks, logFn) : {};
   const r = {
     summary: String(res.summary ?? "").slice(0, 4000),
     artifact: String(res.artifact ?? ""),
     usage,
     session,
     later,
+    checks,
   };
   if (res.artifact_name) r.artifact_name = String(res.artifact_name);
   return r;

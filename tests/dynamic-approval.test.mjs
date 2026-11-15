@@ -4,9 +4,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadOrCreateHubKey } from "../src/approval-sign.mjs";
@@ -40,7 +38,6 @@ function kernelCfg(dir, mock, node, role, extra = {}) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
     ...extra,
   };
@@ -173,55 +170,6 @@ function jsonAuthCommand(dir, name, body) {
   `);
 }
 
-function listenCarrier(sock) {
-  try { fs.unlinkSync(sock); } catch { /* 没有旧套接字 */ }
-  const sockets = new Set();
-  const server = net.createServer((socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-    let buf = "";
-    socket.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        let frame;
-        try { frame = JSON.parse(line); } catch { continue; }
-        if (frame.type === "ping") {
-          socket.write(JSON.stringify({ type: "pong", pid: process.pid }) + "\n");
-          continue;
-        }
-        if (frame.type !== "exec") continue;
-        const child = spawn(frame.command, { shell: true, cwd: frame.cwd || undefined });
-        child.stdin.end(frame.input ?? "");
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (d) => { stdout += d; });
-        child.stderr.on("data", (d) => { stderr += d; });
-        child.on("close", (code) => {
-          if (socket.destroyed) return;
-          socket.write(JSON.stringify({
-            id: frame.id, status: "done", code: code ?? 1, stdout, stderr,
-          }) + "\n");
-        });
-      }
-    });
-  });
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(sock, () => {
-      resolve({
-        close() {
-          for (const socket of sockets) socket.destroy();
-          return new Promise((done) => server.close(() => done()));
-        },
-      });
-    });
-  });
-}
-
 function historicalToken(taskId, scope = "") {
   let input = "lah-auth-request\0" + taskId;
   if (scope) input += "\0" + scope;
@@ -320,51 +268,6 @@ test("direct agent 批准后续跑改走 resume_command", async () => {
     assert.equal(input.approvals.length, 1);
     assert.equal(input.approvals[0].decision, "approve");
   });
-});
-
-test("carrier 的 NeedAuth 用 openRunId 续跑并带上 approvals", async () => {
-  const sock = path.join("/tmp", `lah-c-${process.pid}-${Date.now().toString(36)}.sock`);
-  const carrier = await listenCarrier(sock);
-  try {
-    await withTemp(async (dir) => {
-      const marker = path.join(dir, "approvals.json");
-      writeCommands(dir, {
-        command: `${jsonAuthCommand(dir, "carrier", `
-          if (!approvals.length) {
-            process.stdout.write(JSON.stringify({ need_auth: "经终端代发" }) + "\\n");
-            return;
-          }
-          fs.writeFileSync(marker, JSON.stringify(approvals));
-          process.stdout.write(JSON.stringify({ summary: "done" }) + "\\n");
-        `)} ${JSON.stringify(marker)}`,
-        mode: "json",
-        context: "carrier",
-        timeout_sec: 30,
-        cap_id: "CAP-test-echo",
-      });
-      const mock = new MockFeishuBus({ tables: TABLES });
-      const node = new Kernel(kernelCfg(dir, mock, "node-a", "node", { carrierSocket: sock }));
-      const approval = approvalFor(dir, mock, node);
-      await seedTask(mock, { Task_ID: "TASK-DC-1", Context_ID: "CTX-DC-1" });
-      await node.run({ once: true });
-      const pending = await taskOf(mock, "TASK-DC-1");
-      assert.equal(f1(pending, "Status"), "auth-required");
-      assert.equal(f1(pending, "Claimed_By"), "node-a");
-      const views = await requestViews(mock, "TASK-DC-1");
-      assert.equal(views[0].data.scope, "dynamic");
-      assert.ok(views[0].data.run_id);
-      await decide(approval, pending, "approve");
-      assert.equal(f1(await taskOf(mock, "TASK-DC-1"), "Status"), "auth-required");
-      await node.run({ once: true });
-      assert.equal(f1(await taskOf(mock, "TASK-DC-1"), "Status"), "completed");
-      const seen = JSON.parse(fs.readFileSync(marker, "utf8"));
-      assert.equal(seen[0].run_id, views[0].data.run_id);
-      assert.equal((await authRequests(mock, "TASK-DC-1")).length, 1);
-    });
-  } finally {
-    await carrier.close();
-    try { fs.unlinkSync(sock); } catch { /* 套接字已删 */ }
-  }
 });
 
 test("inbox auth 写总线前即 waiting-auth，批准后刷新 pending", async () => {

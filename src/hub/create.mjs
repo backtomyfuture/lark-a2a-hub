@@ -5,6 +5,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { parseCriteria } from "../acceptance.mjs";
 import { controlKeysIn } from "../config.mjs";
 import { f1 } from "../bus/feishu.mjs";
 
@@ -59,9 +60,58 @@ export function parseParams(raw) {
   return obj;
 }
 
+export function parseCriteriaInput(raw) {
+  if (raw === undefined || raw === null) return undefined;
+  let arr;
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (typeof raw === "object") {
+    throw new Error("criteria 必须是 JSON 数组");
+  } else {
+    let text = String(raw);
+    if (text.startsWith("@")) {
+      const file = text.slice(1);
+      if (!file) throw new Error("--criteria @文件 缺少路径");
+      try {
+        text = fs.readFileSync(file, "utf8");
+      } catch (e) {
+        throw new Error("读 criteria 文件失败：" + e.message);
+      }
+    }
+    if (!String(text).trim()) throw new Error("criteria 不能为空");
+    try {
+      arr = JSON.parse(text);
+    } catch {
+      throw new Error("criteria 不是合法 JSON");
+    }
+    if (!Array.isArray(arr)) throw new Error("criteria 必须是 JSON 数组");
+  }
+  const checked = parseCriteria({ acceptance: { criteria: arr } });
+  if (!checked.ok) throw new Error("拒绝建单：" + checked.error);
+  return checked.criteria;
+}
+
+function buildInstructionData(params, criteria) {
+  const data = parseParams(params);
+  const parsedCriteria = parseCriteriaInput(criteria);
+  const hasAcceptance = data && Object.prototype.hasOwnProperty.call(data, "acceptance");
+  if (hasAcceptance) {
+    const checked = parseCriteria(data);
+    if (!checked.ok) throw new Error("拒绝建单：" + checked.error);
+    if (parsedCriteria !== undefined) {
+      throw new Error("拒绝建单：不能同时在 params.acceptance 与 --criteria 指定验收清单");
+    }
+    return { ...data, acceptance: { criteria: checked.criteria } };
+  }
+  if (parsedCriteria !== undefined) {
+    return { ...(data || {}), acceptance: { criteria: parsedCriteria } };
+  }
+  return data;
+}
+
 export function parseCreateArgv(argv) {
   const out = {
-    configDir: "", from: "", source: "", to: "", cap: "", worker: "", text: "", paramsRaw: undefined, context: "", ref: "", approval: "", idempotencyKey: "",
+    configDir: "", from: "", source: "", to: "", cap: "", worker: "", text: "", paramsRaw: undefined, criteriaRaw: undefined, context: "", ref: "", approval: "", idempotencyKey: "",
   };
   const take = (i, flag) => {
     const value = argv[i + 1];
@@ -78,6 +128,7 @@ export function parseCreateArgv(argv) {
     else if (flag === "--worker") out.worker = take(i, flag);
     else if (flag === "--text") out.text = take(i, flag);
     else if (flag === "--params") out.paramsRaw = take(i, flag);
+    else if (flag === "--criteria") out.criteriaRaw = take(i, flag);
     else if (flag === "--context") out.context = take(i, flag);
     else if (flag === "--ref") out.ref = take(i, flag);
     else if (flag === "--approval") out.approval = take(i, flag);
@@ -149,11 +200,12 @@ function freshTaskId(taken, now) {
 }
 
 export async function createTask({
-  bus, from = "", source = "", to, cap, worker = "", text = "", params, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(), validateTarget = true,
+  bus, from = "", source = "", to, cap, worker = "", text = "", params, criteria, context = "", ref = "", approval = "", idempotencyKey = "", now = new Date(), validateTarget = true,
 }) {
   if (!bus?.tables?.messages || !bus.tables.parts || !bus.tables.tasks) {
     throw new Error("总线缺少 messages / parts / tasks 表");
   }
+  const data = buildInstructionData(params, criteria);
   const rawTo = String(to ?? "").trim();
   const rawCap = String(cap ?? "").trim();
   // 指定了 Worker 就是硬约束（标准 §2）：下面所有按名册的挑选都只在这个 Worker 的名片里做。
@@ -314,7 +366,6 @@ export async function createTask({
   if (!skill) throw new Error(`task create 未指定 --cap/--skill，且目标节点 ${node} 未登记任何可用能力`);
   const sender = String(from || source || "hub").trim();
   const taskSource = String(source || from || "hub").trim();
-  const data = parseParams(params);
   const approvalClass = String(approval ?? "").trim();
   if (approvalClass && !APPROVALS.has(approvalClass)) {
     throw new Error("--approval 只能是 auto、notify 或 approve");

@@ -10,6 +10,7 @@ const EXEC_CONTROL_KEYS = new Set([
   "command", "cmd", "cwd", "context", "agent", "worker", "mode",
   "side_effect", "approval_class", "permissions", "permission",
   "shell", "env", "executable", "argv", "bin", "max_timeout_sec",
+  "verify", "verify_timeout_sec",
 ]);
 
 export function controlKeysIn(params) {
@@ -69,7 +70,10 @@ function workerSkillEntry(workerEntry, skillEntry, worker, skill) {
       delete merged.desc;
     }
     for (const [k, v] of Object.entries(skillEntry)) {
-      if (!LAUNCH_KEYS.has(k) && k !== "approval_class") merged[k] = v;
+      if (LAUNCH_KEYS.has(k) || k === "approval_class") continue;
+      // 技能未写 verify / verify_timeout_sec 时继承 Worker 条目，不能被 null/undefined 覆盖。
+      if ((k === "verify" || k === "verify_timeout_sec") && v == null) continue;
+      merged[k] = v;
     }
     const approval = stricterApproval(workerEntry.approval_class, skillEntry.approval_class);
     if (approval !== undefined) merged.approval_class = approval;
@@ -207,7 +211,6 @@ export function loadConfig(configDir) {
     sweepSec: cfg.sweepSec ?? 900,
     events: cfg.events !== false,
     doorbellFile: cfg.doorbellFile ? cfg.doorbellFile.replace(/^~/, os.homedir()) : null,
-    carrierSocket: cfg.carrierSocket ? cfg.carrierSocket.replace(/^~/, os.homedir()) : path.join(configDir, "carrier.sock"),
     capPrefix: cfg.capPrefix ?? cfg.node,
     // hub 的审批签名公钥（base64）。配了就只认签名对得上的 auth_decision（标准 §8.3 第 5 条）。
     hubPublicKey: cfg.hubPublicKey,

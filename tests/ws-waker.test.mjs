@@ -252,7 +252,6 @@ test("HubRuntime：onReconnecting 不拆连接，只有终态 onError 才关闭�
         pollSec: 45,
         sweepSec: 900,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus,
       },
       retryMs: 20,

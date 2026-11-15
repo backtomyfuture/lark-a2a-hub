@@ -96,7 +96,6 @@ async function setup(dir, commandEntry) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
   });
   return { mock, kernel };
@@ -272,7 +271,6 @@ test("守护重启后续上仍在跑的进程，不第二次 spawn", async () =>
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
       });
       kernels.push(next);
@@ -320,7 +318,6 @@ test("进程在守护缺席时已经退出且退出码文件还在，重启后�
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
       });
       kernels.push(next);
@@ -364,7 +361,6 @@ test("进程被 SIGKILL 且没有退出码文件时按执行失败计入 Retry_C
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
       });
       kernels.push(next);
@@ -442,7 +438,6 @@ test("超时从账本里的启动时间接着算，而不是从重启时重算",
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
       });
       kernels.push(next);
@@ -487,7 +482,6 @@ test("hub 的审批、呈递、陈旧回收和定时扫描不被 direct 命令�
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
         tables,
       };

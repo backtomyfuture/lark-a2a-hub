@@ -1,4 +1,5 @@
-// Tasks.Metadata 上的 usage / later 合并写。写失败只记日志，不影响已经落下的回执。
+// Tasks.Metadata 上的 usage / later / acceptance 合并写。写失败只记日志，不影响已经落下的回执。
+import { acceptanceIndex } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { log, readTaskMeta } from "./kernel-util.mjs";
 import { addUsage } from "./receipt.mjs";
@@ -55,5 +56,22 @@ export const metadataMethods = {
     try { this.saveOutbox(box); }
     catch (e) { log("later 标记写失败：" + (e?.message ?? e)); }
     await this.applyLater(task, box.later);
+  },
+
+  async applyAcceptance(task, acc, msgId = "") {
+    const idx = acceptanceIndex(acc, msgId);
+    if (!idx) return;
+    await this.mergeTaskMeta(task, "acceptance", (meta) => {
+      meta.acceptance = idx;
+    });
+  },
+
+  // 索引写失败不影响 DataPart（权威记录）。先落标记再写总线，避免补交时重复打扰表。
+  async noteAcceptanceOnce(task, box) {
+    if (!box || box.acceptance_noted || !box.acceptance) return;
+    box.acceptance_noted = true;
+    try { this.saveOutbox(box); }
+    catch (e) { log("acceptance 标记写失败：" + (e?.message ?? e)); }
+    await this.applyAcceptance(task, box.acceptance, box.msgId || "");
   },
 };

@@ -23,7 +23,6 @@ function kernelCfg(dir, mock) {
     capPrefix: "test",
     events: false,
     configDir: dir,
-    carrierSocket: path.join(dir, "missing.sock"),
     bus: mock,
   };
 }
@@ -122,7 +121,6 @@ test.describe("扫表统计行", { concurrency: false }, () => {
         capPrefix: "test",
         events: false,
         configDir: dir,
-        carrierSocket: path.join(dir, "missing.sock"),
         bus: mock,
         tables,
       };

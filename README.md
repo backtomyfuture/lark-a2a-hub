@@ -6,8 +6,8 @@
 零服务器、零入站端口、每一步都留痕可查。
 
 [![CI](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml/badge.svg)](https://github.com/backtomyfuture/lark-a2a-hub/actions/workflows/check.yml)
-[![Version](https://img.shields.io/badge/version-0.8.1-orange.svg)](CHANGELOG.md)
-[![Standard](https://img.shields.io/badge/standard-v3.8-blue.svg)](docs/standard.md)
+[![Version](https://img.shields.io/badge/version-0.9.0-orange.svg)](CHANGELOG.md)
+[![Standard](https://img.shields.io/badge/standard-v3.9-blue.svg)](docs/standard.md)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -83,9 +83,9 @@ lah task why TASK-XXXX                              # 查看任务、消息、�
 
 | 场景 | 做法 | 参考文档 |
 |---|---|---|
-| **自建中台（Hub 角色）** | 打开 [飞书多维表格标准模板](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) 点击「使用该模板」一键克隆 7 张表（向导未找到 Base 时也会自动打开），再跑 `lah setup --role hub --owner <机主 open_id>`；单进程同时兼任 hub 与执行节点 | [配置参考 · 自建中台](docs/configuration.md#8-自建中台hub-角色) |
+| **自建中台（Hub 角色）** | 打开 [飞书多维表格标准模板](https://my.feishu.cn/wiki/OABiwbe3Si1FoCkelzYcYwTQ6de?base_hp_from=larktab&table=tblIvRscY5Mev3Do&view=vewzhNeMCe) 点击「使用该模板」一键克隆 7 张表（向导未找到 Base 时也会自动打开），再跑 `lah setup --role hub --owner <机主 open_id>`；单进程同时兼任 hub 与执行节点 | [配置参考 · 自建中台](docs/configuration.md#7-自建中台hub-角色) |
 | **国际版 Lark 租户** | 装机时加 `lah setup --domain lark`；Lark 租户需按表结构定义自建 7 张表 | [Base 结构](docs/base-schema.md) |
-| **无守护进程的云端 Bot** | 托管在云端跑不了 Node 守护进程时，通过飞书自动化 webhook 协议接入 | [配置参考 · 接入外部 bot](docs/configuration.md#9-接入外部-bot飞书自动化--webhook) · [协议节点手册](docs/protocol-node-runbook.md) |
+| **无守护进程的云端 Bot** | 托管在云端跑不了 Node 守护进程时，通过飞书自动化 webhook 协议接入 | [配置参考 · 接入外部 bot](docs/configuration.md#8-接入外部-bot飞书自动化--webhook) · [协议节点手册](docs/protocol-node-runbook.md) |
 
 ## 工作原理
 
@@ -175,7 +175,7 @@ stateDiagram-v2
   - **单进程超集**：`hub` 是 `node` 的单进程超集，通过 `lah daemon --role node|hub` 启动，既能跑节点任务，又承担全网审批、结果呈递、陈旧回收与 `later` 复查。
   - **宿主与本尊双形态**：`kind: host` 宿主节点自动探测本机 CLI 并按 `commands.json` 拉起任务；`kind: agent` 独立 Agent 节点由本尊经 `agent_inbox.jsonl` 自取自答（`inbox` 模式）。
   - **热更新与载入保护**：修改 `commands.json` 自动同步 `AgentCards`；文件语法写坏时保留上一版能力表并暂停接新单，修好自动恢复。
-  - **局域网语境隔离**：macOS 后台守护进程无法直连局域网时，通过终端常驻 `carrier`（`lah host`）代跑；`carrier` 离线时明确标 `offline` 并拒收，绝不静默降级直跑。
+  - **直跑**：守护进程直跑，macOS 下需要局域网的任务建议走 ssh 命令模板。
 
 - **提问续跑与双阶段机主审批**
   - **原任务问答续跑**：Agent 中途输出 ```` ```agent-ask ````（或 `need_input` / `lah inbox ask`）进入 `input-required`，发起方回复后在同一任务继续；配了 `resume_command` 且本机存有 `session.json` 时直接接续原会话。
@@ -194,15 +194,14 @@ stateDiagram-v2
 
 ## 常用命令
 
-以下常用操作默认读取 `~/.hub-node`（可通过 `--config <dir>` 或 `HUB_NODE_HOME` 指定），完整参数与选项见 [配置参考 · CLI 速查](docs/configuration.md#7-cli-速查)。
+以下常用操作默认读取 `~/.hub-node`（可通过 `--config <dir>` 或 `HUB_NODE_HOME` 指定），完整参数与选项见 [配置参考 · CLI 速查](docs/configuration.md#6-cli-速查)。
 
 | 场景 | 命令 | 说明 |
 |---|---|---|
 | **安装与运维** | `lah setup [--role node\|hub] [--domain feishu\|lark]` | 向导配置、发现表与 Agent、装入 Skill、可选自启 |
-| | `lah doctor [--role node\|hub] [--probe <host:port>]` | 只读自检配置、连通性、名片与定时计划 |
+| | `lah doctor [--role node\|hub]` | 只读自检配置、连通性、名片与定时计划 |
 | | `lah service [--role node\|hub] [--remove]` | 注册或卸载用户级开机自启 |
 | | `lah inventory` | 只读盘点本节点名片与各状态任务 |
-| | `lah host` | 在用户终端启动局域网 `carrier` 代跑进程 |
 | | `lah update [--check]` | 拉取更新程序本体（git 检出适用，不碰配置目录） |
 | **派单与排障** | `lah task create --to <节点> [--worker <W>] [--cap <技能>] --text …` | 校验名册后建单派发 |
 | | `lah present [--wait <秒>] [--task <ID>] [--pop]` | 读取或阻塞等待本机发起任务的终态/追问回执 |
@@ -218,18 +217,18 @@ stateDiagram-v2
 
 这些是写进标准与代码的硬约束，详细威胁模型见 [SECURITY.md](SECURITY.md)：
 
-- **只出不进**：不开任何监听端口（`carrier` 的本机 unix socket 除外），不做端口映射或反向隧道，不提供入站 webhook；事件与卡片回调均走飞书长连接。
+- **只出不进**：不开任何监听端口，不做端口映射或反向隧道，不提供入站 webhook；事件与卡片回调均走飞书长连接。
 - **指令与数据分离**：要执行的命令、目录与语境只来自本机 `commands.json`；任务正文、参数与文件指针写进 600 权限的 `input.json`，从不拼入命令字符串；参数夹带执行控制键（`command` / `cwd` / `context` / `agent` / `worker` 等）直接拒收。
 - **机主签名审批**：对外发消息、删改数据、花钱、提交表单、改权限须走 `auth-required`；只认 hub 校验机主身份后写入并签名的结构化 `auth_decision`，不认自然语言文字或任务行标记；本机审批级别只收紧不放宽。
 - **凭据不入总线**：应用密钥与 hub 签名私钥只存本机 600 权限文件；总线只传任务与产物指针；日志不打印凭据与表令牌。
 - **消息只追加**：`Messages` 与 `Parts` 永不修改或删除，终态任务永不重启，全网留痕不可篡改。
-- **失败要响**：条件不满足（如 `carrier` 离线、能力不存在、配置取值非法）一律明确标离线或拒收，绝不静默切换路径硬跑。
+- **失败要响**：条件不满足（如能力不存在、配置取值非法）一律明确拒收，绝不静默切换路径硬跑。
 
 ## 文档导航
 
 | 文档 | 内容 |
 |---|---|
-| [docs/configuration.md](docs/configuration.md) | 配置目录、`node.json` / `commands.json` / `schedules.json`、回执约定、carrier、日志指标与完整 CLI 速查 |
+| [docs/configuration.md](docs/configuration.md) | 配置目录、`node.json` / `commands.json` / `schedules.json`、回执约定、日志指标与完整 CLI 速查 |
 | [docs/standard.md](docs/standard.md) | **中台标准（权威）**：七表对象模型、八态状态机、通信 / 审批 / 幂等 / 调度协议 |
 | [docs/architecture.md](docs/architecture.md) | 架构分层、核心决策与理由、生命周期与故障模型 |
 | [docs/base-schema.md](docs/base-schema.md) · [schema/](schema/) | 七张表的字段级定义，由线上 Base 自动生成 |

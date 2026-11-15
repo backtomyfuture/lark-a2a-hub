@@ -35,7 +35,7 @@ function setup(dir, commands) {
   const mock = new MockFeishuBus({ tables: TABLES });
   const kernel = new Kernel({
     node: "node-a", role: "node", kind: "host", zone: "test", capPrefix: "test",
-    events: false, configDir: dir, carrierSocket: path.join(dir, "missing.sock"), bus: mock,
+    events: false, configDir: dir, bus: mock,
   });
   return { mock, kernel };
 }
