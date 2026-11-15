@@ -167,6 +167,6 @@ export async function update(appDir, { check = false, skipSkill = false, configD
   ensureEntrySymlinks(appDir);
   refreshSkill(appDir, skipSkill);
   if (configDir) daemonHint(configDir);
-  console.log(`更新完成：v${before} → v${after}。重启 lah daemon / lah host 后生效。`);
+  console.log(`更新完成：v${before} → v${after}。重启 lah daemon 后生效。`);
   return 0;
 }
