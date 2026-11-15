@@ -1,6 +1,6 @@
 # 多 Agent 中台标准（A2A 数据模型版，形态 B）
 
-> 现行标准，版本 v3.8。来源：A2A（Agent2Agent）协议 v1.0 数据模型
+> 现行标准，版本 v3.8（§11 验收为 v3.9 草案，未发布）。来源：A2A（Agent2Agent）协议 v1.0 数据模型
 > （Google 牵头、Linux Foundation 托管）＋生产实测经验汇总。
 > 表结构见 [Base 结构](base-schema.md)；系统设计见 [架构](architecture.md)。
 
@@ -270,6 +270,16 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 ## 修订记录
 
+**未发布（v3.9）：验收层 v1（表结构不变）**：
+- 动机：`completed` 只表示执行方自报完成，巡检、日报、代码类任务都要发起方肉眼复核。新增 §11。
+- L1：`commands.json` 可配本机 `verify` 命令，direct 的 json / agent 在完成收口前跑；退出码非 0、超时或拉不起来一律 `failed` + notice（「验收未通过」），不计重试、不重跑。verify 作为在途账本第二阶段，守护重启后续接。
+- L2：建单时可在 instruction DataPart 写 `acceptance.criteria`，执行方用 `CHECK:` 行、json `checks` 或 `lah inbox done --check` 逐条自检；v1 只记录展示，不改状态。
+- 结果写在回执消息的 DataPart（权威）并索引到 `Tasks.Metadata.acceptance`；`why` 与呈递分开标注守护进程捕获的证据与执行方自述。
+- `verify` / `verify_timeout_sec` 加入执行控制键。
+- 否决的做法：
+  - 验收失败仍置 `completed`、只在 Metadata 标红。Metadata 写失败只记日志，判定会无声丢失；发起方脚本只看 Status 也会漏判。
+  - 验收失败占用 `Retry_Count` 自动重跑。确定性命令重跑大多得到同样的错，还会再触发一次副作用。
+  - 清单写在 `Tasks.Metadata`。任何节点都能改，做不到冻结。
 **未发布：移除 carrier 执行语境（表结构不变）**：
 - 动机：carrier（用户终端里常驻的 `lah host`，经本机 unix socket 代跑需要局域网的命令）在生产中从未启用；DESIGN §9 实测在本机长驻进程的局域网访问同样不可靠，它带来的协议面（Availability 随探活翻转、同步代跑路径、socket 例外）却要每个新特性都单独照顾。
 - `context` 只剩 `direct`（可省略）。配置里残留 `context: "carrier"` 的能力在认领预检按非法取值 `rejected` + notice，并由 `lah doctor` 报出；绝不静默改走直跑。
@@ -494,4 +504,39 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - 运行期 `commands.json` 解析失败时，继续用内存中的上一份有效能力表接单，只记一条错误日志并在恢复时记一条恢复日志，不必每轮重复刷屏；能力名片不动。这与现状「暂停接新单」相比，可用性更好，代价是操作者编辑到一半的意图无从得知；采纳与否由负责人定。
 - 条目级非法值改为在内核加载时逐条校验：非法条目不登记名片（或标 `Availability=offline`）并记错误日志，使任务在路由阶段就看得到该能力不可用，而不是等认领后才被拒收。
 - 启动期 `node.json` 无效时改为进程内退避重试、不退出，与 `commands.json` 的启动期语义对齐，不依赖外部保活。
+
+## 11. 附则：验收（v3.9，表结构不变）
+
+本节定义任务交付时的独立校验。动机：§2 的 `completed` 只表示「执行方自称完成并给出了回执」，不表示活干对了。验收层把「对不对」分成两层：能用退出码判定的交给本机校验命令（L1），只能由人或模型判断的写成建单时冻结的清单、由执行方逐条自检（L2）。验收与审批（§8.3）是两回事：审批判「准不准做」，只认机主签名；验收判「做得对不对」，任何验收结果都不得替代、绕过或生成 `auth_decision`。
+
+### 11.1 L1 执行式验收（verify 命令）
+
+- **配置**：`commands.json` 的 Skill 条目或 Worker 条目可写可选 `verify`（字符串，一条本机 shell 命令）与 `verify_timeout_sec`（正数，缺省 120，夹紧到 `[1, 1800]`）。Skill 条目上的值优先，Skill 未写时取其 Worker 条目的值。`verify` 与 `command` 同一可信等级，只来自本机文件；任务参数里出现 `verify` / `verify_timeout_sec` 按执行控制键拒收（§9）。`verify` 原样执行，不做 `{prompt}` / `{session}` 等任何占位符替换。
+- **覆盖范围**：只覆盖 `context=direct` 的 json / agent 命令。`mode=inbox` 的条目写了 `verify` 是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。协议接入型节点与 inbox 节点没有节点侧 L1，只能走 L2 或发起方侧复核；`lah task why` 与呈递如实显示「未配置执行式验收」，不得显示为通过。
+- **何时跑**：主命令退出码为 0、且回执按 §9 解析为完成（不是提问、审批或回执无效）之后，在收口写表之前。提问、审批、回执无效、执行失败都不跑 verify。同一任务每次收口为完成前都要跑一次（问答续跑或审批续跑后的完成同样要跑）。
+- **怎么跑**：与主命令同一 cwd、同一进程组纪律（独立进程组，超时先 SIGTERM，宽限后 SIGKILL）。执行者上报的数据只经两条数据通道交给 verify，绝不拼进命令：标准输入是一行 JSON `{"task_id","summary","artifact","artifact_name","checks"}`；环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`、`LAH_RUN_DIR`（本次 `runs/<Task_ID>` 目录）、`LAH_MAIN_STDOUT`（主命令 stdout 文件路径）。verify 必须是只读、可重复执行的检查。
+- **在途账本**：verify 是在途账本的第二阶段（§4）。主命令收口解析成功后，账本记下解析后的回执与 `state=verifying`，再拉起 verify；verify 的 pid、启动时间、退出码与输出文件同样落盘，守护重启后续接，不重跑主命令。重启后无法确认 verify 是否结束时，重跑 verify（只读，可重复）；同一任务 verify 最多拉起 3 次，仍拿不到结果判为 `error`。verify 期间照常续心跳，占用唯一的 direct 执行槽。
+- **判定**：退出码 0 为 `pass`；非 0 为 `fail`；到 `verify_timeout_sec` 未结束为 `timeout`；拉不起来或 3 次仍无结果为 `error`。
+- **落态**：`pass` 照常 `completed` + result。`fail` / `timeout` / `error` 一律置 `failed` + notice，notice 正文第一行以「验收未通过」开头并写明判定与退出码，随后附执行方摘要与 verify 输出尾部（stdout 与 stderr 合并，至多 2000 字）。Runs 记 `Outcome=failed`，`Error_Log` 写判定与退出码。执行方给了产物的照常登记 Artifacts，但 `Is_Final=No`。验收失败**不计入 `Retry_Count`、不回 `submitted`、不自动重跑**，并清除退避水位。返工须在同一 `Context_ID` 新建任务（§2 终态不可变）。
+- **证据等级**：verify 结果由守护进程亲自捕获，等级为 `captured`，是唯一能改变任务状态的验收证据。
+
+### 11.2 L2 声明式验收（criteria 清单）
+
+- **建单**：发起方在首条 instruction 消息的 DataPart 里写 `acceptance`：`{"acceptance":{"criteria":[{"id","text","evidence_required"?}]}}`。`criteria` 为 1–20 条；`id` 匹配 `^[A-Za-z0-9._-]{1,32}$` 且不重复；`text` trim 后 1–500 字、不含除换行与制表符以外的控制字符；`evidence_required` 可选布尔。不合法时 `lah task create` 写表前拒绝；节点认领预检遇到不合法的清单 `rejected` + notice。
+- **冻结**：清单只从首条 instruction 的 DataPart 读取。Messages / Parts 只追加，清单天然不可改；`Tasks.Metadata` 里任何同名键都不认。
+- **执行方自检**：只在回执收口为完成时收；提问、审批、失败上的自检忽略并记日志。
+  - agent：围栏之外整行 `CHECK: <id> <pass|fail|blocked>[ | <证据>]`。同一 `id` 多行取最后一行；围栏里的同形文字无效；这些行从摘要里拿掉。受信 prompt 模板在 `input.json` 带清单时说明这条语法。
+  - json：末行对象可选键 `checks`，形如 `{"<id>":{"verdict":"pass|fail|blocked","evidence":"…"}}`，值也可以直接是判定字符串。
+  - inbox：`lah inbox done` 可重复传 `--check <id>=<pass|fail|blocked>[:<证据>]`。
+  - 证据是纯文本，超过 500 字截断。清单外的 `id` 与不合法的判定整条忽略并记日志，回执其余部分仍然有效。
+- **逐条判定**：每条清单项得到一个判定：执行方报了就是 `pass` / `fail` / `blocked`；`evidence_required=true` 却报 `pass` 而没给证据，降为 `uncertain`；没报为 `missing`。来源标 `self`（执行方自述，等级最低）。
+- **v1 不改状态**：L2 只记录和展示，不改变任务状态。自检里有 `fail` 的任务仍是 `completed`，由呈递与 `lah task why` 标出。独立评审（把清单交给另一个 Worker 或节点判读）留待后续版本。
+
+### 11.3 验收记录
+
+- **DataPart**：result 或 notice 消息在 TextPart 之后追加一个 DataPart（`Seq` 2）：`{"acceptance":{"version":1,"verify":{…}|null,"criteria_ref":"<instruction Msg_ID>"|"","checks":[…],"overall":"pass|fail|uncertain"}}`。`verify` 为 `{"verdict","exit_code","duration_ms","evidence":"captured"}`；`checks` 每项为 `{"id","verdict","evidence","source":"self"}`。这是验收结果的权威记录，与回执同一条 outbox 补齐链落表，不会因 Metadata 写失败而丢失。
+- **overall**：verify 不是 `pass` 为 `fail`；否则自检里有 `fail` 为 `fail`；否则有 `blocked` / `uncertain` / `missing` 为 `uncertain`；否则为 `pass`。既没有 verify 也没有清单的任务不写这个 DataPart，行为与现状一致。
+- **Metadata**：执行节点在回执收口那次 Tasks 更新之后，把同一对象去掉证据正文后读-合并-写进 `Tasks.Metadata.acceptance`，另加 `msg_id` 指回该消息。照 `usage` 的先例：不覆盖其它键，写失败只记日志。读取方以 DataPart 为准，Metadata 只是索引。
+- **展示**：`lah task why` 的文本与 `--json` 显示 verify 判定、退出码、逐条自检与 overall，并分开标注 `captured` 与 `self`。呈递队列条目新增 `acceptance` 字段（同上对象，去掉证据正文），正文多一行验收摘要；验收未通过的 `failed` 与执行失败的 `failed` 必须一眼可分。
+- **不做**：不自动改写 `commands.json`、规则或流程；不由模型代批审批；不新增 Tasks 列或新表。
 
