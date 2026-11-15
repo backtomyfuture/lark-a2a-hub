@@ -42,7 +42,7 @@ echo '{"k":1,"_hub":{"task_id":"TASK-X"}}' | node src/executors/echo.mjs   # jso
 node bin/lah.mjs doctor  --config <dir> [--role node|hub]   # 示例配置与真实配置各跑一遍
 node bin/lah.mjs daemon  --config <dir> [--role node|hub]
 node bin/lah.mjs reconcile --config <dir>
-node bin/lah.mjs setup   --config <dir> [--role node|hub] [--yes --base … --node … --zone … --prefix … --owner …]
+node bin/lah.mjs setup   --config <dir> [--role node|hub] [--yes --base … --node … --prefix … --owner …]
 node bin/lah.mjs service --config <dir> [--role node|hub] [--remove]
 node bin/lah.mjs inventory --config <dir>
 node bin/lah.mjs update [--check] [--skip-skill] [--config <dir>]

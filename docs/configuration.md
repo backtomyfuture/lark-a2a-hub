@@ -22,7 +22,7 @@
 
 ## 2. node.json
 
-节点身份（`node` / `zone`）、总线参数（`baseToken` / `tables`）、凭据来源（`appEnv` 指向本地 env 文件，或 `appId` / `appSecret` 直填）、轮询与对账周期。
+节点身份（`node`）、总线参数（`baseToken` / `tables`）、凭据来源（`appEnv` 指向本地 env 文件，或 `appId` / `appSecret` 直填）、轮询与对账周期。
 
 - `domain`：`feishu`（国内飞书，缺省）或 `lark`（国际版 Lark，`open.larksuite.com`）。读写表与长连接都走这个域名；写错直接报错，不回退。装机时用 `lah setup --domain lark`。两套域名是两套租户，应用与 Base 必须在同一侧。官方标准模板托管在飞书，Lark 租户需按 [Base 结构](base-schema.md) 自建七张表。
 - `role`：`node` 或 `hub`，缺省 `node`。`lah daemon`、`doctor`、`service` 省略 `--role` 时读它。

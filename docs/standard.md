@@ -146,9 +146,9 @@
 - Default_Input_Modes / Default_Output_Modes（卡片级默认模式）。
 - Cap_Streaming / Cap_Push / Cap_State_History（卡片 capabilities 三开关；Cap_Push＝支持推送通知，相当于声明有 PushNotification 通道）。
 - Metadata：A2A 原生自由字段（文本，JSON 字符串）。内核登记名片时写入 `kind` 与 `mode`（节点类型与执行模式，见 §10.4 与 §9），供建单侧识别该能力；协议节点手工登记的名片，以及尚未填写的旧名片，可以留空。
-- **v3.5 收拢方向**：Tags / Examples / Required_Assets 已删（无消费者）；Input_Modes / Output_Modes / Default_Input_Modes / Default_Output_Modes / Cap_Streaming / Cap_Push / Cap_State_History 与本地扩展 Zone、Skill_Name 将收拢进 Metadata 的 `a2a` 子对象（一份 A2A 名片本就是一个 JSON 文档，Modes 与 capabilities 是它的原生组成部分，不另占列）；代码先行改写为写 JSON，列在观察一个登记周期后删除。Side_Effect 与审批下限相关，保留独立列与选项约束。
+- **v3.5 收拢方向**：Tags / Examples / Required_Assets 已删（无消费者）；Input_Modes / Output_Modes / Default_Input_Modes / Default_Output_Modes / Cap_Streaming / Cap_Push / Cap_State_History 与本地扩展 Skill_Name 将收拢进 Metadata 的 `a2a` 子对象（一份 A2A 名片本就是一个 JSON 文档，Modes 与 capabilities 是它的原生组成部分，不另占列）；代码先行改写为写 JSON，列在观察一个登记周期后删除。Zone 已停写且不进 Metadata，列待线上删除。Side_Effect 与审批下限相关，保留独立列与选项约束。
 
-本地扩展字段：Cap_ID（行主键）、Worker（v3.7 新增列，文本；该能力由哪个 Worker 执行，留空＝节点本尊。它与 Node、Skill_ID 同为路由键，所以单独占列而不进 Metadata）、Zone、Side_Effect、Availability、Dispatchable、Receive_Mode（唤醒方式，与 §10.3 三种传输方式对应：`event`＝ws 长连接事件 / `poll` 轮询 / `automation`＝webhook 通知（飞书自动化 POST）。`automation` 只用于协议接入型节点，其端点由对方平台托管；守护进程型节点只取 `event` 或 `poll`，本标准的实现不开监听端口。表中另有遗留选项 `webhook`，不再赋予含义，登记一律用 `automation`）。
+本地扩展字段：Cap_ID（行主键）、Worker（v3.7 新增列，文本；该能力由哪个 Worker 执行，留空＝节点本尊。它与 Node、Skill_ID 同为路由键，所以单独占列而不进 Metadata）、Side_Effect、Availability、Dispatchable、Receive_Mode（唤醒方式，与 §10.3 三种传输方式对应：`event`＝ws 长连接事件 / `poll` 轮询 / `automation`＝webhook 通知（飞书自动化 POST）。`automation` 只用于协议接入型节点，其端点由对方平台托管；守护进程型节点只取 `event` 或 `poll`，本标准的实现不开监听端口。表中另有遗留选项 `webhook`，不再赋予含义，登记一律用 `automation`）。
 
 Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目显式 `cap_id`，否则 `CAP-<capPrefix>-<Skill_ID>`；Worker 的能力固定为 `CAP-<capPrefix>-<Worker>-<Skill_ID>`，不接受显式 `cap_id`。同一节点内 Cap_ID 不得重复，重复时后一项不登记并记日志，`lah doctor` 同时报出。
 
@@ -277,6 +277,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 - 失败要响：专用会话拉起失败（如本机没装 herdr）或非托管会话未运行时，名片 `Availability=offline`、任务原地等待，不拒收、不改走直跑；拉起失败后 5 分钟内不再重试。窗格关闭、Agent 退出或追问一次后仍无回执 → `failed` + notice；Agent 自己的对话框（blocked）不代按。
 - `herdr_kind` / `herdr_args` / `herdr_session` / `herdr_keep` / `herdr_autostart` 加入执行控制键，也加入只归 Worker 管的启动键。
 - 否决的做法：解析窗格屏幕文字当回执（与 §9「结构化回执，不猜自然语言」冲突）；herdr 不在时改走 direct 无头命令（静默降级）；所有任务共用一个长驻窗格（任务之间串上下文，撤单时也关不干净）。
+- 停写名片 Zone：AgentCards.Zone 列与 Metadata.a2a.zone 停写，列待线上删除；`node.json` 残留的 `zone` 静默忽略，`lah setup` 移除 `--zone` 与对应交互。
 
 **v3.9（2026-11-15，对应节点适配器 0.9.0；表结构不变）：验收层 v1**：
 - 动机：`completed` 只表示执行方自报完成，巡检、日报、代码类任务都要发起方肉眼复核。新增 §11。
@@ -358,7 +359,7 @@ Cap_ID 推导口径（守护进程登记时）：节点本尊的能力为条目�
 
 **v3.5（2026-11-07，字段瘦身与总线契约）**：原则：A2A 字段够用就不加扩展列；删改字段走「先改标准 → 通知节点停写 → 观察 → 快照 → 删列」的迁移顺序（本版首批删除在授权下先行落表，标准随即对齐，后续批次严格按序）。
 - 删除无消费者字段：Tasks.Worktree、AgentCards.Required_Assets / Tags / Examples、Messages.Metadata、Parts.Metadata（Parts 与 Messages 的 Metadata 从未被写入或读取；Tasks 与 AgentCards 的 Metadata 有真实消费者，不在此列）。
-- AgentCards 的 Modes 与 capabilities 三开关、Zone、Skill_Name 收拢进名片 Metadata 的 `a2a` 子对象（见 §6）；列保留至代码切换与一个登记周期观察后删除。Side_Effect 保留独立列。
+- AgentCards 的 Modes 与 capabilities 三开关、Skill_Name 收拢进名片 Metadata 的 `a2a` 子对象（见 §6）；列保留至代码切换与一个登记周期观察后删除。Side_Effect 保留独立列。
 - Tasks.Presented 列废弃：呈递去重只认本地 present_state.json ＋线上 Tasks.Metadata.presented_keys（线上键保留，防本地状态丢失后历史回执重放）；Tasks.Metadata 写入一律先读再合并（见 §10.2）。
 - doctor 新增总线契约检查：schema 与标准声明的字段、代码实际写入的选项值必须在线上登记，缺列缺选项在装机自检阶段即报出（针对 2026-11-07 两次「代码写了 Base 没有的列」瘫痪）。
 - `lah task create` 新增 `--idempotency-key`：调用方传入原值时节点侧重复拒收才可命中；此前 CLI 恒生成随机键，幂等只在手工落单路径成立。
