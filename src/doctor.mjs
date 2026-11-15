@@ -390,8 +390,12 @@ const DEPRECATED_OPTION_VALUES = {
   AgentCards: { Receive_Mode: ["webhook"] },
   Tasks: { Presented: ["no"] },
 };
+// 已停写、待线上删列的字段：schema 快照在重跑 generate_schema 前仍含它，线上删掉后不报缺列。
+const DEPRECATED_FIELDS = {
+  AgentCards: new Set(["Zone"]),
+};
 
-async function checkBusContract(bus, appDir, nodeName) {
+export async function checkBusContract(bus, appDir, nodeName) {
   let problems = 0;
   let schema;
   try {
@@ -415,7 +419,9 @@ async function checkBusContract(bus, appDir, nodeName) {
     }
     const liveByName = new Map(liveFields.map((f) => [f.field_name, f]));
     const schemaNames = new Set((schemaTable.fields || []).map((f) => f.name));
+    const deprecatedFields = DEPRECATED_FIELDS[tableName];
     for (const name of schemaNames) {
+      if (deprecatedFields?.has(name)) continue;
       if (!liveByName.has(name)) {
         bad(`契约：${tableName}.${name} 在 schema 里有、线上 Base 没有（写它会报 1254045）`);
         problems++;

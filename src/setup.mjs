@@ -54,7 +54,6 @@ export function parseFlags(argv) {
     else if (a.startsWith("--hub-key=")) f.hubKey = a.slice("--hub-key=".length);
     else if (a.startsWith("--domain=")) f.domain = a.slice("--domain=".length);
     else if (a === "--node") f.node = argv[++i];
-    else if (a === "--zone") f.zone = argv[++i];
     else if (a === "--prefix") f.prefix = argv[++i];
     else if (a === "--desc") f.desc = argv[++i];
     else if (a === "--app-id") f.appId = argv[++i];
@@ -821,7 +820,7 @@ export function setupHelpText() {
   return `用法：
   lah setup [--yes] [--config <dir>] [--role node|hub] [--kind host|agent]
             [--wake poll|event|sweep] [--skip-skill] [--force]
-            [--node <名>] [--zone <区>] [--prefix <前缀>] [--desc <描述>]
+            [--node <名>] [--prefix <前缀>] [--desc <描述>]
             [--base <token>] [--app-id <id>] [--owner <open_id>]
             [--domain feishu|lark] [--hub-key <hub 审批公钥>]
 
@@ -1141,7 +1140,7 @@ export async function runSetup(configDir, argv, appDir) {
       kind = /agent/i.test(kind) ? "agent" : "host";
     }
 
-    let node, zone, prefix, nodeDesc, ownerOpenId;
+    let node, prefix, nodeDesc, ownerOpenId;
     if (role === "hub") {
       node = flags.node || "hub";
       ownerOpenId = flags.ownerOpenId || (process.env.HUB_OWNER_OPEN_ID || "").trim();
@@ -1162,7 +1161,6 @@ export async function runSetup(configDir, argv, appDir) {
         console.error("  ✗ hub 角色必须配置机主 open_id，未配置时审批回调一律拒绝。");
         return 2;
       }
-      zone = flags.zone || "work";
       prefix = flags.prefix || (node === "hub" ? "hub" : (node.split("-").filter(Boolean).pop() || node));
       nodeDesc = flags.desc ?? "主枢纽节点（干活＋审批呈递）";
       if (interactive) {
@@ -1173,18 +1171,10 @@ export async function runSetup(configDir, argv, appDir) {
     } else {
       const hostDefault = os.hostname().split(".")[0].toLowerCase().replace(/[^a-z0-9-]/g, "-") || "node";
       node = flags.node || (await ask("给这台机器起个节点名（中台按这个名字派活）", hostDefault));
-      zone = flags.zone || null;
-      if (!zone) {
-        if (!interactive) zone = "home";
-        else {
-          const z = await ask("这台机器主要在哪用？输 1=家里，2=公司", "1");
-          zone = (z === "2" || /work/i.test(z)) ? "work" : "home";
-        }
-      }
       prefix = flags.prefix || node.split("-").filter(Boolean).pop() || node;
       nodeDesc = flags.desc ?? (kind === "agent" ? `${node} 独立 Agent` : "");
       if (interactive) {
-        console.log(`  · 即将配置：节点 ${node}（${kind === "agent" ? "独立 Agent" : "电脑宿主"}，${zone === "work" ? "公司" : "家里"}），能力前缀 CAP-${prefix}-，应用 ${appId}，Base ${baseToken.slice(0, 8)}…`);
+        console.log(`  · 即将配置：节点 ${node}（${kind === "agent" ? "独立 Agent" : "电脑宿主"}），能力前缀 CAP-${prefix}-，应用 ${appId}，Base ${baseToken.slice(0, 8)}…`);
         const go = await ask("开始配置？(Y/n)", "Y");
         if (!/^y/i.test(go)) { console.error("  已取消，未写任何文件。"); return 5; }
       }
@@ -1285,7 +1275,6 @@ export async function runSetup(configDir, argv, appDir) {
       role,
       kind,
       ...(role === "hub" ? { ownerOpenId } : {}),
-      zone: zone || "work",
       nodeDesc: nodeDesc || "",
       appEnv: appEnvPath,
       baseToken,

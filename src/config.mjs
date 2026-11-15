@@ -219,7 +219,6 @@ export function loadConfig(configDir) {
     node: cfg.node,
     role: cfg.role,
     kind: cfg.kind || "host",
-    zone: cfg.zone ?? "",
     nodeDesc: cfg.nodeDesc ?? "",
     pollSec: cfg.pollSec ?? 45,
     sweepSec: cfg.sweepSec ?? 900,
