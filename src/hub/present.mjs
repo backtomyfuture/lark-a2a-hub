@@ -125,7 +125,20 @@ function runOf(runs, task) {
   return mine.length ? mine[mine.length - 1] : null;
 }
 
-export function presentBody({ taskId, title, status, statusMsg, target, message, outcome, error, acceptance }) {
+function artifactIdOrder(id) {
+  const n = /-A(\d+)$/.exec(String(id ?? ""))?.[1];
+  return n == null ? Number.MAX_SAFE_INTEGER : Number(n);
+}
+
+function artifactRefsFor(rows, taskId) {
+  return rows
+    .filter((row) => String(f1(row, "Task_ID") ?? "") === taskId)
+    .map((row) => String(f1(row, "Artifact_ID") ?? "").trim())
+    .filter(Boolean)
+    .sort((a, b) => artifactIdOrder(a) - artifactIdOrder(b) || a.localeCompare(b));
+}
+
+export function presentBody({ taskId, title, status, statusMsg, target, message, outcome, error, acceptance, artifactRefs }) {
   // 验收失败与执行失败都是 failed。标题前缀只在 verify 本身未通过时加上，L2 自检失败不改状态、也不换这个标题。
   const verifyFailed = status === "failed" && acceptance?.overall === "fail" && acceptance?.verify;
   const label = STATUS_LABEL[status] || status;
@@ -138,6 +151,9 @@ export function presentBody({ taskId, title, status, statusMsg, target, message,
   ];
   if (statusMsg) lines.push(`状态消息：${statusMsg}`);
   if (message) lines.push("", clip(message, 2000));
+  const ids = Array.isArray(artifactRefs) ? artifactRefs.map((id) => String(id ?? "").trim()).filter(Boolean) : [];
+  // 没有产物就不加这一行，避免改掉已有呈递正文。
+  if (ids.length) lines.push("产物：" + ids.join("、"));
   if (outcome) lines.push("", "执行结果：" + clip(outcome, 500));
   const accLine = acceptanceLine(acceptance);
   if (accLine) lines.push(accLine);
@@ -270,6 +286,10 @@ export class PresentService {
 
     const parts = await this.bus.listRecords(this.bus.tables.parts);
     const runs = await this.bus.listRecords(this.bus.tables.runs);
+    // 同表不并发读也无妨；这里保持逐次 await，和写路径的串行习惯一致。
+    const artifactRows = this.bus.tables.artifacts
+      ? await this.bus.listRecords(this.bus.tables.artifacts)
+      : [];
     let sent = 0;
     for (const item of pending) {
       const msg = latestMessage(messages, item.taskId, item.status);
@@ -296,6 +316,7 @@ export class PresentService {
       const targetNode = String(f1(item.task, "Target_Node") ?? "");
       const source = String(f1(item.task, "Source") ?? "");
       const artifactRef = msg ? String(f1(msg, "Artifact_Ref") ?? "") : "";
+      const artifactRefs = artifactRefsFor(artifactRows, item.taskId);
 
       // parts 已在本轮读过，按回执消息取 DataPart，不再额外扫表。
       const read = acceptanceForTask(messages, parts, item.taskId, f1(item.task, "Metadata"));
@@ -311,6 +332,7 @@ export class PresentService {
         outcome,
         error,
         acceptance: read.acceptance,
+        artifactRefs,
       });
 
       const queueItem = {
@@ -326,6 +348,7 @@ export class PresentService {
         status_msg: item.statusMsg,
         message: msgBody,
         artifact_ref: artifactRef,
+        artifact_refs: artifactRefs,
         outcome,
         error,
         acceptance,

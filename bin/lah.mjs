@@ -525,20 +525,36 @@ if (cmd === "setup") {
     const argv = rest.slice(1);
     let taskId = "";
     let text = "";
-    let artifact = "";
     let cfgDir = "";
+    const artifacts = [];
     const rawChecks = [];
-    for (let i = 0; i < argv.length; i++) {
+    let bad = "";
+    const usage = "用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径或URL> [--artifact-name <名称>]]… [--check <id>=<pass|fail|blocked>[:<证据>]]";
+    for (let i = 0; i < argv.length && !bad; i++) {
       const flag = argv[i];
       if (flag === "--task") taskId = argv[++i] ?? "";
       else if (flag === "--text") text = argv[++i] ?? "";
-      else if (flag === "--artifact") artifact = argv[++i] ?? "";
-      else if (flag === "--config") cfgDir = argv[++i] ?? "";
+      else if (flag === "--artifact") {
+        const uri = String(argv[++i] ?? "").trim();
+        // 空路径不进入计划。写过再删会把前一条名称清掉，这里直接拒绝。
+        if (!uri) bad = "--artifact 需要路径或 URL";
+        else artifacts.push({ uri, name: "" });
+      } else if (flag === "--artifact-name") {
+        const name = String(argv[++i] ?? "").trim();
+        const cur = artifacts[artifacts.length - 1];
+        if (!cur) bad = "--artifact-name 落单：必须紧跟在 --artifact 后面";
+        else if (cur.name) bad = "上一个 --artifact 已经带了名称";
+        else if (!name) bad = "--artifact-name 需要名称";
+        else cur.name = name;
+      } else if (flag === "--config") cfgDir = argv[++i] ?? "";
       else if (flag === "--check") rawChecks.push(argv[++i] ?? "");
       else if (!flag.startsWith("--") && !taskId) taskId = flag;
     }
-    if (!taskId) {
-      console.error("用法：lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]");
+    // 参数错误发生在读配置之前。没有飞书凭据也能立刻重试。
+    const { ARTIFACT_CAP } = await import("../src/receipt.mjs");
+    if (!bad && artifacts.length > ARTIFACT_CAP) bad = `产物超过 ${ARTIFACT_CAP} 个（${artifacts.length}）`;
+    if (!taskId || bad) {
+      console.error(bad || usage);
       process.exitCode = 1;
     } else {
       try {
@@ -546,7 +562,7 @@ if (cmd === "setup") {
         const checks = rawChecks.map((raw) => parseCheckFlag(raw));
         const { handleInboxDone } = await import("../src/inbox.mjs");
         const cfg = loadConfig(cfgDir || configDir);
-        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifact, checks });
+        await handleInboxDone({ configDir: cfgDir || configDir, bus: cfg.bus, node: cfg.node, taskId, text, artifacts, checks });
         console.log(`✓ 任务 ${taskId} 已完成并上报总线`);
       } catch (e) {
         console.error(e?.message ?? e);
@@ -676,7 +692,7 @@ if (cmd === "setup") {
   lah service [--config <dir>] [--role node|hub]  注册开机自启（--remove 卸载）
   lah update  [--check] [--skip-skill] [--config <dir>]  自更新程序本体（git pull + 依赖重装 + 软链/Skill 补齐）
   lah inbox   [--pop] [--json]    读取专属 Agent 收件箱（--pop 提取并标为 acked）
-  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径>] [--check <id>=<pass|fail|blocked>[:<证据>]]
+  lah inbox done --task <Task_ID> --text <处理结果> [--artifact <路径或URL> [--artifact-name <名称>]]… [--check <id>=<pass|fail|blocked>[:<证据>]]
   lah inbox ask  --task <Task_ID> --text <补充提问>
   lah inbox fail --task <Task_ID> --text <失败原因>
   lah inbox auth --task <Task_ID> --text <具体动作、对象与风险>

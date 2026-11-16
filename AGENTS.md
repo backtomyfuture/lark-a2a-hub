@@ -59,7 +59,7 @@ node bin/lah.mjs schedule enable|disable <id> [--config <dir>]
 node bin/lah.mjs schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>] [--config <dir>]
 node bin/lah.mjs present [--pop] [--task <Task_ID>] [--wait <秒>] [--config <dir>]
 node bin/lah.mjs inbox [--pop] [--json] [--config <dir>]
-node bin/lah.mjs inbox done --task <Task_ID> --text <结果> [--artifact <路径或URL>]
+node bin/lah.mjs inbox done --task <Task_ID> --text <结果> [--artifact <路径或URL> [--artifact-name <名称>]]…
 node bin/lah.mjs inbox ask  --task <Task_ID> --text <问题>
 node bin/lah.mjs inbox fail --task <Task_ID> --text <原因>
 node bin/lah.mjs inbox auth --task <Task_ID> --text <审批说明>
@@ -98,7 +98,7 @@ APP_ID=… APP_SECRET=… HUB_BASE_TOKEN=… node schema/generate_schema.mjs   #
 ## 安全红线（借鉴 agent-autoloop，已实现或标准明确要求）
 
 - 跳数熔断：`Hop_Count > 8` 时只写 Runs(failed) + notice 并置 `failed`，不执行。派生子任务 `Hop_Count = 父 + 1`，累加不清零（问人也不清）。
-- 结构化回执，不猜自然语言：agent 模式只认输出中最后一个完整的 ```` ```agent-ask ```` 围栏（→ input-required）或 ```` ```agent-auth ```` 围栏（→ auth-required，块内说明不能为空），以及围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` / `CHECK:`；json 模式只认 stdout 最后一行 JSON（`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`、`checks`），`need_input` 与 `need_auth` 不能同时非空，未知顶层键忽略并记日志。围栏内伪造的行不生效。`agent-auth` 在进程退出后解析，不是执行前硬拦截。`usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线，仅供同一任务问答续跑或执行中审批续跑时配合本机 `resume_command` 使用；`later`（只在 completed 时生效）写入 `Tasks.Metadata.later`，由 hub 当时钟到期后在同一 `Context_ID` 新建复查任务（`Hop_Count+1`）。扩展回执语法须同时改 `buildPrompt`、`parseAgentReceipt` / `parseJsonReceipt` 与标准 §9。
+- 结构化回执，不猜自然语言：agent 模式只认输出中最后一个完整的 ```` ```agent-ask ```` 围栏（→ input-required）或 ```` ```agent-auth ```` 围栏（→ auth-required，块内说明不能为空），以及围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:`（可多组，最多 16，名称只绑紧挨着的上一条）/ `USAGE:` / `SESSION:` / `LATER:` / `CHECK:`；json 模式只认 stdout 最后一行 JSON（`summary`、`artifact`、`artifact_name`、`artifacts`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`、`checks`），`artifacts` 为 `[{uri, name?}]`，与标量同时出现时以数组为准，`need_input` 与 `need_auth` 不能同时非空，未知顶层键忽略并记日志。超过 16 个产物的完成回执无效，不登记半截。围栏内伪造的行不生效。`agent-auth` 在进程退出后解析，不是执行前硬拦截。`usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线，仅供同一任务问答续跑或执行中审批续跑时配合本机 `resume_command` 使用；`later`（只在 completed 时生效）写入 `Tasks.Metadata.later`，由 hub 当时钟到期后在同一 `Context_ID` 新建复查任务（`Hop_Count+1`）。扩展回执语法须同时改 `buildPrompt`、`parseAgentReceipt` / `parseJsonReceipt` 与标准 §9。
 - 指令与数据分离：要执行什么命令、在哪个目录、用哪个语境，只来自本机 `commands.json`。任务行的 `Worker_Hint` 与 `Skill_ID` 只是在本机 `commands.json` 已登记能力里按名字选一项，不携带命令内容，选不中就拒收。不得新增从任务参数或消息正文读取 command / cwd / context / Agent / 权限的路径；现存唯一例外是 `params.timeout_sec`，不要扩大。标准 §9 的 agent 输入约定已实现：`kernel.mjs` 把指令文本、参数、问答与 FilePart 写进本次执行的 `input.json`（600 权限），`buildPrompt` 只拼受信模板与该文件路径；参数带执行控制键（command / cwd / context / agent 等）由 `controlKeysIn` 检出后直接拒收。不得回退：不要再把指令文本、参数 JSON 或答复拼进 prompt，也不要放宽控制键拒收。`verify` 与 `verify_timeout_sec` 只来自本机 `commands.json`，任务参数里出现这两个键按执行控制键拒收。
 - 失败要响：配置里残留 `context: carrier`（已移除）时认领预检 `rejected` + notice，绝不静默改走直跑。
 - 只出不进：不开监听端口、不做端口映射或隧道。这条对 node、hub 一律适用；webhook 只指飞书自动化出站 POST（本项目不主动推送），卡片回调同样走长连接，任何角色都不提供入站端点。

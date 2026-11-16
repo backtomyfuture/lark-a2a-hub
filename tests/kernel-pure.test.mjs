@@ -142,6 +142,135 @@ test("parseAgentReceipt 最后一道 agent-auth 或 agent-ask 才算数", () => 
   );
 });
 
+function notesOf(fn) {
+  const notes = [];
+  let value;
+  let error;
+  try { value = fn((msg) => notes.push(msg)); }
+  catch (err) { error = err; }
+  return { value, error, notes };
+}
+
+test("parseAgentReceipt 按顺序配对多组产物，名称不串、空路径不清前一条", () => {
+  const got = notesOf((log) => parseAgentReceipt([
+    "做完了",
+    "ARTIFACT: /a.ipa",
+    "ARTIFACT_NAME: iCTRL",
+    "ARTIFACT:",
+    "ARTIFACT: /b.ipa",
+  ].join("\n"), log));
+  assert.equal(got.error, undefined);
+  // 标量 artifact / artifact_name 镜像第一条，供旧执行器与 LAH_ARTIFACT 使用。
+  assert.equal(got.value.artifact, "/a.ipa");
+  assert.equal(got.value.artifact_name, "iCTRL");
+  assert.deepEqual(got.value.artifacts, [
+    { uri: "/a.ipa", name: "iCTRL" },
+    { uri: "/b.ipa" },
+  ]);
+  assert.ok(got.notes.some((line) => line.includes("ARTIFACT 为空")));
+});
+
+test("parseAgentReceipt 落单名称丢掉、重复名称取最后一条", () => {
+  const orphan = notesOf((log) => parseAgentReceipt([
+    "做完了",
+    "ARTIFACT_NAME: early",
+    "ARTIFACT: /later",
+  ].join("\n"), log));
+  assert.equal(orphan.value.artifact, "/later");
+  assert.equal("artifact_name" in orphan.value, false);
+  assert.ok(orphan.notes.some((line) => line.includes("ARTIFACT_NAME 落单")));
+
+  const dup = notesOf((log) => parseAgentReceipt([
+    "做完了",
+    "ARTIFACT: /a",
+    "ARTIFACT_NAME: one",
+    "ARTIFACT_NAME: two",
+  ].join("\n"), log));
+  assert.equal(dup.value.artifact_name, "two");
+  assert.deepEqual(dup.value.artifacts, [{ uri: "/a", name: "two" }]);
+  assert.ok(dup.notes.some((line) => line.includes("ARTIFACT_NAME 多条")));
+});
+
+test("parseAgentReceipt 超过 16 个产物是无效回执，提问上的产物只记忽略", () => {
+  const lines = ["做完了"];
+  for (let i = 0; i < 17; i++) lines.push(`ARTIFACT: /f${i}`);
+  const over = notesOf((log) => parseAgentReceipt(lines.join("\n"), log));
+  assert.equal(over.error?.name, "InvalidReceipt");
+  assert.match(over.error.message, /产物超过 16 个（17）/);
+
+  const ask = notesOf((log) => parseAgentReceipt("ARTIFACT: /x\n```agent-ask\n还缺什么\n```\n", log));
+  assert.ok(ask.error instanceof NeedInput);
+  assert.ok(ask.notes.some((line) => line.includes("artifact 在 input-required 上忽略")));
+
+  const auth = notesOf((log) => parseAgentReceipt("ARTIFACT: /x\n```agent-auth\n给客户发消息\n```\n", log));
+  assert.ok(auth.error instanceof NeedAuth);
+  assert.ok(auth.notes.some((line) => line.includes("artifact 在 auth-required 上忽略")));
+
+  const empty = notesOf((log) => parseAgentReceipt("ARTIFACT: /x\n", log));
+  assert.equal(empty.error?.name, "InvalidReceipt");
+  assert.ok(empty.notes.some((line) => line.includes("artifact 在 failed 上忽略")));
+});
+
+test("parseJsonReceipt 收下 artifacts，形状错误与非字符串标量是无效回执", () => {
+  const scalar = notesOf((log) => parseJsonReceipt({ summary: "ok", artifact: "/a", artifact_name: "n" }, log));
+  assert.deepEqual(scalar.value.artifacts, [{ uri: "/a", name: "n" }]);
+  assert.equal(scalar.value.artifact, "/a");
+
+  const list = notesOf((log) => parseJsonReceipt({
+    summary: "ok",
+    artifact: "/old",
+    artifact_name: "old",
+    artifacts: [{ uri: "", name: "skip" }, { uri: "/new", name: "new" }],
+  }, log));
+  assert.equal(list.value.artifact, "/new");
+  assert.deepEqual(list.value.artifacts, [{ uri: "/new", name: "new" }]);
+  assert.ok(list.notes.some((line) => line.includes("以 artifacts 为准")));
+  assert.ok(list.notes.some((line) => line.includes("忽略空 uri")));
+  assert.equal(list.notes.some((line) => line.includes("未知顶层键")), false);
+
+  const emptyWins = notesOf((log) => parseJsonReceipt({ summary: "ok", artifact: "/old", artifacts: [] }, log));
+  assert.equal(emptyWins.value.artifact, "");
+  assert.deepEqual(emptyWins.value.artifacts, []);
+
+  for (const bad of [
+    { artifact: ["/a", "/b"], artifact_name: "n" },
+    { artifact: { uri: "/a" } },
+    { artifact: null },
+    { artifact_name: null },
+    { artifacts: "/a" },
+    { artifacts: [" /a "] },
+    { artifacts: [{ uri: 1 }] },
+    { artifacts: [{ uri: "/a", name: 1 }] },
+    { artifacts: [{ uri: "/a", name: null }] },
+    { artifacts: [null] },
+  ]) {
+    const got = notesOf((log) => parseJsonReceipt({ summary: "ok", ...bad }, log));
+    assert.equal(got.error?.name, "InvalidReceipt", JSON.stringify(bad));
+    assert.equal(String(got.value?.artifact ?? ""), "");
+    assert.equal(String(got.error.message).includes("/a,/b"), false);
+    assert.equal(String(got.error.message).includes("[object Object]"), false);
+  }
+
+  const ask = notesOf((log) => parseJsonReceipt({
+    need_input: "缺参数",
+    artifacts: [{ uri: "/x" }],
+  }, log));
+  assert.ok(ask.error instanceof NeedInput);
+  assert.ok(ask.notes.some((line) => line.includes("artifact 在 input-required 上忽略")));
+  assert.equal(ask.error?.name === "InvalidReceipt", false);
+
+  const askBad = notesOf((log) => parseJsonReceipt({ need_input: "缺参数", artifact: ["/a"] }, log));
+  assert.equal(askBad.error?.name, "InvalidReceipt");
+
+  const many = [];
+  for (let i = 0; i < 17; i++) many.push({ uri: `/f${i}` });
+  const over = notesOf((log) => parseJsonReceipt({ summary: "ok", artifacts: many }, log));
+  assert.match(over.error?.message ?? "", /产物超过 16 个（17）/);
+
+  const overAsk = notesOf((log) => parseJsonReceipt({ need_input: "问", artifacts: many }, log));
+  assert.ok(overAsk.error instanceof NeedInput);
+});
+
 test("parseJsonReceipt 拒收同时出现的 need_input 与 need_auth", () => {
   assert.throws(
     () => parseJsonReceipt({ summary: "x", need_input: "问", need_auth: "批" }),

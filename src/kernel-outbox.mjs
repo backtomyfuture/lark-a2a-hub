@@ -5,6 +5,12 @@ import path from "node:path";
 import { acceptanceLine } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { TERMINAL_STATUSES, annotateElapsed, log, nowStr } from "./kernel-util.mjs";
+import {
+  ARTIFACT_CAP,
+  receiptArtifactList,
+  resolveArtifactName,
+  warnDuplicateArtifactNames,
+} from "./receipt.mjs";
 
 function verifyFailedNoticeText(box) {
   const head = acceptanceLine(box.acceptance) || "验收未通过：verify 执行失败";
@@ -20,6 +26,23 @@ function verifyFailedNoticeText(box) {
   const summary = rawSummary.length > summaryBudget ? rawSummary.slice(0, summaryBudget) : rawSummary;
   const summaryBlock = summary ? `执行方摘要：\n${summary}` : "";
   return [head, summaryBlock, tailBlock].filter(Boolean).join("\n\n").slice(0, 4000);
+}
+
+// artId 与 tokens.artifact / artifactPart 只镜像第一条。旧代码回滚时仍能按同一 client_token 补上主件，不会另开一行。
+function mirrorFirstArtifact(box) {
+  box.tokens ??= {};
+  const first = Array.isArray(box.artifacts) ? box.artifacts[0] : null;
+  if (!first) {
+    if (!String(box.artId ?? "").trim()) box.artId = "";
+    return;
+  }
+  box.artId = String(first.id ?? "");
+  if (first.token) box.tokens.artifact = first.token;
+  if (first.partToken) box.tokens.artifactPart = first.partToken;
+  // res.artifact 必须保持字符串。数组放进来会让旧代码收成 "a,b"。
+  if (box.res && typeof box.res === "object" && !Array.isArray(box.res) && typeof box.res.artifact !== "string") {
+    box.res.artifact = String(first.uri ?? "");
+  }
 }
 
 export const outboxMethods = {
@@ -117,11 +140,17 @@ export const outboxMethods = {
   async ensurePlan(task, box) {
     box.tokens ??= {};
     let dirty = false;
-    for (const k of ["artifact", "artifactPart", "run", "message", "partText", "partData"]) {
+    for (const k of ["run", "message", "partText", "partData"]) {
       if (!box.tokens[k]) {
         box.tokens[k] = randomUUID();
         dirty = true;
       }
+    }
+    // 产物编号必须在 planned=true 之前一次冻住。ensurePlan 一旦看见 planned 就直接返回，不会再补后面的 ID。
+    if (await this.ensureArtifactPlan(task, box)) dirty = true;
+    if (!box.artifacts?.length) {
+      if (!box.tokens.artifact) { box.tokens.artifact = randomUUID(); dirty = true; }
+      if (!box.tokens.artifactPart) { box.tokens.artifactPart = randomUUID(); dirty = true; }
     }
     if (box.planned && box.runId && box.msgId) {
       if (dirty) this.saveOutbox(box);
@@ -130,12 +159,6 @@ export const outboxMethods = {
     const taskId = box.taskId || f1(task, "Task_ID");
     const msgs = await this.listMessages(taskId);
     const runs = await this.runsOf(taskId);
-    const arts = (await this.bus.listRecords(this.T.artifacts)).filter((a) => f1(a, "Task_ID") === taskId);
-    const pointer = String(box.res?.artifact ?? "").trim();
-    if (!pointer) box.artId = "";
-    else if (!box.artId) {
-      box.artId = `${taskId}-A${this.nextSuffix(arts.map((a) => f1(a, "Artifact_ID")), /-A(\d+)$/)}`;
-    }
     // 认领时已经开过 Run 的，沿用那个 Run_ID，收尾改为更新而不是再编号。
     if (!box.runId) {
       box.runId = `${taskId}-R${this.nextSuffix(runs.map((r) => f1(r, "Run_ID")), /-R(\d+)$/)}`;
@@ -149,19 +172,89 @@ export const outboxMethods = {
     return box;
   },
 
-  async ensureArtifact(task, box) {
-    if (!box.artId) return;
-    const name = String(box.res?.artifact_name || f1(task, "Skill_ID") || "result");
-    if (!(await this.findBy(this.T.artifacts, "Artifact_ID", box.artId))) {
-      await this.bus.createRecord(this.T.artifacts, {
-        Artifact_ID: box.artId, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
-        Name: name, Description: String(box.res?.summary ?? "").slice(0, 500),
-        Is_Final: box.outcome === "succeeded" ? "Yes" : "No", Created_By: this.cfg.node, Created_At: nowStr(),
-      }, box.tokens.artifact);
+  // 有 artifacts 数组就只补 token，不重新编号。没有这个键的旧 outbox 只合成一条，避免把历史单产物展开成多条。
+  async ensureArtifactPlan(task, box) {
+    box.tokens ??= {};
+    if (Array.isArray(box.artifacts)) {
+      let dirty = false;
+      for (const item of box.artifacts) {
+        if (!item || typeof item !== "object") continue;
+        if (!item.token) { item.token = randomUUID(); dirty = true; }
+        if (!item.partToken) { item.partToken = randomUUID(); dirty = true; }
+      }
+      mirrorFirstArtifact(box);
+      return dirty;
     }
-    await this.createPart(box.artId, "artifact", 1, "file", {
-      fileUri: String(box.res?.artifact ?? ""), fileName: name,
-    }, box.tokens.artifactPart);
+    if (box.planned || String(box.artId ?? "").trim()) {
+      const id = String(box.artId ?? "").trim();
+      if (!id) {
+        box.artifacts = [];
+        mirrorFirstArtifact(box);
+        return true;
+      }
+      const uri = String(box.res?.artifact ?? "").trim();
+      const name = box.res?.artifact_name == null ? "" : String(box.res.artifact_name).trim();
+      box.artifacts = [{
+        id,
+        uri,
+        name,
+        token: box.tokens.artifact || randomUUID(),
+        partToken: box.tokens.artifactPart || randomUUID(),
+      }];
+      mirrorFirstArtifact(box);
+      return true;
+    }
+    const list = receiptArtifactList(box.res);
+    if (list.length > ARTIFACT_CAP) {
+      throw new Error(`产物超过 ${ARTIFACT_CAP} 个（${list.length}）`);
+    }
+    const taskId = box.taskId || f1(task, "Task_ID");
+    let n = 1;
+    if (list.length) {
+      const arts = (await this.bus.listRecords(this.T.artifacts)).filter((a) => f1(a, "Task_ID") === taskId);
+      n = this.nextSuffix(arts.map((a) => f1(a, "Artifact_ID")), /-A(\d+)$/);
+    }
+    box.artifacts = list.map((item) => ({
+      id: `${taskId}-A${n++}`,
+      uri: item.uri,
+      name: item.name,
+      token: randomUUID(),
+      partToken: randomUUID(),
+    }));
+    mirrorFirstArtifact(box);
+    return true;
+  },
+
+  async ensureArtifact(task, box) {
+    const items = Array.isArray(box.artifacts) ? box.artifacts : [];
+    if (!items.length) return;
+    const skillId = String(f1(task, "Skill_ID") || "result");
+    const names = items.map((item, i) => resolveArtifactName({
+      explicit: item.name,
+      uri: item.uri,
+      index: i + 1,
+      total: items.length,
+      skillId,
+      single: "skill",
+    }));
+    // 同名是修订谱系（标准 §5），两条都登记。重试可能再打一次这条日志。
+    warnDuplicateArtifactNames(names, log);
+    const description = String(box.res?.summary ?? "").slice(0, 500);
+    const finalFlag = box.outcome === "succeeded" ? "Yes" : "No";
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const name = names[i];
+      if (!(await this.findBy(this.T.artifacts, "Artifact_ID", item.id))) {
+        await this.bus.createRecord(this.T.artifacts, {
+          Artifact_ID: item.id, Task_ID: box.taskId, Context_ID: f1(task, "Context_ID"),
+          Name: name, Description: description,
+          Is_Final: finalFlag, Created_By: this.cfg.node, Created_At: nowStr(),
+        }, item.token);
+      }
+      await this.createPart(item.id, "artifact", 1, "file", {
+        fileUri: String(item.uri ?? ""), fileName: name,
+      }, item.partToken);
+    }
   },
 
   async ensureRun(task, box) {

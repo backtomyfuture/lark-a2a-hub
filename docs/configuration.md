@@ -104,7 +104,7 @@ Worker 条目与节点本尊的技能条目可用的字段：
 | `herdr_kind` `herdr_args` `herdr_session` `herdr_keep` | 仅 `context: herdr`：Agent 种类（`herdr agent start --kind` 的取值）、传给 Agent 的参数数组、herdr 命名会话（缺省：自动拉起时为专用会话 `lah`，`herdr_autostart=false` 时为默认会话）、终态后是否保留工作区（缺省 false） |
 | `herdr_autostart` | 仅 `context: herdr`，布尔，缺省 `true`：守护进程按需拉起专用会话、空闲 10 分钟后关闭。写 `false` 只探测不启动，服务不在就标离线、任务排队。默认会话永远不会被启停 |
 | `timeout_sec` | 单次执行上限，默认 600 |
-| `verify` | 可选。一条本机 shell 命令，与 `command` 同一可信等级，原样执行，不做 `{prompt}` / `{session}` 替换。只支持 `context=direct` 的 `json` / `agent`。Skill 条目优先，Skill 未写时用其 Worker 条目的值。`mode=inbox` 写了是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。命令必须只读、可重复。执行者的数据不拼进命令，只经两条通道：stdin 一行 JSON `{"task_id","summary","artifact","artifact_name","checks"}`，以及环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`、`LAH_RUN_DIR`、`LAH_MAIN_STDOUT` |
+| `verify` | 可选。一条本机 shell 命令，与 `command` 同一可信等级，原样执行，不做 `{prompt}` / `{session}` 替换。只支持 `context=direct` 的 `json` / `agent`。Skill 条目优先，Skill 未写时用其 Worker 条目的值。`mode=inbox` 写了是配置错误：认领预检 `rejected` + notice，`lah doctor` 报问题，不静默忽略。命令必须只读、可重复。执行者的数据不拼进命令，只经两条通道：stdin 一行 JSON `{"task_id","summary","artifact","artifact_name","artifacts","checks"}`（`artifacts` 为 `[{uri, name?}]`），以及环境变量 `LAH_TASK_ID`、`LAH_ARTIFACT`（第一条 URI）、`LAH_ARTIFACTS`（全部 URI 的 JSON 数组）、`LAH_RUN_DIR`、`LAH_MAIN_STDOUT`。只读 `LAH_ARTIFACT` 的脚本在多产物时只看到第一个文件 |
 | `verify_timeout_sec` | 可选正数，缺省 120，夹紧到 1–1800。继承规则同 `verify` |
 | `cwd` | 工作目录，默认配置目录 |
 | `side_effect` | 副作用等级，写进名片，如 `read` / `write` |
@@ -161,8 +161,8 @@ Worker 条目与节点本尊的技能条目可用的字段：
 
 内核只认结构，不猜自然语言。完整语法见标准 §9。
 
-- **agent 模式**：最后一个完整围栏若是 ```` ```agent-ask ````，表示提问（任务转 `input-required`）；若是 ```` ```agent-auth ````，表示执行中请求批准（块内写明动作、对象与风险，任务转 `auth-required`）。二者只认最后一个，空的 `agent-auth` 是无效回执。围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` / `CHECK:` 分别表示产物、用量、会话、预约复查、清单自检。`CHECK: <id> <pass|fail|blocked>[ | <证据>]` 只在回执收口为完成时收下；提问、审批和无效回执上的自检忽略并记日志。同一 `id` 多行取最后一行。围栏内伪造的行不生效。`agent-auth` 在进程退出后才解析，拦不住已经做完的副作用；要在动作前停住，用 `lah inbox auth`。
-- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`、`checks`。`checks` 形如 `{"<id>":{"verdict":"pass|fail|blocked","evidence":"…"}}`，值也可以直接是判定字符串。`need_input` 与 `need_auth` 不能同时出现。未知顶层键忽略并记日志。提问、审批和无效回执上的 `checks` 忽略并记日志。
+- **agent 模式**：最后一个完整围栏若是 ```` ```agent-ask ````，表示提问（任务转 `input-required`）；若是 ```` ```agent-auth ````，表示执行中请求批准（块内写明动作、对象与风险，任务转 `auth-required`）。二者只认最后一个，空的 `agent-auth` 是无效回执。围栏外整行的 `ARTIFACT:` / `ARTIFACT_NAME:` / `USAGE:` / `SESSION:` / `LATER:` / `CHECK:` 分别表示产物、用量、会话、预约复查、清单自检。产物可以写多组，最多 16 组：非空 `ARTIFACT:` 新开一条，紧随的 `ARTIFACT_NAME:` 只绑定这一条；落单名称、空路径记日志后丢掉；超过 16 条是无效回执，不登记其中任何一条。`CHECK: <id> <pass|fail|blocked>[ | <证据>]` 只在回执收口为完成时收下；提问、审批和无效回执上的自检忽略并记日志。同一 `id` 多行取最后一行。围栏内伪造的行不生效。`agent-auth` 在进程退出后才解析，拦不住已经做完的副作用；要在动作前停住，用 `lah inbox auth`。
+- **json 模式**：只认 stdout 最后一行 JSON：`summary`、`artifact`、`artifact_name`、`artifacts`、`need_input`、`need_auth`，可选 `usage`、`session`、`later`、`checks`。多个产物写 `artifacts: [{uri, name?}]`；`artifact` / `artifact_name` 仍是单文件字符串。两者同时出现以数组为准。形状不对（含把 `artifact` 写成数组）是无效回执。超过 16 条同样无效，不登记半截。`checks` 形如 `{"<id>":{"verdict":"pass|fail|blocked","evidence":"…"}}`，值也可以直接是判定字符串。`need_input` 与 `need_auth` 不能同时出现。未知顶层键忽略并记日志。提问、审批和无效回执上的 `checks` 与产物忽略并记日志。
 - `usage` 累计到 `Tasks.Metadata.usage`；`session` 只存本机 `runs/<Task_ID>/session.json`，不进总线；`later` 在任务完成时生效，由 hub 到点在同一 `Context_ID` 新建复查任务。
 
 ### 验收
@@ -342,7 +342,7 @@ lah task begin --schedule <id> [--period <期次键>] [--cap <cap_id>] [--text <
 | `lah schedule register --id <id> --cron "<五段>" --cap <cap_id> [--text <指令>]` | 登记 Agent 观察镜像（不写本机计划） |
 | `lah present [--pop] [--task <Task_ID>] [--wait <秒>]` | 读取本机发起任务的回执队列。`--wait` 阻塞到出现匹配回执（超时退出码 2）；`--pop` 只移除本次输出的条目 |
 | `lah inbox [--pop] [--json]` | `kind=agent` 接单 |
-| `lah inbox done\|ask\|fail\|auth --task <id> --text …` | 完单（可带 `--artifact`，可重复 `--check <id>=<pass\|fail\|blocked>[:证据]`）、追问、失败、执行中请求审批回执 |
+| `lah inbox done\|ask\|fail\|auth --task <id> --text …` | 完单（可重复 `--artifact <路径或URL> [--artifact-name <名称>]`，最多 16 个；名称必须紧跟它所属的 `--artifact`；可重复 `--check <id>=<pass\|fail\|blocked>[:证据]`）、追问、失败、执行中请求审批回执 |
 
 回执队列 `present_queue.jsonl` 旁边的 `present_bell` 仍会在有新回执落盘时刷新 mtime，供想低成本感知的 Hook 使用。`lah present --wait` 不依赖门铃，直接轮询队列文件。
 

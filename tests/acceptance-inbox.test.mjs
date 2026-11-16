@@ -339,3 +339,101 @@ test("inbox done --check：非法格式与无清单时拒绝且不写任何表",
     assert.match(badCriteriaCli.stderr, /非空数组/);
   });
 });
+
+test("inbox done 两个 --artifact 各登记一行，已有计划时忽略新路径并沿用原 ID", async () => {
+  await withTemp(async (dir) => {
+    const mock = new MockFeishuBus({ tables: TABLES });
+    const taskId = "TASK-INBOX-ART-1";
+    await seedWorkingInboxTask(mock, dir, { taskId });
+    const logs = [];
+    let seen = 0;
+    mock.failNext((ctx) => {
+      if (ctx.op !== "create" || ctx.table !== TABLES.artifacts) return false;
+      seen += 1;
+      return seen === 2;
+    });
+    await assert.rejects(
+      () => handleInboxDone({
+        bus: mock,
+        configDir: dir,
+        node: "node-a",
+        taskId,
+        text: "两份",
+        artifacts: [
+          { uri: "/tmp/iCTRL.ipa", name: "same" },
+          { uri: "/tmp/runner.ipa", name: "same" },
+        ],
+        log: (m) => logs.push(m),
+      }),
+      /1254291/,
+    );
+    const planPath = path.join(dir, "inbox-outbox", `${taskId}.json`);
+    const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+    assert.deepEqual(plan.artifacts.map((item) => item.uri), ["/tmp/iCTRL.ipa", "/tmp/runner.ipa"]);
+    assert.deepEqual(plan.artifacts.map((item) => item.id), [`${taskId}-A1`, `${taskId}-A2`]);
+    assert.equal(plan.artId, `${taskId}-A1`);
+    assert.ok(logs.some((line) => line.includes("同名产物按修订谱系登记：same")));
+
+    const againLogs = [];
+    const res = await handleInboxDone({
+      bus: mock,
+      configDir: dir,
+      node: "node-a",
+      taskId,
+      text: "改口",
+      artifacts: [
+        { uri: "/tmp/other-a", name: "other-a" },
+        { uri: "/tmp/other-b", name: "other-b" },
+      ],
+      log: (m) => againLogs.push(m),
+    });
+    assert.equal(fs.existsSync(planPath), false);
+    assert.deepEqual(res.artifactIds, [`${taskId}-A1`, `${taskId}-A2`]);
+    assert.equal(againLogs.some((line) => line.includes("同名产物")), false);
+    const arts = (await mock.findRecords(TABLES.artifacts, "Task_ID", taskId))
+      .sort((a, b) => String(f1(a, "Artifact_ID")).localeCompare(String(f1(b, "Artifact_ID"))));
+    assert.deepEqual(arts.map((row) => f1(row, "Artifact_ID")), [`${taskId}-A1`, `${taskId}-A2`]);
+    assert.deepEqual(arts.map((row) => f1(row, "Name")), ["same", "same"]);
+    const uris = [];
+    for (const id of [`${taskId}-A1`, `${taskId}-A2`]) {
+      const parts = await mock.findRecords(TABLES.parts, "Parent_ID", id);
+      assert.equal(parts.length, 1);
+      uris.push(f1(parts[0], "File_URI"));
+    }
+    assert.deepEqual(uris, ["/tmp/iCTRL.ipa", "/tmp/runner.ipa"]);
+    const result = (await mock.findRecords(TABLES.messages, "Task_ID", taskId))
+      .find((row) => f1(row, "Kind") === "result");
+    assert.equal(f1(result, "Artifact_Ref"), `${taskId}-A1`);
+
+    const singleId = "TASK-INBOX-ART-ONE";
+    await seedWorkingInboxTask(mock, dir, { taskId: singleId });
+    await handleInboxDone({
+      bus: mock,
+      configDir: dir,
+      node: "node-a",
+      taskId: singleId,
+      text: "一份",
+      artifact: "/tmp/foo/bar.txt?x=1",
+    });
+    const one = (await mock.findRecords(TABLES.artifacts, "Task_ID", singleId))[0];
+    assert.equal(f1(one, "Name"), "bar.txt?x=1");
+  });
+});
+
+test("inbox done 的落单名称、重复名称、空路径和超限在读配置前失败", () => {
+  const run = (args) => spawnSync(process.execPath, [LAH_BIN, "inbox", "done", "--task", "TASK-X", "--text", "ok", ...args], { encoding: "utf8" });
+  const orphan = run(["--artifact-name", "n"]);
+  assert.notEqual(orphan.status, 0);
+  assert.match(orphan.stderr, /落单/);
+  const dup = run(["--artifact", "/a", "--artifact-name", "n1", "--artifact-name", "n2"]);
+  assert.notEqual(dup.status, 0);
+  assert.match(dup.stderr, /已经带了名称/);
+  const empty = run(["--artifact", ""]);
+  assert.notEqual(empty.status, 0);
+  assert.match(empty.stderr, /需要路径或 URL/);
+  const args = [];
+  for (let i = 0; i < 17; i++) args.push("--artifact", `/tmp/f${i}`);
+  const over = run(args);
+  assert.notEqual(over.status, 0);
+  assert.match(over.stderr, /产物超过 16 个（17）/);
+});

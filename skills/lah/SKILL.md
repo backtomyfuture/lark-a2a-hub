@@ -68,9 +68,11 @@ lah present [--pop] [--task <Task_ID>] [--wait <秒>]
   - `title`：任务标题
   - `target_node`：执行节点
   - `message`：节点输出的最新说明
+  - `artifact_ref`：结果消息上的第一个产物 ID（可空）
+  - `artifact_refs`：该任务全部产物 ID
   - `outcome`：执行结果摘要
   - `error`：错误日志（若失败）
-  - `text`：中台格式化的易读摘要
+  - `text`：中台格式化的易读摘要（有产物时含一行「产物：」）
 
 ### 派单后要等结果
 
@@ -136,7 +138,7 @@ lah inbox --pop [--json]
 #### 5.2 任务完成并原路交付 (`lah inbox done`)
 执行完毕后，提交最终结果并关单，中台将自动原路回传给发起方：
 ```bash
-lah inbox done --task <Task_ID> --text "<执行总结与交付内容>" [--artifact <产物路径或URL>]
+lah inbox done --task <Task_ID> --text "<执行总结与交付内容>" [--artifact <产物路径或URL> [--artifact-name <名称>]]…
 ```
 
 #### 5.3 任务追问与补充输入 (`lah inbox ask`)
