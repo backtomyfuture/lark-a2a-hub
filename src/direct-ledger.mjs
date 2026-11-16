@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { KILL_GRACE_MS } from "./proc.mjs";
+import { receiptArtifactList } from "./receipt.mjs";
 
 export { KILL_GRACE_MS };
 
@@ -147,6 +148,32 @@ export function spawnWrapped(entry, command, cwd) {
   });
 }
 
+// 第一条仍走 artifact / artifact_name / LAH_ARTIFACT。只读这些字段的脚本在多产物时只看见第一个文件。
+export function verifyChannels(receipt, taskId) {
+  const items = receiptArtifactList(receipt);
+  const first = items[0];
+  const artifacts = items.map((item) => {
+    const out = { uri: item.uri };
+    if (item.name) out.name = item.name;
+    return out;
+  });
+  const checks = receipt?.checks && typeof receipt.checks === "object" && !Array.isArray(receipt.checks)
+    ? receipt.checks
+    : {};
+  return {
+    stdin: {
+      task_id: taskId,
+      summary: String(receipt?.summary ?? ""),
+      artifact: first?.uri ?? "",
+      artifact_name: first?.name ?? "",
+      artifacts,
+      checks,
+    },
+    LAH_ARTIFACT: first?.uri ?? "",
+    LAH_ARTIFACTS: JSON.stringify(items.map((item) => item.uri)),
+  };
+}
+
 // 账本第二阶段：verify 与主命令共用进程组包装机制，但文件名独立，不覆盖主命令 stdout.txt。
 export function beginVerifyLaunch({ configDir, entry, receipt, timeoutSec }) {
   const dir = runDir(configDir, entry.task_id);
@@ -160,13 +187,7 @@ export function beginVerifyLaunch({ configDir, entry, receipt, timeoutSec }) {
   for (const stale of [stdoutPath, stderrPath, exitPath, `${exitPath}.tmp`]) {
     try { fs.unlinkSync(stale); } catch { /* 第一次没有这些文件 */ }
   }
-  const stdinLine = JSON.stringify({
-    task_id: entry.task_id,
-    summary: String(receipt?.summary ?? ""),
-    artifact: String(receipt?.artifact ?? ""),
-    artifact_name: String(receipt?.artifact_name ?? ""),
-    checks: receipt?.checks ?? {},
-  }) + "\n";
+  const stdinLine = JSON.stringify(verifyChannels(receipt, entry.task_id).stdin) + "\n";
   fs.writeFileSync(stdinPath, stdinLine, { mode: 0o600 });
   fs.chmodSync(stdinPath, 0o600);
   fs.writeFileSync(wrapPath, WRAP_SCRIPT, { mode: 0o700 });
@@ -197,6 +218,7 @@ export function beginVerifyLaunch({ configDir, entry, receipt, timeoutSec }) {
 
 export function spawnVerifyWrapped(configDir, entry, command, cwd) {
   const v = entry.verify;
+  const channels = verifyChannels(entry.receipt, entry.task_id);
   return spawn("/bin/sh", [v.wrap_path], {
     cwd: cwd || os.homedir(),
     env: commandEnv({
@@ -206,7 +228,8 @@ export function spawnVerifyWrapped(configDir, entry, command, cwd) {
       LAH_ERR: v.stderr_path,
       LAH_EXIT: v.exit_path,
       LAH_TASK_ID: entry.task_id,
-      LAH_ARTIFACT: String(entry.receipt?.artifact ?? ""),
+      LAH_ARTIFACT: channels.LAH_ARTIFACT,
+      LAH_ARTIFACTS: channels.LAH_ARTIFACTS,
       LAH_RUN_DIR: runDir(configDir, entry.task_id),
       LAH_MAIN_STDOUT: entry.stdout_path || "",
     }),

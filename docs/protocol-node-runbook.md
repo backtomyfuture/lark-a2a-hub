@@ -84,7 +84,7 @@ webhook 通知可能因网络抖动、自动化重试超时等出现丢失，因
      4. 同一 auth_request 下有多条有效决定时，以最新一条为准。
    - **hub 独占 canceled 与节点动作**：`canceled` 状态与 `auth_decision` 只能由 hub 角色的代码路径写入，协议节点自身绝不写这两样。当任务被置为 `canceled`（审批驳回或发起方取消）时，节点必须立即终止本地执行并释放资源，不再向总线写回执或流转状态。
    - **节点自有红线优先**：对外发消息、删改数据、花钱、提交表单、改权限，只认操作者在与该节点的自有渠道里亲口确认，表中 approved 仅参考——此行为中台已知悉，不算流程冲突。
-6. **交付**：文档类成果先存飞书文档 → Artifacts 登记一行＋一条 FilePart（File_URI=文档链接、File_Name=名称）→ Messages 写 result（Artifact_Ref=登记号，正文 TextPart 写摘要）→ Status=completed、Runs 关行 Outcome=succeeded。
+6. **交付**：文档类成果先存飞书文档 → 每个文件在 Artifacts 登记一行＋一条 FilePart（File_URI=文档链接、File_Name=名称；多个文件按 `-A1`、`-A2` 各占一行，不要塞进同一 Artifact 的多块 Part）→ Messages 写 result（Artifact_Ref 只填第一个登记号，正文 TextPart 写摘要）→ Status=completed、Runs 关行 Outcome=succeeded。单张回执最多 16 个产物。
 7. **失败**：Runs 关行 Outcome=failed＋Error_Log 写原因；可重试 → Status 回 submitted、Retry_Count+1；不可重试 → Status=failed＋Messages 写 notice。
 8. **派生**：需要子任务时新建 Tasks 行＋其首条 instruction 消息（Ref_Task_IDs 指回父任务、DataPart 放参数），Hop_Count=父+1、共享 Context_ID；**Hop_Count>8 熔断**，不再派生。
 9. **纪律、状态持久化与串行锁**：

@@ -20,6 +20,7 @@ import {
 } from "./acceptance.mjs";
 import { f1 } from "./bus/feishu.mjs";
 import { log, readTaskMeta } from "./kernel-util.mjs";
+import { ARTIFACT_CAP, resolveArtifactName, warnDuplicateArtifactNames } from "./receipt.mjs";
 
 export function inboxFilePath(configDir) {
   return path.join(configDir, "agent_inbox.jsonl");
@@ -290,7 +291,50 @@ async function instructionCriteria(bus, taskMsgs, logFn = log) {
   return { criteriaRef, criteria: parsed.criteria };
 }
 
-async function buildPlan({ bus, node, task, text, artifact, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
+// 数组优先，不和标量合并。空路径直接拒绝，避免计划里留下写不回去的半条。
+function normalizeInboxArtifacts(artifact, artifacts, logFn = log) {
+  if (artifacts != null) {
+    if (!Array.isArray(artifacts)) throw new Error("artifacts 必须是数组");
+    if (String(artifact ?? "").trim()) logFn("inbox 同时有 artifact 与 artifacts，以 artifacts 为准");
+    return artifacts.map((item) => {
+      if (typeof item === "string") {
+        const uri = item.trim();
+        if (!uri) throw new Error("--artifact 需要路径或 URL");
+        return { uri, name: "" };
+      }
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("artifacts 的元素必须是对象");
+      }
+      const uri = String(item.uri ?? "").trim();
+      if (!uri) throw new Error("--artifact 需要路径或 URL");
+      const name = item.name == null ? "" : String(item.name).trim();
+      return { uri, name };
+    });
+  }
+  const uri = String(artifact ?? "").trim();
+  if (!uri) return [];
+  return [{ uri, name: "" }];
+}
+
+// 旧 inbox-outbox 没有 artifacts 键，只合成 artId 那一条，不按后来的参数重新编号。
+function inboxArtifactItems(plan) {
+  if (Array.isArray(plan.artifacts)) return plan.artifacts;
+  if (!plan.artId) return [];
+  return [{
+    id: plan.artId,
+    partId: plan.artPartId || `${plan.artId}-P1`,
+    uri: String(plan.fileUri ?? ""),
+    name: plan.artName || "",
+    fileUri: String(plan.fileUri ?? ""),
+    mime: plan.mime || "",
+    token: plan.tokens?.artifact,
+    partToken: plan.tokens?.artifactPart,
+    description: plan.description || "",
+    metadata: plan.metadata || "",
+  }];
+}
+
+async function buildPlan({ bus, node, task, text, artifact, artifacts, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
   const spec = OP_SPEC[op];
   const taskId = f1(task, "Task_ID");
   const messages = await bus.listRecords(bus.tables.messages);
@@ -312,22 +356,46 @@ async function buildPlan({ bus, node, task, text, artifact, op, reportedChecks =
     }
   }
 
-  let artId = "";
-  let artName = "";
-  let fileUri = "";
-  let mime = "";
-  let description = "";
-  let metadata = "";
-  if (artifact && bus.tables.artifacts) {
-    const arts = (await bus.listRecords(bus.tables.artifacts)).filter((a) => f1(a, "Task_ID") === taskId);
-    artId = `${taskId}-A${nextSuffix(arts.map((a) => f1(a, "Artifact_ID")), /-A(\d+)$/)}`;
-    artName = path.basename(String(artifact));
-    fileUri = String(artifact);
-    mime = mimeOf(artName);
-    description = (body.trim() || `Artifact for task ${taskId}: ${artName}`).slice(0, 500);
-    // Metadata.path 只是附注。内容以 Parent_Type=artifact 的 file Part 为准（标准 §5）。
-    metadata = JSON.stringify({ path: fileUri });
+  const requested = normalizeInboxArtifacts(artifact, artifacts, logFn);
+  if (requested.length > ARTIFACT_CAP) {
+    throw new Error(`产物超过 ${ARTIFACT_CAP} 个（${requested.length}）`);
   }
+  // 一次分配全部 ID 与 token，再落盘。重试读的是这份清单，不会按当时行数重新编号。
+  const plannedArts = [];
+  if (requested.length && bus.tables.artifacts) {
+    const arts = (await bus.listRecords(bus.tables.artifacts)).filter((a) => f1(a, "Task_ID") === taskId);
+    let n = nextSuffix(arts.map((a) => f1(a, "Artifact_ID")), /-A(\d+)$/);
+    const skillId = String(f1(task, "Skill_ID") || "result");
+    const names = requested.map((item, i) => resolveArtifactName({
+      explicit: item.name,
+      uri: item.uri,
+      index: i + 1,
+      total: requested.length,
+      skillId,
+      // 单产物沿用 basename，避免把历史上已经登记成文件名的 Name 改成 Skill_ID。
+      single: "basename",
+    }));
+    warnDuplicateArtifactNames(names, logFn);
+    for (let i = 0; i < requested.length; i++) {
+      const id = `${taskId}-A${n++}`;
+      const name = names[i];
+      const fileUri = requested[i].uri;
+      plannedArts.push({
+        id,
+        partId: `${id}-P1`,
+        uri: fileUri,
+        name,
+        fileUri,
+        mime: mimeOf(name),
+        token: randomUUID(),
+        partToken: randomUUID(),
+        description: (body.trim() || `Artifact for task ${taskId}: ${name}`).slice(0, 500),
+        // Metadata.path 只是附注。内容以 Parent_Type=artifact 的 file Part 为准（标准 §5）。
+        metadata: JSON.stringify({ path: fileUri }),
+      });
+    }
+  }
+  const firstArt = plannedArts[0];
 
   // 认领时内核已经开过 Run。没关账就更新那一行；已 paused 说明这是续跑后的新执行段，另开一行。
   // inbox 的 resumeCheck 只把任务放回 working 并重新入队，不开 Run；新段只能在本文件的下一次回执里开。
@@ -363,13 +431,14 @@ async function buildPlan({ bus, node, task, text, artifact, op, reportedChecks =
     msgDataPartId: (op === "auth" || (op === "done" && acceptance)) ? `${msgId}-P2` : "",
     msgKind: spec.msgKind,
     acceptance,
-    artId,
-    artPartId: artId ? `${artId}-P1` : "",
-    artName,
-    fileUri,
-    mime,
-    description,
-    metadata,
+    artifacts: plannedArts,
+    artId: firstArt?.id ?? "",
+    artPartId: firstArt?.partId ?? "",
+    artName: firstArt?.name ?? "",
+    fileUri: firstArt?.fileUri ?? "",
+    mime: firstArt?.mime ?? "",
+    description: firstArt?.description ?? "",
+    metadata: firstArt?.metadata ?? "",
     runId,
     runMode,
     worker: String(f1(task, "Worker_Hint") || "daemon"),
@@ -381,8 +450,8 @@ async function buildPlan({ bus, node, task, text, artifact, op, reportedChecks =
     },
     taskStatus: spec.taskStatus,
     tokens: {
-      artifact: randomUUID(),
-      artifactPart: randomUUID(),
+      artifact: firstArt?.token ?? randomUUID(),
+      artifactPart: firstArt?.partToken ?? randomUUID(),
       run: randomUUID(),
       message: randomUUID(),
       partText: randomUUID(),
@@ -404,29 +473,32 @@ async function ensureCreate(bus, table, idField, id, fields, token) {
 }
 
 async function ensureArtifact(bus, plan, node) {
-  if (!plan.artId || !bus.tables.artifacts) return;
-  await ensureCreate(bus, bus.tables.artifacts, "Artifact_ID", plan.artId, {
-    Artifact_ID: plan.artId,
-    Task_ID: plan.taskId,
-    Context_ID: plan.contextId,
-    Name: plan.artName,
-    Description: plan.description,
-    Is_Final: "Yes",
-    Created_By: node,
-    Created_At: plan.createdAt,
-    Metadata: plan.metadata,
-  }, plan.tokens.artifact);
-  // 产物正文不在 Artifacts 表。补齐时按 Part_ID 跳过，避免再插一块。
-  await ensureCreate(bus, bus.tables.parts, "Part_ID", plan.artPartId, {
-    Part_ID: plan.artPartId,
-    Parent_ID: plan.artId,
-    Parent_Type: "artifact",
-    Seq: 1,
-    Kind: "file",
-    File_URI: plan.fileUri,
-    File_Name: plan.artName,
-    Mime_Type: plan.mime,
-  }, plan.tokens.artifactPart);
+  const items = inboxArtifactItems(plan);
+  if (!items.length || !bus.tables.artifacts) return;
+  // 一块产物一行、一块 FilePart。逐条 await，避免同表并发写。
+  for (const item of items) {
+    await ensureCreate(bus, bus.tables.artifacts, "Artifact_ID", item.id, {
+      Artifact_ID: item.id,
+      Task_ID: plan.taskId,
+      Context_ID: plan.contextId,
+      Name: item.name,
+      Description: item.description || plan.description || "",
+      Is_Final: "Yes",
+      Created_By: node,
+      Created_At: plan.createdAt,
+      Metadata: item.metadata || plan.metadata || "",
+    }, item.token);
+    await ensureCreate(bus, bus.tables.parts, "Part_ID", item.partId, {
+      Part_ID: item.partId,
+      Parent_ID: item.id,
+      Parent_Type: "artifact",
+      Seq: 1,
+      Kind: "file",
+      File_URI: item.fileUri,
+      File_Name: item.name,
+      Mime_Type: item.mime,
+    }, item.partToken);
+  }
 }
 
 async function ensureRun(bus, plan, node) {
@@ -571,6 +643,7 @@ function receiptOf(plan) {
     return {
       ...base,
       artifactId: plan.artId || "",
+      artifactIds: inboxArtifactItems(plan).map((item) => item.id),
       ...(plan.acceptance ? { acceptance: plan.acceptance } : {}),
     };
   }
@@ -578,7 +651,7 @@ function receiptOf(plan) {
 }
 
 // 顺序对齐内核：Artifacts → Runs → Messages/Parts → Tasks。任一步失败都留着计划，下次只补缺。
-async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
+async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact, artifacts, op, reportedChecks = {}, hasCheckFlags = false, logFn = log }) {
   const existing = readInboxOutbox(configDir, taskId);
   if (existing && existing.op !== op) {
     throw new Error(`任务 ${taskId} 有未完成的 inbox ${existing.op} 提交，请重试同一命令补齐`);
@@ -602,7 +675,7 @@ async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact
   }
 
   // 第一笔总线写之前先落盘。重试复用这份计划，不再按当前行数重新编号。
-  const plan = existing ?? await buildPlan({ bus, node, task, text, artifact, op, reportedChecks, hasCheckFlags, logFn });
+  const plan = existing ?? await buildPlan({ bus, node, task, text, artifact, artifacts, op, reportedChecks, hasCheckFlags, logFn });
   if (!existing) saveInboxOutbox(configDir, plan);
 
   await ensureArtifact(bus, plan, node);
@@ -618,10 +691,25 @@ async function commitInboxReceipt({ bus, configDir, node, taskId, text, artifact
   return receiptOf(plan);
 }
 
-export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact, checks, log: logFn = log }) {
+export async function handleInboxDone({ bus, configDir, node, taskId, text, artifact, artifacts, checks, log: logFn = log }) {
   const { reported, hasCheckFlags } = normalizeFlagChecks(checks);
+  // 已有计划就整份复用。新的 --artifact 不参与编号，也不再按本次参数卡 16 的上限。
+  const existing = readInboxOutbox(configDir, taskId);
+  let useArtifact = artifact;
+  let useArtifacts = artifacts;
+  if (existing) {
+    useArtifact = undefined;
+    useArtifacts = undefined;
+  } else {
+    const items = normalizeInboxArtifacts(artifact, artifacts, logFn);
+    if (items.length > ARTIFACT_CAP) {
+      throw new Error(`产物超过 ${ARTIFACT_CAP} 个（${items.length}）`);
+    }
+    useArtifact = undefined;
+    useArtifacts = items;
+  }
   return commitInboxReceipt({
-    bus, configDir, node, taskId, text, artifact, op: "done",
+    bus, configDir, node, taskId, text, artifact: useArtifact, artifacts: useArtifacts, op: "done",
     reportedChecks: reported, hasCheckFlags, logFn,
   });
 }

@@ -213,6 +213,7 @@ test("verify 退出 0 → completed 且 result 带 Seq 2 DataPart、Metadata.acc
         summary: "work done",
         artifact: artPath,
         artifact_name: "report.txt",
+        artifacts: [{ uri: artPath, name: "report.txt" }],
         checks: {},
       });
       assert.equal(probe.env.LAH_TASK_ID, "TASK-V-PASS");

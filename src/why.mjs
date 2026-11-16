@@ -192,6 +192,18 @@ const EVENT_ORDER_WEIGHT = {
   "run-finish": 80,
 };
 
+// 新计划用 artifacts[].id。旧计划只有 artId，合成一条，不把缺键当成「零产物」。
+function outboxArtIds(data) {
+  if (Array.isArray(data?.artifacts)) {
+    if (data.artifacts.length) {
+      return data.artifacts.map((item) => String(item?.id ?? "").trim()).filter(Boolean);
+    }
+    return [];
+  }
+  const one = String(data?.artId ?? "").trim();
+  return one ? [one] : [];
+}
+
 // 只读检查配置目录下是否有本地未落表的待补交文件
 export function checkLocalOutbox(configDir, taskId) {
   const result = {
@@ -207,13 +219,15 @@ export function checkLocalOutbox(configDir, taskId) {
   if (fs.existsSync(kernelPath)) {
     try {
       const data = JSON.parse(fs.readFileSync(kernelPath, "utf8"));
+      const artIds = outboxArtIds(data);
       result.kernel_outbox = {
         path: kernelPath,
         task_id: data.taskId || taskId,
         outcome: data.outcome || "",
         run_id: data.runId || "",
         msg_id: data.msgId || "",
-        art_id: data.artId || "",
+        art_id: artIds[0] || data.artId || "",
+        art_ids: artIds,
         started: data.started || "",
         error: data.error || "",
       };
@@ -227,6 +241,7 @@ export function checkLocalOutbox(configDir, taskId) {
   if (fs.existsSync(inboxPath)) {
     try {
       const data = JSON.parse(fs.readFileSync(inboxPath, "utf8"));
+      const artIds = outboxArtIds(data);
       result.inbox_outbox = {
         path: inboxPath,
         task_id: data.taskId || taskId,
@@ -236,6 +251,8 @@ export function checkLocalOutbox(configDir, taskId) {
         outcome: data.outcome || "",
         run_id: data.runId || "",
         msg_id: data.msgId || "",
+        art_id: artIds[0] || data.artId || "",
+        art_ids: artIds,
         text: data.text ? data.text.slice(0, 100) : "",
       };
     } catch (e) {
@@ -637,12 +654,16 @@ export function formatWhyText(data) {
   if (outbox.kernel_outbox) {
     hasPending = true;
     const k = outbox.kernel_outbox;
-    lines.push(`  - 内核 outbox: 待补交 (${k.error || `outcome=${k.outcome}, run=${k.run_id}, msg=${k.msg_id}`})`);
+    const ids = Array.isArray(k.art_ids) && k.art_ids.length ? k.art_ids : (k.art_id ? [k.art_id] : []);
+    const art = ids.length ? `，产物 ${ids.join("、")}` : "";
+    lines.push(`  - 内核 outbox: 待补交 (${k.error || `outcome=${k.outcome}, run=${k.run_id}, msg=${k.msg_id}`}${art})`);
   }
   if (outbox.inbox_outbox) {
     hasPending = true;
     const i = outbox.inbox_outbox;
-    lines.push(`  - 收件箱 outbox: 待补交 (${i.error || `op=${i.op}, status=${i.task_status}, outcome=${i.outcome}, run=${i.run_id}`})`);
+    const ids = Array.isArray(i.art_ids) && i.art_ids.length ? i.art_ids : (i.art_id ? [i.art_id] : []);
+    const art = ids.length ? `，产物 ${ids.join("、")}` : "";
+    lines.push(`  - 收件箱 outbox: 待补交 (${i.error || `op=${i.op}, status=${i.task_status}, outcome=${i.outcome}, run=${i.run_id}`}${art})`);
   }
   if (!hasPending) {
     lines.push("  (无待补交条目)");

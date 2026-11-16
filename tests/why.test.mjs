@@ -48,6 +48,54 @@ test("checkLocalOutbox 拒绝非法任务号，损坏文件只报读失败", asy
   });
 });
 
+test("checkLocalOutbox 带上全部产物 ID，文本摘要列出来", async () => {
+  await withTemp(async (dir) => {
+    const bus = new MockFeishuBus({ tables: TABLES });
+    await bus.createRecord(TABLES.tasks, {
+      Task_ID: "TASK-ART-WHY",
+      Title: "产物",
+      Status: "working",
+      Target_Node: "node-a",
+      Source: "hub",
+      Skill_ID: "echo",
+      Hop_Count: 0,
+      Retry_Count: 0,
+      Context_ID: "CTX-1",
+    });
+    fs.mkdirSync(path.join(dir, "outbox"), { mode: 0o700 });
+    fs.mkdirSync(path.join(dir, "inbox-outbox"), { mode: 0o700 });
+    fs.writeFileSync(path.join(dir, "outbox", "TASK-ART-WHY.json"), JSON.stringify({
+      taskId: "TASK-ART-WHY",
+      outcome: "succeeded",
+      artId: "TASK-ART-WHY-A1",
+      runId: "TASK-ART-WHY-R1",
+      msgId: "MSG-1",
+      artifacts: [
+        { id: "TASK-ART-WHY-A1" },
+        { id: "TASK-ART-WHY-A2" },
+      ],
+    }), { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, "inbox-outbox", "TASK-ART-WHY.json"), JSON.stringify({
+      taskId: "TASK-ART-WHY",
+      op: "done",
+      taskStatus: "completed",
+      outcome: "succeeded",
+      runId: "TASK-ART-WHY-R1",
+      artId: "TASK-ART-WHY-A3",
+    }), { mode: 0o600 });
+
+    const got = checkLocalOutbox(dir, "TASK-ART-WHY");
+    assert.equal(got.kernel_outbox.art_id, "TASK-ART-WHY-A1");
+    assert.deepEqual(got.kernel_outbox.art_ids, ["TASK-ART-WHY-A1", "TASK-ART-WHY-A2"]);
+    assert.equal(got.inbox_outbox.art_id, "TASK-ART-WHY-A3");
+    assert.deepEqual(got.inbox_outbox.art_ids, ["TASK-ART-WHY-A3"]);
+    const data = await getTaskWhy({ bus, configDir: dir, taskId: "TASK-ART-WHY" });
+    const text = formatWhyText(data);
+    assert.match(text, /产物 TASK-ART-WHY-A1、TASK-ART-WHY-A2/);
+    assert.match(text, /产物 TASK-ART-WHY-A3/);
+  });
+});
+
 // 红线：DataPart 在时间线里只显示键名。文本照常摘要，但不把数据值拼进去。
 test("formatWhyText 不包含 DataPart 的值", async () => {
   await withTemp(async (dir) => {

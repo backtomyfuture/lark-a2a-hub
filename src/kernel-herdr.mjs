@@ -214,7 +214,7 @@ export const herdrMethods = {
     const cfg = `--config ${shq(this.cfg.configDir)} --task ${taskId}`;
     return [
       "回执约定（必须遵守）：只认下面这几条命令，聊天里的文字不算回执；每轮结束前必须执行其中一条。",
-      `1. 完成：${cli} done ${cfg} --text '<结果摘要：做了什么、关键数据、异常项>' [--artifact <路径或URL>]`,
+      `1. 完成：${cli} done ${cfg} --text '<结果摘要：做了什么、关键数据、异常项>' [--artifact <路径或URL> [--artifact-name <名称>]]…（可重复，最多 16 个；名称必须紧跟它所属的 --artifact）`,
       "   任务数据文件 params.acceptance.criteria 带验收清单时，逐条加 --check '<id>=<pass|fail|blocked>:<证据>'。",
       `2. 信息不足必须提问：${cli} ask ${cfg} --text '<问题>'，然后停下等待答复。`,
       `3. 即将对外发消息、删改数据、花钱、提交表单或改权限：先执行 ${cli} auth ${cfg} --text '<具体动作、目标对象与风险>'，然后停下等待批准。`,

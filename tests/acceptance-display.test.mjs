@@ -214,5 +214,30 @@ test("呈递在验收失败时带索引，正文首行是验收未通过", async
       outcome: "failed",
     });
     assert.match(plain.split("\n")[0], /^【任务失败】$/);
+    assert.equal(plain.includes("产物："), false);
+  });
+});
+
+test("呈递队列带上全部产物 ID，正文只在有产物时列一行", async () => {
+  await withTemp(async (dir) => {
+    const bus = new MockFeishuBus({ tables: TABLES });
+    const taskId = "TASK-ART-PRESENT";
+    await seedTask(bus, taskId, {
+      status: "completed",
+      receipt: { msgId: `MSG-${taskId}-02`, kind: "result", text: "两份都在" },
+    });
+    const msg = (await bus.findRecords(TABLES.messages, "Msg_ID", `MSG-${taskId}-02`))[0];
+    await bus.updateRecord(TABLES.messages, msg.record_id, { Artifact_Ref: `${taskId}-A1` });
+    await bus.createRecord(TABLES.artifacts, { Artifact_ID: `${taskId}-A2`, Task_ID: taskId, Name: "second" });
+    await bus.createRecord(TABLES.artifacts, { Artifact_ID: `${taskId}-A1`, Task_ID: taskId, Name: "first" });
+    await bus.createRecord(TABLES.artifacts, { Artifact_ID: "TASK-OTHER-A9", Task_ID: "TASK-OTHER", Name: "elsewhere" });
+
+    const svc = presentService(dir, bus);
+    assert.equal(await svc.scan(), 1);
+    const item = JSON.parse(fs.readFileSync(svc.queuePath, "utf8").trim());
+    assert.equal(item.artifact_ref, `${taskId}-A1`);
+    assert.deepEqual(item.artifact_refs, [`${taskId}-A1`, `${taskId}-A2`]);
+    assert.match(item.text, new RegExp(`产物：${taskId}-A1、${taskId}-A2`));
+    assert.equal(item.text.includes("TASK-OTHER"), false);
   });
 });

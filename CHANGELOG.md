@@ -5,7 +5,9 @@
 
 ## [Unreleased]
 
-中台标准 v3.10（表结构不变）。
+中台标准 v3.10（表结构不变）。以下为未发布改动，版本号未升。
+
+- **一次回执可以登记多个产物（标准 v3.10 补订，表结构不变）**：agent 围栏外按出现顺序配对多组 `ARTIFACT:` / `ARTIFACT_NAME:`，名称只绑定紧挨着的上一条，空路径与落单名称记日志后丢掉。json 新增 `artifacts: [{uri, name?}]`，保留字符串 `artifact` / `artifact_name`；两者同时出现以数组为准并记日志。`artifact` 或 `artifact_name` 不是字符串、或 `artifacts` 形状不对，整张回执无效，不再收成 `"a,b"` 或 `"[object Object]"`。单张完成回执最多 16 个，超出则 agent / json 为无效回执（failed、不重试、不登记半截），`lah inbox done` 在写计划前拒绝。同名产物按修订谱系各登记一行并打日志，不拒收。`Messages.Artifact_Ref` 只写第一个产物 ID；呈递队列增加 `artifact_refs`（全部 ID），正文多一行列出它们。`lah task why` 的本地 outbox 摘要带上全部 art_id。verify 的 stdin 增加 `artifacts`，`LAH_ARTIFACT` 仍是第一条 URI，新增 `LAH_ARTIFACTS`（URI 的 JSON 数组）。只读 `LAH_ARTIFACT` 的 verify 脚本在多产物时只看到第一个文件。`lah inbox done` 可重复 `--artifact`，`--artifact-name` 绑定紧挨着的上一个 `--artifact`，落单直接报错；已有 inbox 计划时整份复用，不重新编号。内核单产物未写名称时 Name 仍回退 Skill_ID；inbox 单产物仍用文件名；多产物未命名条目用文件名，再回退 `<Skill_ID>-<序号>`。
 
 - **停写 AgentCards.Zone 与 Metadata.a2a.zone**：全仓库无任何读取点；`Kernel.desiredCard` 不再写入 `Zone` 列与 `Metadata.a2a.zone`；`loadConfig` 静默忽略旧 `node.json` 残留的 `zone`；`lah setup` 移除 `--zone` 与对应交互且新生成的 `node.json` 不再写入 `zone`；`lah doctor` 总线契约检查放行 `AgentCards.Zone` 缺失，保证线上删列前后自检均可通过。
 - **herdr 执行语境（标准 §9）**：`commands.json` 的 Worker 可写 `context: "herdr"` + `herdr_kind`（可选 `herdr_args` / `herdr_session` / `herdr_keep` / `herdr_autostart`），不写 `command`。认领后守护进程为该任务新建 herdr 工作区、拉起交互式 Agent、只发含 `input.json` 路径与回执命令的受信提示；结果只认窗格内执行的 `lah inbox done|ask|auth|fail`。不占 direct 槽，可并行。扫表时查看窗格：结束一轮没回执先追问一次，再无回执或窗格关闭、Agent 退出即 `failed` + notice；Agent 自己的对话框不代按。问答续跑与执行中审批续跑回到同一窗格。守护进程默认按需拉起专用 herdr 会话（缺省 `lah`，多个 herdr Worker 共用；无头服务与守护进程进程组脱钩，守护进程重启或退出不停它），空闲 10 分钟（收件箱无该会话未结束的 herdr 条目、会话里无工作区）后关闭；从不启停用户的默认会话。`herdr_autostart: false` 恢复只探测不启动。拉起失败或非托管会话未运行时名片 `Availability=offline`，任务排队不拒收，不改走直跑，拉起失败后 5 分钟内不重试。终态（含撤单）后关闭为任务建的工作区。`herdr_*` 键加入执行控制键。`lah doctor` 校验 herdr 条目、报告各会话状态与是否托管，本机找不到 herdr 计为问题。新增 `src/herdr.mjs`、`src/kernel-herdr.mjs` 与 `tests/herdr.test.mjs`。

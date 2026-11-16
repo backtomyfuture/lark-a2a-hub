@@ -1,11 +1,87 @@
 // 回执解析与命令模板占位符。从内核拆出后行为不变；默认日志函数来自 kernel-util，避免和状态机循环引用。
+import path from "node:path";
 import { normalizeJsonChecks, parseCheckLine } from "./acceptance.mjs";
 import { log } from "./kernel-util.mjs";
 
-const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "need_input", "need_auth", "usage", "session", "later", "checks"]);
+const JSON_RECEIPT_KEYS = new Set(["summary", "artifact", "artifact_name", "artifacts", "need_input", "need_auth", "usage", "session", "later", "checks"]);
+// 每条产物是两笔总线写。超过这个数整张完成回执无效，避免静默截断后再标完成。
+export const ARTIFACT_CAP = 16;
 const USAGE_CAP = 1e12;
 export const SESSION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const USAGE_NUMBER = /^(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+// 去掉查询串和末尾斜杠后再取文件名。拿不到可用的文件名就返回空串，交给调用方回退。
+function fileStem(uri) {
+  const clean = String(uri ?? "").trim().replace(/[?#].*$/, "").replace(/\/+$/, "");
+  if (!clean) return "";
+  const base = path.basename(clean);
+  if (!base || base === "." || base === ".." || base.includes("://") || base.includes("/")) return "";
+  return base;
+}
+
+// 显式名称优先。内核的单产物没有名称时仍用 Skill_ID，避免改掉已有登记名。
+// inbox 的单产物历史上就是 basename，用 single="basename" 保持原样。
+// 多产物里没写名称的用文件名，再不行用 <Skill_ID>-<序号>（序号从 1 起，对应该条在本回执中的位置）。
+export function resolveArtifactName({ explicit = "", uri = "", index = 1, total = 1, skillId = "result", single = "skill" } = {}) {
+  const named = String(explicit ?? "").trim();
+  if (named) return named;
+  const skill = String(skillId || "result").trim() || "result";
+  if (total <= 1 && single === "skill") return skill;
+  if (total <= 1 && single === "basename") return path.basename(String(uri ?? "")) || `${skill}-${index}`;
+  const base = fileStem(uri);
+  if (base) return base;
+  return `${skill}-${index}`;
+}
+
+export function warnDuplicateArtifactNames(names, logFn) {
+  const counts = new Map();
+  for (const name of names) {
+    const key = String(name ?? "");
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  for (const [name, count] of counts) {
+    if (count > 1) logFn(`同名产物按修订谱系登记：${name}`);
+  }
+}
+
+// 新回执总是带 artifacts 数组。旧 outbox 没有这个键，才退回标量 artifact。
+export function receiptArtifactList(res) {
+  if (!res || typeof res !== "object" || Array.isArray(res)) return [];
+  if (Array.isArray(res.artifacts)) {
+    const out = [];
+    for (const item of res.artifacts) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const uri = String(item.uri ?? "").trim();
+      if (!uri) continue;
+      const name = item.name == null ? "" : String(item.name).trim();
+      out.push({ uri, name });
+    }
+    return out;
+  }
+  const uri = String(res.artifact ?? "").trim();
+  if (!uri) return [];
+  const name = res.artifact_name == null ? "" : String(res.artifact_name).trim();
+  return [{ uri, name }];
+}
+
+function publishArtifacts(items) {
+  return items.map((item) => {
+    const out = { uri: item.uri };
+    if (item.name) out.name = item.name;
+    return out;
+  });
+}
+
+function artifactFields(items) {
+  const published = publishArtifacts(items);
+  const fields = {
+    artifact: published[0]?.uri ?? "",
+    artifacts: published,
+  };
+  if (published[0]?.name) fields.artifact_name = published[0].name;
+  return fields;
+}
 
 export class NeedInput extends Error {}
 
@@ -320,8 +396,10 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   for (const fence of closed) {
     for (let i = fence.start; i <= fence.end; i++) inside.add(i);
   }
-  let artifact = "";
-  let artName = "";
+  // 名称只绑当前这一条。后一条没有名称时不能沿用前一条，空路径也不能把前一条擦掉。
+  const artifacts = [];
+  let openArt = -1;
+  let artifactSeen = false;
   // 最后一条才算数。非法则整条丢掉，不退回更早的一条。
   let usageBody;
   let sessionBody;
@@ -338,8 +416,27 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
       const name = /^ARTIFACT_NAME:\s*(.*?)\s*$/.exec(line);
       const usage = /^USAGE:\s*(.*)$/.exec(line);
       const session = /^SESSION:\s*(.*)$/.exec(line);
-      if (art) { artifact = art[1]; continue; }
-      if (name) { artName = name[1]; continue; }
+      if (art) {
+        artifactSeen = true;
+        const uri = art[1].trim();
+        if (!uri) {
+          logFn("ARTIFACT 为空，已忽略");
+          continue;
+        }
+        artifacts.push({ uri, name: "" });
+        openArt = artifacts.length - 1;
+        continue;
+      }
+      if (name) {
+        artifactSeen = true;
+        if (openArt < 0) {
+          logFn("ARTIFACT_NAME 落单，已忽略");
+          continue;
+        }
+        if (artifacts[openArt].name) logFn("ARTIFACT_NAME 多条，只取最后一条");
+        artifacts[openArt].name = name[1].trim();
+        continue;
+      }
       if (usage) { usageBody = usage[1]; continue; }
       if (session) { sessionBody = session[1]; continue; }
       // 围栏里的 LATER 留在正文里，不当预约。围栏外的整行从摘要里拿掉，避免说明混进结果。
@@ -362,15 +459,20 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   const usage = usageBody === undefined ? null : parseUsageValue(usageBody, logFn, true);
   const session = sessionBody === undefined ? null : parseSessionValue(sessionBody, logFn);
   if (laterCount > 1) logFn("later 多条，只取最后一条");
+  const noteArtifacts = (state) => {
+    if (artifactSeen) logFn(`artifact 在 ${state} 上忽略`);
+  };
   // 提问和无效回执都不是完成。预约与自检留到完成再写，这里只记一笔，不挂到错误上。
   if (ask != null) {
     if (laterCount) logFn("later 在 input-required 上忽略");
     if (checkCount) logFn("checks 在 input-required 上忽略");
+    noteArtifacts("input-required");
     throw stampSide(new NeedInput(ask), usage, session);
   }
   if (authLang) {
     if (laterCount) logFn("later 在 auth-required 上忽略");
     if (checkCount) logFn("checks 在 auth-required 上忽略");
+    noteArtifacts("auth-required");
     if (!authBody) {
       throw stampSide(new InvalidReceipt("agent-auth 缺少审批说明", text.slice(0, 500)), usage, session);
     }
@@ -381,7 +483,15 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   if (!summary) {
     if (laterCount) logFn("later 在 failed 上忽略");
     if (checkCount) logFn("checks 在 failed 上忽略");
+    noteArtifacts("failed");
     throw stampSide(new InvalidReceipt("agent produced no output", text.slice(0, 500)), usage, session);
+  }
+  if (artifacts.length > ARTIFACT_CAP) {
+    throw stampSide(
+      new InvalidReceipt(`产物超过 ${ARTIFACT_CAP} 个（${artifacts.length}）`, text.slice(0, 500)),
+      usage,
+      session,
+    );
   }
   for (const raw of invalidChecks) {
     logFn(`checks 忽略非法行：${raw}`);
@@ -389,9 +499,7 @@ export function parseAgentReceipt(out, logFn = log, now = Date.now()) {
   // 未截断时仍从开头留 4000，和原来的回执一致。截断后正文在尾部，从末尾留 4000，避免结论被日志挤掉。
   if (summary.length > 4000) summary = cut > 0 ? summary.slice(-4000) : summary.slice(0, 4000);
   const later = laterLine === undefined ? null : parseLaterLine(laterLine, logFn, now);
-  const r = { summary, artifact, usage, session, later, checks };
-  if (artName) r.artifact_name = artName;
-  return r;
+  return { summary, ...artifactFields(artifacts), usage, session, later, checks };
 }
 
 // json 模式仍只看最后一行对象。未知顶层键不执行，只留一条日志，避免回执里的 command 被当成控制项。
@@ -410,32 +518,89 @@ export function parseJsonReceipt(res, logFn = log, now = Date.now()) {
     : null;
   const hasLater = Object.prototype.hasOwnProperty.call(res, "later");
   const hasChecks = Object.prototype.hasOwnProperty.call(res, "checks") && res.checks != null;
+  let artifacts;
+  try {
+    artifacts = parseJsonArtifactList(res, logFn);
+  } catch (err) {
+    if (err instanceof InvalidReceipt) throw stampSide(err, usage, session);
+    throw err;
+  }
+  const artifactDeclared = Object.prototype.hasOwnProperty.call(res, "artifact")
+    || Object.prototype.hasOwnProperty.call(res, "artifact_name")
+    || Object.prototype.hasOwnProperty.call(res, "artifacts");
   if (res.need_input && res.need_auth) {
     throw stampSide(new InvalidReceipt("need_input 与 need_auth 不能同时存在", ""), usage, session);
   }
   if (res.need_input) {
     if (hasLater) logFn("later 在 input-required 上忽略");
     if (hasChecks) logFn("checks 在 input-required 上忽略");
+    if (artifactDeclared) logFn("artifact 在 input-required 上忽略");
     throw stampSide(new NeedInput(String(res.need_input)), usage, session);
   }
   const authText = res.need_auth == null ? "" : String(res.need_auth).trim();
   if (authText) {
     if (hasLater) logFn("later 在 auth-required 上忽略");
     if (hasChecks) logFn("checks 在 auth-required 上忽略");
+    if (artifactDeclared) logFn("artifact 在 auth-required 上忽略");
     throw stampSide(new NeedAuth(authText), usage, session);
+  }
+  if (artifacts.length > ARTIFACT_CAP) {
+    throw stampSide(
+      new InvalidReceipt(`产物超过 ${ARTIFACT_CAP} 个（${artifacts.length}）`, ""),
+      usage,
+      session,
+    );
   }
   const later = hasLater ? parseLaterValue(res.later, logFn, now) : null;
   const checks = hasChecks ? normalizeJsonChecks(res.checks, logFn) : {};
-  const r = {
+  return {
     summary: String(res.summary ?? "").slice(0, 4000),
-    artifact: String(res.artifact ?? ""),
+    ...artifactFields(artifacts),
     usage,
     session,
     later,
     checks,
   };
-  if (res.artifact_name) r.artifact_name = String(res.artifact_name);
-  return r;
+}
+
+// 形状错误整张无效。忽略未知的 artifacts 会把声明过的文件静默丢掉。
+function parseJsonArtifactList(res, logFn) {
+  const hasArtifact = Object.prototype.hasOwnProperty.call(res, "artifact");
+  const hasName = Object.prototype.hasOwnProperty.call(res, "artifact_name");
+  const hasList = Object.prototype.hasOwnProperty.call(res, "artifacts");
+  if (hasArtifact && typeof res.artifact !== "string") {
+    throw new InvalidReceipt("artifact 必须是字符串", "");
+  }
+  if (hasName && typeof res.artifact_name !== "string") {
+    throw new InvalidReceipt("artifact_name 必须是字符串", "");
+  }
+  if (!hasList) {
+    const uri = hasArtifact ? res.artifact.trim() : "";
+    if (!uri) return [];
+    const name = hasName && res.artifact_name ? res.artifact_name.trim() : "";
+    return [name ? { uri, name } : { uri, name: "" }];
+  }
+  if (!Array.isArray(res.artifacts)) throw new InvalidReceipt("artifacts 必须是数组", "");
+  if (hasArtifact || hasName) logFn("json 回执同时有 artifact 与 artifacts，以 artifacts 为准");
+  const out = [];
+  for (const item of res.artifacts) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new InvalidReceipt("artifacts 的元素必须是对象", "");
+    }
+    if (typeof item.uri !== "string") throw new InvalidReceipt("artifacts.uri 必须是字符串", "");
+    // name 可省略。键在且值不是 undefined、又不是字符串（含 null）时整张无效，与顶层 artifact_name 一致。
+    if (Object.prototype.hasOwnProperty.call(item, "name") && item.name !== undefined && typeof item.name !== "string") {
+      throw new InvalidReceipt("artifacts.name 必须是字符串", "");
+    }
+    const uri = item.uri.trim();
+    if (!uri) {
+      logFn("artifacts 忽略空 uri");
+      continue;
+    }
+    const name = item.name == null ? "" : item.name.trim();
+    out.push({ uri, name });
+  }
+  return out;
 }
 
 // {prompt} 与 {session} 各替换一次，插入的文本不再扫描，避免会话号或提示里的占位符二次展开。
